@@ -2,7 +2,7 @@
 
 A Lua framework for building interactive software as compilers.
 
-**1231 lines. Zero external dependencies. Self-hosted.**
+**2595 lines. Zero external dependencies. Self-hosted.**
 
 ## What It Is
 
@@ -21,6 +21,8 @@ The framework provides:
 - **GPS.compose** — structural composition with automatic fusion
 - **GPS.slot** — hot swap that preserves state on param-only changes
 - **GPS.context** — auto-wires the ASDL tree into a compilation pipeline
+- **GPS.lex / GPS.parse** — low-level GPS-native lexer/parser helpers
+- **GPS.grammar** — builtin grammar compiler: grammar ASDL → fused lexer+parser
 
 The ASDL type system already encodes GPS roles: **sum types are gen-shaping, scalars are param**. The framework reads the schema and caches accordingly. No annotations needed.
 
@@ -3185,6 +3187,170 @@ T.Source.LowPass.kind   -- "LowPass"
 
 ---
 
+### Grammar (builtin)
+
+#### `GPS.grammar()`
+
+Create a grammar builder. The grammar language is itself builtin ASDL.
+
+```lua
+local GPS = require("gps")
+local G = GPS.grammar()
+```
+
+The builder exposes the `Grammar` constructors directly plus:
+
+- `G:context()` — the grammar ASDL context
+- `G:schema()` — the grammar ASDL text
+- `G:compile(spec)` — compile a `Grammar.Spec`
+
+You can also call `GPS.grammar(spec)` directly.
+
+#### Grammar source language
+
+```text
+module Grammar {
+    Spec = (Lex lex, Parse parse) unique
+
+    Lex = (TokenDef* tokens, SkipDef* skip) unique
+    TokenDef = Symbol(string text)
+             | Keyword(string text)
+             | Ident(string name)
+             | Number(string name)
+             | String(string name, string quote)
+
+    SkipDef = Whitespace
+            | LineComment(string open)
+            | BlockComment(string open, string close)
+
+    Parse = (Rule* rules, string start) unique
+    Rule = (string name, Expr body) unique
+
+    Expr = Seq(Expr* items)
+         | Choice(Expr* arms)
+         | ZeroOrMore(Expr body)
+         | OneOrMore(Expr body)
+         | Optional(Expr body)
+         | Ref(string name)
+         | Tok(string name)
+         | Empty
+}
+```
+
+Current fast subset:
+
+- Lex: `Symbol`, `Keyword`, `Ident`, `Number`, `String`, `Whitespace`, `LineComment`, `BlockComment`
+- Parse: `Seq`, `Choice`, `ZeroOrMore`, `OneOrMore`, `Optional`, `Ref`, `Tok`, `Empty`
+- Left recursion is rejected
+- Nullable repetition is rejected
+
+#### Example
+
+```lua
+local GPS = require("gps")
+local G = GPS.grammar()
+
+local spec = G.Spec(
+  G.Lex({
+    G.Symbol("+"), G.Symbol("-"), G.Symbol("*"), G.Symbol("/"),
+    G.Symbol("("), G.Symbol(")"),
+    G.Number("NUMBER")
+  }, {
+    G.Whitespace
+  }),
+  G.Parse({
+    G.Rule("Expr", G.Seq({
+      G.Ref("Term"),
+      G.ZeroOrMore(G.Seq({
+        G.Choice({ G.Tok("+"), G.Tok("-") }),
+        G.Ref("Term")
+      }))
+    })),
+    G.Rule("Term", G.Seq({
+      G.Ref("Factor"),
+      G.ZeroOrMore(G.Seq({
+        G.Choice({ G.Tok("*"), G.Tok("/") }),
+        G.Ref("Factor")
+      }))
+    })),
+    G.Rule("Factor", G.Choice({
+      G.Tok("NUMBER"),
+      G.Seq({ G.Tok("("), G.Ref("Expr"), G.Tok(")") }),
+      G.Seq({ G.Tok("-"), G.Ref("Factor") })
+    }))
+  }, "Expr")
+)
+
+local P = G:compile(spec)
+print(P:match("1 + 2 * 3"))
+```
+
+#### Compiled parser API
+
+A compiled parser `P` provides:
+
+- `P:match(input)` — fast recognizer, returns `true`/`false`
+- `P:emit(input, sink)` — replay token/rule events on success
+- `P:try_emit(input, sink)` — returns `ok, value_or_error`
+- `P:reducer(actions)` — build a direct semantic reducer family
+- `P:reduce(input, actions)` / `P:try_reduce(input, actions)`
+- `P:tree(input)` / `P:try_tree(input)` — convenience tree mode
+- `P:machine(input, mode?, arg?)` — produce a GPS machine
+
+Machine modes:
+
+- `"match"` — recognizer machine
+- `"emit"` — event machine (`arg = sink`)
+- `"reduce"` — reducer machine (`arg = actions`)
+- `"tree"` — tree machine
+
+#### Reducers
+
+Reducers are the fast semantic path: tokens and rules reduce directly to values.
+
+```lua
+local R = P:reducer {
+  tokens = {
+    NUMBER = function(source, start, stop)
+      return tonumber(source:sub(start + 1, stop))
+    end,
+    ["+"] = function() return "+" end,
+    ["*"] = function() return "*" end,
+    ["("] = function() return nil end,
+    [")"] = function() return nil end,
+  },
+  rules = {
+    Expr = function(v) ... end,
+    Term = function(v) ... end,
+    Factor = function(v) ... end,
+  }
+}
+
+local value = R:parse("1 + 2 * 3")
+```
+
+#### Emit sinks
+
+```lua
+P:emit(input, {
+  token = function(self, name, source, start, stop) ... end,
+  rule  = function(self, name, source, start, stop) ... end,
+})
+```
+
+Events are replayed only after a successful parse.
+
+#### Low-level lexer/parser helpers
+
+For lower-level use, the module also exposes:
+
+- `GPS.lex(spec)` — build a GPS-native lexer from a simple spec table
+- `GPS.parse(lexer, input, grammar_fn)` — direct fused recursive-descent helper
+
+These are the low-level tools. `GPS.grammar` is the grammar-compiler path.
+
+---
+
 ### Machines
 
 #### `GPS.machine(gen, param, state_layout, gen_key?)`
@@ -3435,9 +3601,12 @@ print(GPS.report({ compile_device, compile_track }))
 gps/
   init.lua            the framework
   asdl_context.lua    type builder (constructors, interning, sum types)
-  asdl_parser.lua     GPS parser (lexer fused in param)
-  asdl_lexer.lua      GPS lexer (gen/param/state over FFI bytes)
+  asdl_parser.lua     ASDL parser (lexer fused in param)
+  asdl_lexer.lua      ASDL lexer (gen/param/state over FFI bytes)
+  lex.lua             general-purpose GPS-native lexer toolkit
+  parse.lua           low-level fused parser helper
+  grammar.lua         grammar compiler: grammar ASDL → fused lexer+parser
   README.md           this document
 ```
 
-Zero external dependencies. ~1200 lines. Self-hosted: the ASDL parser is itself a GPS machine.
+Zero external dependencies. ~2600 lines. Self-hosted: the ASDL parser is itself a GPS machine.

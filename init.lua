@@ -610,4 +610,6 @@ function GPS.report(boundaries)
     return table.concat(lines, "\n")
 end
 
+GPS.grammar = require("gps.grammar")(GPS, asdl_context)
+
 return GPS
