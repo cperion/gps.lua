@@ -13,6 +13,23 @@
 --       return M.emit(rect_gen, M.state.none(), { ... })
 --   end
 --
+-- Newcomer note: mgps is organized around a simple machine triplet:
+--
+--   gen   = code to run
+--   param = residual authored payload
+--   state = mutable retained runtime data
+--
+-- A slot runs an installed machine as:
+--
+--   gen(param, state, input...)
+--
+-- This is iterator-shaped, but more general than Lua's exact generic-for
+-- protocol.
+--
+-- Internally this file sometimes wraps code in small callable tables so the
+-- same split stays visible everywhere: code in gen, payload in param, retained
+-- data in state.
+--
 -- See MGPS.md for the full design manifesto.
 
 local has_ffi, ffi = pcall(require, "ffi")
@@ -390,6 +407,25 @@ end
 
 -- ═══════════════════════════════════════════════════════════════
 -- EMITTED TERMS / FAMILIES / BOUND VALUES
+--
+-- A leaf lowering emits the public machine form:
+--
+--   emit(gen, state_decl, param)
+--
+-- That is still not quite runnable: we first realize the structural state
+-- declaration into an alloc/release layout and then bind a particular payload
+-- value to a reusable family. The split is:
+--
+--   family = code + state layout + structural identities
+--   bound  = family + concrete param payload
+--
+-- Runtime execution is always the triplet call:
+--
+--   gen(param, state, input...)
+--
+-- Internally, mgps normalizes framework-built code into small callable tables.
+-- User leaf code can still be plain Lua functions; emit() wraps them into the
+-- same canonical representation so the core keeps one clear execution model.
 -- ═══════════════════════════════════════════════════════════════
 
 local function is_emit(v)
@@ -398,6 +434,40 @@ end
 
 local function is_bound(v)
     return type(v) == "table" and rawget(v, "__mgps_bound") == true
+end
+
+local function is_gen_table(v)
+    return type(v) == "table" and rawget(v, "__mgps_gen") == true
+end
+
+local run_triplet
+
+local GEN_MT = {}
+function GEN_MT:__call(param, state, ...)
+    return run_triplet(self, param, state, ...)
+end
+
+local function make_gen_table(tag, fields)
+    fields = fields or {}
+    fields.__mgps_gen = true
+    fields.tag = tag
+    return setmetatable(fields, GEN_MT)
+end
+
+local function normalize_gen(gen)
+    if is_gen_table(gen) then return gen end
+    if type(gen) == "function" then
+        return make_gen_table("lua_fn", { fn = gen })
+    end
+    error("mgps.emit: expected gen function or internal gen table", 3)
+end
+
+local function describe_gen(gen)
+    gen = normalize_gen(gen)
+    if gen.tag == "lua_fn" then
+        return "gen:" .. tostring(gen.fn)
+    end
+    return "gen:" .. tostring(gen.tag)
 end
 
 local function bind_family(family, param)
@@ -412,10 +482,34 @@ local function bind_family(family, param)
     }
 end
 
+local function run_child_gens_forward(child_gens, param, state, threaded)
+    for i = 1, #child_gens do
+        threaded = run_triplet(child_gens[i], param[i], state[i], threaded) or threaded
+    end
+    return threaded
+end
+
+run_triplet = function(gen, param, state, ...)
+    gen = normalize_gen(gen)
+
+    local tag = gen.tag
+    if tag == "lua_fn" then
+        return gen.fn(param, state, ...)
+    elseif tag == "empty" then
+        return nil
+    elseif tag == "compose_seq" then
+        return run_child_gens_forward(gen.child_gens, param, state, ...)
+    elseif tag == "compose_body" then
+        return gen.body_fn(gen.child_gens, param, state, ...)
+    end
+
+    error("mgps: unknown gen tag '" .. tostring(tag) .. "'", 3)
+end
+
 function M.emit(gen, state_decl, param)
     return {
         __mgps_emit = true,
-        gen = gen,
+        gen = normalize_gen(gen),
         state_decl = ensure_state_decl(state_decl),
         param = param,
     }
@@ -437,13 +531,13 @@ local function ensure_bound(result)
         error("mgps: expected emitted or bound result", 3)
     end
 
-    local code_shape = result.code_shape or ("gen:" .. tostring(result.gen))
+    local code_shape = result.code_shape or describe_gen(result.gen)
     local state_decl = ensure_state_decl(result.state_decl)
     local state_shape = state_shape_of(state_decl)
     local state_layout = realize_state(state_decl)
     local family = {
         __mgps_family = true,
-        gen = result.gen,
+        gen = normalize_gen(result.gen),
         state_decl = state_decl,
         state_layout = state_layout,
         code_shape = code_shape,
@@ -458,133 +552,150 @@ end
 
 -- ═══════════════════════════════════════════════════════════════
 -- LEAF HELPERS
+--
+-- These helpers used to manufacture fresh Lua closures. They now return small
+-- callable tables so the triplet split stays obvious. The emitted machine is
+-- still the same public form: emit(gen, state_decl, param).
 -- ═══════════════════════════════════════════════════════════════
 
+local LEAF_CALL_MT = {}
+function LEAF_CALL_MT:__call(node, ...)
+    local state_fn = self.state_fn
+    local state_decl = state_fn and state_fn(node, ...) or NONE_DECL
+    local param_fn = self.param_fn
+    local param = param_fn and param_fn(node, ...) or nil
+    return M.emit(self.gen, state_decl, param)
+end
+
 function M.leaf(gen, state_fn, param_fn)
-    return function(node, ...)
-        local state_decl = state_fn and state_fn(node, ...) or NONE_DECL
-        local param = param_fn and param_fn(node, ...) or nil
-        return M.emit(gen, state_decl, param)
+    return setmetatable({
+        gen = gen,
+        state_fn = state_fn,
+        param_fn = param_fn,
+    }, LEAF_CALL_MT)
+end
+
+local VARIANT_CALL_MT = {}
+function VARIANT_CALL_MT:__call(node, ...)
+    local spec = self.spec
+    local shape = spec.classify and spec.classify(node, ...) or {}
+    local gen = spec.gen and spec.gen(shape, ...) or spec.rule or spec[1]
+    if type(gen) ~= "function" then
+        error("mgps.variant: missing gen(shape, ...) function", 2)
     end
+    local state_decl
+    if type(spec.state) == "function" then
+        state_decl = spec.state(shape, ...)
+    elseif spec.state ~= nil then
+        state_decl = spec.state
+    else
+        state_decl = NONE_DECL
+    end
+    local param = spec.param and spec.param(node, shape, ...) or nil
+    local out = M.emit(gen, state_decl, param)
+    if spec.code_shape ~= nil then out.code_shape = spec.code_shape end
+    return out
 end
 
 function M.variant(spec)
-    spec = spec or {}
-    return function(node, ...)
-        local shape = spec.classify and spec.classify(node, ...) or {}
-        local gen = spec.gen and spec.gen(shape, ...) or spec.rule or spec[1]
-        if type(gen) ~= "function" then
-            error("mgps.variant: missing gen(shape, ...) function", 2)
-        end
-        local state_decl
-        if type(spec.state) == "function" then
-            state_decl = spec.state(shape, ...)
-        elseif spec.state ~= nil then
-            state_decl = spec.state
-        else
-            state_decl = NONE_DECL
-        end
-        local param = spec.param and spec.param(node, shape, ...) or nil
-        local out = M.emit(gen, state_decl, param)
-        if spec.code_shape ~= nil then out.code_shape = spec.code_shape end
-        return out
-    end
+    return setmetatable({ spec = spec or {} }, VARIANT_CALL_MT)
 end
 
 -- ═══════════════════════════════════════════════════════════════
 -- STRUCTURAL COMPOSITION
 -- ═══════════════════════════════════════════════════════════════
 
-function M.compose(children, body_fn)
-    local n = #children
-    if n == 0 then
-        local out = M.emit(function() end, NONE_DECL, {})
-        out.code_shape = "empty"
-        return out
-    end
-    if n == 1 and body_fn == nil then return children[1] end
+local EMPTY_GEN = make_gen_table("empty")
 
-    local bound_children = {}
+local function collect_children(children)
+    local n = #children
     local code_parts = {}
     local state_decls = {}
     local param = {}
+    local child_gens = {}
 
     for i = 1, n do
         local child = ensure_bound(children[i])
-        bound_children[i] = child
-        code_parts[i] = child.code_shape or ("gen:" .. tostring(child.gen))
+        code_parts[i] = child.code_shape or describe_gen(child.gen)
         state_decls[i] = child.family.state_decl
         param[i] = child.param
+        child_gens[i] = child.gen
     end
 
-    local child_gens = {}
-    for i = 1, n do child_gens[i] = bound_children[i].gen end
+    return n, code_parts, state_decls, param, child_gens
+end
 
-    local gen
-    local compose_tag
-    if body_fn then
-        compose_tag = "body:" .. tostring(body_fn)
-        gen = function(parent_param, parent_state, ...)
-            return body_fn(child_gens, parent_param, parent_state, ...)
-        end
-    else
-        compose_tag = "seq"
-        gen = function(parent_param, parent_state, ...)
-            local result = ...
-            for i = 1, n do
-                result = child_gens[i](parent_param[i], parent_state[i], result)
-            end
-            return result
-        end
+local function emit_composed(children, gen, compose_tag)
+    local n, code_parts, state_decls, param = collect_children(children)
+    if n == 0 then
+        local out = M.emit(EMPTY_GEN, NONE_DECL, {})
+        out.code_shape = "empty"
+        return out
     end
+    if n == 1 and compose_tag == "seq" then return children[1] end
 
     local out = M.emit(gen, M.state.product("Compose", state_decls), param)
     out.code_shape = "compose(" .. compose_tag .. "|" .. table.concat(code_parts, ",") .. ")"
     return out
 end
 
+function M.compose(children, body_fn)
+    -- Composition keeps the split explicit:
+    --   code in gen
+    --   payload in param
+    --   retained data in state
+    --
+    -- The internal helper here is deliberately tiny. It exists only so the core
+    -- itself reads in triplet form.
+    if body_fn ~= nil then
+        local _, _, _, _, child_gens = collect_children(children)
+        return emit_composed(children, make_gen_table("compose_body", {
+            child_gens = child_gens,
+            body_fn = body_fn,
+        }), "body:" .. tostring(body_fn))
+    end
+
+    local _, _, _, _, child_gens = collect_children(children)
+    return emit_composed(children, make_gen_table("compose_seq", {
+        child_gens = child_gens,
+    }), "seq")
+end
+
 -- ═══════════════════════════════════════════════════════════════
 -- DISPATCH
 -- ═══════════════════════════════════════════════════════════════
 
+local function dispatch_match(node, arms, ...)
+    local kind = node.kind
+    if kind == nil then error("mgps.match: value has no .kind", 3) end
+    local arm = arms[kind]
+    if type(arm) ~= "function" then
+        error("mgps.match: missing arm for '" .. tostring(kind) .. "'", 3)
+    end
+    return stamp_code_shape(arm(node, ...), kind)
+end
+
+local MATCH_CALL_MT = {}
+function MATCH_CALL_MT:__call(node, ...)
+    return dispatch_match(node, self.arms, ...)
+end
+
 function M.match(value_or_arms, arms)
+    -- match() now uses a shared callable dispatcher rather than allocating a
+    -- fresh curried closure for each arm table.
     if arms ~= nil then
-        local node = value_or_arms
-        local kind = node.kind
-        if kind == nil then error("mgps.match: value has no .kind", 2) end
-        local arm = arms[kind]
-        if type(arm) ~= "function" then
-            error("mgps.match: missing arm for '" .. tostring(kind) .. "'", 2)
-        end
-        return stamp_code_shape(arm(node), kind)
+        return dispatch_match(value_or_arms, arms)
     end
 
-    local curried_arms = value_or_arms
-    return function(node, ...)
-        local kind = node.kind
-        if kind == nil then error("mgps.match: value has no .kind", 2) end
-        local arm = curried_arms[kind]
-        if type(arm) ~= "function" then
-            error("mgps.match: missing arm for '" .. tostring(kind) .. "'", 2)
-        end
-        return stamp_code_shape(arm(node, ...), kind)
-    end
+    return setmetatable({ arms = value_or_arms }, MATCH_CALL_MT)
 end
 
 -- ═══════════════════════════════════════════════════════════════
 -- BOUNDARIES
 -- ═══════════════════════════════════════════════════════════════
 
-function M.lower(name, fn)
-    if type(name) == "function" and fn == nil then
-        fn = name
-        name = "lower"
-    end
-
-    local node_cache = setmetatable({}, { __mode = "k" })
-    local code_cache = {}
-    local state_cache = {}
-    local stats = {
+local function fresh_lower_stats(name)
+    return {
         name = name,
         calls = 0,
         node_hits = 0,
@@ -593,80 +704,104 @@ function M.lower(name, fn)
         state_hits = 0,
         state_misses = 0,
     }
+end
 
-    local boundary = {}
+local LOWER_CALL_MT = {}
 
-    function boundary:__call(input, ...)
-        stats.calls = stats.calls + 1
+function LOWER_CALL_MT:__call(input, ...)
+    local stats = self._stats
+    stats.calls = stats.calls + 1
 
-        if select("#", ...) == 0 and type(input) == "table" then
-            local cached = node_cache[input]
-            if cached ~= nil then
-                stats.node_hits = stats.node_hits + 1
-                return cached
-            end
+    local node_cache = self._node_cache
+    if select("#", ...) == 0 and type(input) == "table" then
+        local cached = node_cache[input]
+        if cached ~= nil then
+            stats.node_hits = stats.node_hits + 1
+            return cached
+        end
+    end
+
+    local result = self._fn(input, ...)
+
+    if M.is_compiled(result) then
+        local bound = ensure_bound(result)
+        local code_shape = bound.code_shape
+        local state_shape = bound.state_shape
+
+        local code_cache = self._code_cache
+        local cached_gen = code_cache[code_shape]
+        if cached_gen ~= nil then
+            stats.code_hits = stats.code_hits + 1
+        else
+            stats.code_misses = stats.code_misses + 1
+            code_cache[code_shape] = bound.family.gen
+            cached_gen = bound.family.gen
         end
 
-        local result = fn(input, ...)
-
-        if M.is_compiled(result) then
-            local bound = ensure_bound(result)
-            local code_shape = bound.code_shape
-            local state_shape = bound.state_shape
-
-            local cached_gen = code_cache[code_shape]
-            if cached_gen ~= nil then
-                stats.code_hits = stats.code_hits + 1
-            else
-                stats.code_misses = stats.code_misses + 1
-                code_cache[code_shape] = bound.family.gen
-                cached_gen = bound.family.gen
-            end
-
-            local cached_state = state_cache[state_shape]
-            if cached_state ~= nil then
-                stats.state_hits = stats.state_hits + 1
-            else
-                stats.state_misses = stats.state_misses + 1
-                state_cache[state_shape] = {
-                    state_decl = bound.family.state_decl,
-                    state_layout = bound.family.state_layout,
-                }
-                cached_state = state_cache[state_shape]
-            end
-
-            local family = {
-                __mgps_family = true,
-                gen = cached_gen,
-                state_decl = cached_state.state_decl,
-                state_layout = cached_state.state_layout,
-                code_shape = code_shape,
-                state_shape = state_shape,
+        local state_cache = self._state_cache
+        local cached_state = state_cache[state_shape]
+        if cached_state ~= nil then
+            stats.state_hits = stats.state_hits + 1
+        else
+            stats.state_misses = stats.state_misses + 1
+            state_cache[state_shape] = {
+                state_decl = bound.family.state_decl,
+                state_layout = bound.family.state_layout,
             }
-            result = bind_family(family, bound.param)
+            cached_state = state_cache[state_shape]
         end
 
-        if type(input) == "table" then node_cache[input] = result end
-        return result
-    end
-
-    function boundary.stats() return stats end
-    function boundary.reset()
-        node_cache = setmetatable({}, { __mode = "k" })
-        code_cache = {}
-        state_cache = {}
-        stats = {
-            name = name,
-            calls = 0,
-            node_hits = 0,
-            code_hits = 0,
-            code_misses = 0,
-            state_hits = 0,
-            state_misses = 0,
+        local family = {
+            __mgps_family = true,
+            gen = cached_gen,
+            state_decl = cached_state.state_decl,
+            state_layout = cached_state.state_layout,
+            code_shape = code_shape,
+            state_shape = state_shape,
         }
+        result = bind_family(family, bound.param)
     end
 
-    return setmetatable(boundary, boundary)
+    if type(input) == "table" then node_cache[input] = result end
+    return result
+end
+
+function M.lower(name, fn)
+    -- A boundary memoizes structural compilation.
+    --
+    -- The user-facing fiction is keyless: callers just lower authored values.
+    -- Internally we cache three different things:
+    --   - node cache: exact source object reuse
+    --   - code cache: reusable gen family by code shape
+    --   - state cache: reusable state layout by state shape
+    --
+    -- lower() returns a small callable table with shared __call logic rather
+    -- than a bespoke per-boundary closure. The machine semantics stay the same:
+    --
+    --   gen(param, state, input...)
+    if type(name) == "function" and fn == nil then
+        fn = name
+        name = "lower"
+    end
+
+    local boundary = setmetatable({
+        _name = name,
+        _fn = fn,
+        _node_cache = setmetatable({}, { __mode = "k" }),
+        _code_cache = {},
+        _state_cache = {},
+        _stats = fresh_lower_stats(name),
+    }, LOWER_CALL_MT)
+
+    function boundary.stats() return boundary._stats end
+    function boundary.reset()
+        boundary._node_cache = setmetatable({}, { __mode = "k" })
+        boundary._code_cache = {}
+        boundary._state_cache = {}
+        boundary._stats = fresh_lower_stats(boundary._name)
+    end
+
+    return boundary
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -674,6 +809,17 @@ end
 -- ═══════════════════════════════════════════════════════════════
 
 function M.slot()
+    -- A slot is the runtime installation point for one compiled machine.
+    --
+    -- Its callback is the clearest place to see the mgps triplet in action:
+    --
+    --   local gen   = bound.family.gen
+    --   local param = bound.param
+    --   local state = current.state
+    --   return gen(param, state, input...)
+    --
+    -- If code shape and state shape stay the same across updates, the slot keeps
+    -- the realized state and only swaps in the new bound payload.
     local current = {
         bound = nil,
         state = nil,
@@ -685,9 +831,12 @@ function M.slot()
 
     function slot.callback(...)
         local bound = current.bound
-        if bound then
-            return bound.family.gen(bound.param, current.state, ...)
-        end
+        if not bound then return nil end
+
+        local gen = bound.family.gen
+        local param = bound.param
+        local state = current.state
+        return run_triplet(gen, param, state, ...)
     end
 
     function slot:update(compiled)
@@ -766,6 +915,41 @@ end
 -- CONTEXT / ASDL AUTO-WIRING
 -- ═══════════════════════════════════════════════════════════════
 
+local AUTO_CONTAINER_METHOD_MT = {}
+function AUTO_CONTAINER_METHOD_MT:__call(node, ...)
+    local all = {}
+    local child_fields = self.child_fields
+    local defs = self.defs
+    local mgps_key = self.mgps_key
+    local verb_name = self.verb_name
+
+    for _, cf in ipairs(child_fields) do
+        local items = node[cf.name]
+        if items then
+            local parent_class = defs[cf.type_name]
+            local dispatch = parent_class and rawget(parent_class, mgps_key)
+            for i = 1, #items do
+                local child = items[i]
+                local result
+                if dispatch then
+                    result = dispatch(child, ...)
+                elseif child[verb_name] then
+                    result = child[verb_name](child, ...)
+                end
+                if result then all[#all + 1] = result end
+            end
+        end
+    end
+
+    if #all == 0 then
+        local out = M.emit(EMPTY_GEN, NONE_DECL, {})
+        out.code_shape = "empty"
+        return out
+    end
+    if #all == 1 then return all[1] end
+    return M.compose(all)
+end
+
 function M.context(verb)
     verb = verb or "compile"
     local T = asdl_context.NewContext()
@@ -833,33 +1017,12 @@ function M.context(verb)
             local child_fields = info.child_fields
 
             if not rawget(class, verb_name) then
-                class[verb_name] = function(node, ...)
-                    local all = {}
-                    for _, cf in ipairs(child_fields) do
-                        local items = node[cf.name]
-                        if items then
-                            local parent_class = defs[cf.type_name]
-                            local dispatch = parent_class and rawget(parent_class, mgps_key)
-                            for i = 1, #items do
-                                local child = items[i]
-                                local result
-                                if dispatch then
-                                    result = dispatch(child, ...)
-                                elseif child[verb_name] then
-                                    result = child[verb_name](child, ...)
-                                end
-                                if result then all[#all + 1] = result end
-                            end
-                        end
-                    end
-                    if #all == 0 then
-                        local out = M.emit(function() end, NONE_DECL, {})
-                        out.code_shape = "empty"
-                        return out
-                    end
-                    if #all == 1 then return all[1] end
-                    return M.compose(all)
-                end
+                class[verb_name] = setmetatable({
+                    child_fields = child_fields,
+                    defs = defs,
+                    mgps_key = mgps_key,
+                    verb_name = verb_name,
+                }, AUTO_CONTAINER_METHOD_MT)
             end
         end
     end

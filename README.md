@@ -9,6 +9,12 @@ A Lua framework for building interactive software as compilers.
 > Runtime still decomposes into **gen / param / state**.
 > But compilation must classify authored distinctions into **code shape / state shape / payload**.
 
+In plainer words:
+
+- `gen` is the code to run
+- `param` is the residual authored payload
+- `state` is the mutable retained runtime data
+
 This repository now treats that refined design as the main architecture.
 The old GPS ideas are not discarded; they are sharpened.
 
@@ -130,9 +136,9 @@ slot.callback(graphics_backend)
 What leaf lowerings return is now deliberately sharper than the old `machine(gen, param, state_layout)` story.
 They return:
 
-- `gen`
-- structural `state_decl`
-- residual `param`
+- `gen` — code to run
+- structural `state_decl` — what runtime data must exist
+- `param` — residual authored payload
 
 The framework then derives reusable compiled families automatically and keeps the key logic hidden.
 
@@ -286,19 +292,19 @@ But the rabbit hole goes much deeper. Because the triple is not just an iterator
 
 And once you see that, everything changes.
 
-### The VM already knows `gen, param, state`
+### LuaJIT already understands `gen, param, state`
 
 The deepest part is this: in LuaJIT, `gen, param, state` is not merely a convenient source-level convention.
 
-It is already reflected in the VM's loop machinery.
+It is already reflected in the runtime's loop machinery.
 
-LuaJIT's generic `for` loop is not implemented as "some sugar that then becomes ordinary dynamic calls." The VM has dedicated loop bytecodes for generic iteration. Those bytecodes expect exactly three conceptual roles:
+LuaJIT's generic `for` loop is not just surface sugar that later turns into arbitrary dynamic calls. It has dedicated loop bytecodes for generic iteration. Those bytecodes expect three roles:
 
-- a callable
-- an invariant
-- a control variable
+- a step function
+- an invariant value
+- a changing control value
 
-That is `gen, param, state`.
+That is very close to `gen, param, state`.
 
 So when you write:
 
@@ -308,22 +314,22 @@ for state, value in gen, param, state0 do
 end
 ```
 
-what the VM sees is not "some abstraction the JIT must recover." It already sees the machine shape:
+what the runtime sees is not "some abstraction the JIT must recover." It already sees the machine shape:
 
-- `gen` → the callable slot
+- `gen` → the step code slot
 - `param` → the invariant slot
-- `state` → the control variable updated every iteration
+- `state` → the control value updated every iteration
 
 The consequence is profound.
 
-You are not building an abstraction *above* the VM and hoping the JIT sees through it.
-You are writing code in a shape that the VM already treats as a loop primitive.
+You are not building an abstraction *above* the runtime and hoping the JIT sees through it.
+You are writing code in a shape that the runtime already treats as a loop primitive.
 
 ### Why this is near-free in LuaJIT
 
 This is why GPS machines are so cheap in LuaJIT.
 
-The generic `for` loop already tells the VM:
+The generic `for` loop already tells the runtime:
 
 - this is a loop
 - this value is invariant
@@ -556,7 +562,7 @@ Lua's generic `for` loop just happens to reveal that truth unusually clearly.
 ## A Function Is a Collapsed Machine
 
 Part 1 showed something stronger than "Lua has a nice iterator protocol."
-It showed that the VM already knows how to execute a machine shaped as `gen, param, state`.
+It showed that the runtime already knows how to execute a machine shaped as `gen, param, state`.
 
 Part 2 now turns that insight around.
 
@@ -1165,9 +1171,9 @@ GPS and LuaJIT are a natural fit.
 
 The original GPS insight remains true:
 
-- **gen** — the rule that runs
-- **param** — stable payload the rule reads
-- **state** — mutable runtime data the rule owns
+- **gen** — the code that runs
+- **param** — residual payload the code reads
+- **state** — mutable runtime data the code owns
 
 A function is a collapsed machine.
 A closure is a machine with hidden param.
@@ -1185,9 +1191,9 @@ The refined insight is:
 
 For every distinction in the input, the lowering must determine whether changing it:
 
-- changes the **compiled rule**
+- changes the **compiled code**
 - changes the **runtime state layout / ownership / allocation / initialization**
-- changes only the **stable payload**
+- changes only the **residual payload**
 - or means the field should not still exist at this boundary
 
 That yields the new compiler discipline.
@@ -1202,9 +1208,9 @@ This distinction is the heart of `mgps`.
 
 Every running machine still has exactly three runtime roles:
 
-- **gen**
-- **param**
-- **state**
+- **gen** — code to run
+- **param** — residual payload
+- **state** — retained mutable data
 
 That is execution.
 
@@ -1212,9 +1218,9 @@ That is execution.
 
 But fields at a compilation boundary are not classified directly by runtime role. They are classified by **what changing them invalidates**:
 
-- **code-shaping** — changing it changes the compiled rule
+- **code-shaping** — changing it changes the compiled code
 - **state-shaping** — changing it changes runtime state layout, ownership, allocation, or initialization strategy
-- **payload** — changing it only changes stable data read by the rule
+- **payload** — changing it only changes residual data read by the code
 - **dead / misplaced** — it should not still be present here
 
 This is the key refinement.

@@ -5,6 +5,12 @@ A ground-up redesign of GPS around one refined insight:
 > Runtime still decomposes into **gen / param / state**.
 > But compilation must classify authored distinctions into **code shape / state shape / payload**.
 
+In plain terms:
+
+- `gen` is the code to run
+- `param` is the residual authored payload
+- `state` is the mutable retained runtime data
+
 This document describes what `mgps` should be if redesigned from the start, not patched incrementally.
 
 It is intentionally expansive. The goal is to make the architecture precise enough that implementation follows from it rather than inventing itself ad hoc.
@@ -15,9 +21,9 @@ It is intentionally expansive. The goal is to make the architecture precise enou
 
 The original GPS insight remains true:
 
-- **gen** — the rule that runs
-- **param** — stable payload the rule reads
-- **state** — mutable runtime data the rule owns
+- **gen** — the code that runs
+- **param** — residual payload the code reads
+- **state** — mutable runtime data the code owns
 
 A function is a collapsed machine.
 A closure is a machine with hidden param.
@@ -35,9 +41,9 @@ The refined insight is:
 
 For every distinction in the input, the lowering must determine whether changing it:
 
-- changes the **compiled rule**
+- changes the **compiled code**
 - changes the **runtime state layout / ownership / allocation / initialization**
-- changes only the **stable payload**
+- changes only the **residual payload**
 - or means the field should not still exist at this boundary
 
 That yields the new compiler discipline.
@@ -52,9 +58,9 @@ This distinction is the heart of `mgps`.
 
 Every running machine still has exactly three runtime roles:
 
-- **gen**
-- **param**
-- **state**
+- **gen** — code to run
+- **param** — residual payload
+- **state** — retained mutable data
 
 That is execution.
 
@@ -62,9 +68,9 @@ That is execution.
 
 But fields at a compilation boundary are not classified directly by runtime role. They are classified by **what changing them invalidates**:
 
-- **code-shaping** — changing it changes the compiled rule
+- **code-shaping** — changing it changes the compiled code
 - **state-shaping** — changing it changes runtime state layout, ownership, allocation, or initialization strategy
-- **payload** — changing it only changes stable data read by the rule
+- **payload** — changing it only changes residual data read by the code
 - **dead / misplaced** — it should not still be present here
 
 This is the key refinement.
