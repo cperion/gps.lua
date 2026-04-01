@@ -2,7 +2,7 @@
 
 A Lua framework for building interactive software as compilers.
 
-**2712 lines. Zero external dependencies. Self-hosted.**
+**3478 lines. Zero external dependencies. Self-hosted.**
 
 ## What It Is
 
@@ -3234,16 +3234,28 @@ module Grammar {
          | Optional(Expr body)
          | Ref(string name)
          | Tok(string name)
+         | Lit(string text)
+         | Num
+         | Str
          | Empty
 }
 ```
 
 Current fast subset:
 
-- Lex: `Symbol`, `Keyword`, `Ident`, `Number`, `String`, `Whitespace`, `LineComment`, `BlockComment`
+- Lexer mode: `Symbol`, `Keyword`, `Ident`, `Number`, `String`, `Whitespace`, `LineComment`, `BlockComment`
+- Direct mode: `Lit`, `Num`, `Str` (scannerless parser-over-bytes)
 - Parse: `Seq`, `Choice`, `ZeroOrMore`, `OneOrMore`, `Optional`, `Ref`, `Tok`, `Empty`
 - Left recursion is rejected
 - Nullable repetition is rejected
+- `Tok(...)` cannot be mixed with direct terminals (`Lit` / `Num` / `Str`) in one grammar
+
+`GPS.grammar` chooses the path automatically:
+
+- grammars using `Tok(...)` compile to **parser-over-lexer**
+- grammars using `Lit` / `Num` / `Str` compile to **direct parser-over-bytes**
+
+The direct path is the one you want for JSON-like formats.
 
 #### Example
 
@@ -3286,6 +3298,28 @@ local P = G:compile(spec)
 print(P:match("1 + 2 * 3"))
 ```
 
+Direct/scannerless example (JSON-like):
+
+```lua
+local spec = G.Spec(
+  G.Lex({}, { G.Whitespace }),
+  G.Parse({
+    G.Rule("Value", G.Choice({
+      G.Ref("Object"), G.Ref("Array"), G.Str, G.Num,
+      G.Lit("true"), G.Lit("false"), G.Lit("null")
+    })),
+    G.Rule("Pair", G.Seq({ G.Str, G.Lit(":"), G.Ref("Value") })),
+    G.Rule("Pairs", G.Seq({ G.Ref("Pair"), G.ZeroOrMore(G.Seq({ G.Lit(","), G.Ref("Pair") })) })),
+    G.Rule("Object", G.Seq({ G.Lit("{"), G.Optional(G.Ref("Pairs")), G.Lit("}") })),
+    G.Rule("Values", G.Seq({ G.Ref("Value"), G.ZeroOrMore(G.Seq({ G.Lit(","), G.Ref("Value") })) })),
+    G.Rule("Array", G.Seq({ G.Lit("["), G.Optional(G.Ref("Values")), G.Lit("]") }))
+  }, "Value")
+)
+
+local P = G:compile(spec)
+print(P:match('{"a": [1, 2, 3]}'))
+```
+
 #### Compiled parser API
 
 A compiled parser `P` provides:
@@ -3297,6 +3331,14 @@ A compiled parser `P` provides:
 - `P:reduce(input, actions)` / `P:try_reduce(input, actions)`
 - `P:tree(input)` / `P:try_tree(input)` — convenience tree mode
 - `P:machine(input, mode?, arg?)` — produce a GPS machine
+
+In direct mode, reducers lower grammar terminals directly over bytes:
+
+- `Lit("{")` matches bytes directly
+- `Num` parses a number directly
+- `Str` parses a JSON-style string directly
+
+This avoids the intermediate token layer and is the fast path for structured data formats like JSON.
 
 #### `GPS.parse(parser_or_spec, input, mode_or_actions?, arg?)`
 
@@ -3631,8 +3673,8 @@ gps/
   lex.lua             general-purpose GPS-native lexer toolkit
   rd.lua              low-level fused recursive-descent helper
   parse.lua           primary parser facade over compiled grammars
-  grammar.lua         grammar compiler: grammar ASDL → fused lexer+parser
+  grammar.lua         grammar compiler: grammar ASDL → fused lexer/parser or direct parser-over-bytes
   README.md           this document
 ```
 
-Zero external dependencies. ~2700 lines. Self-hosted: the ASDL parser is itself a GPS machine.
+Zero external dependencies. ~3500 lines. Self-hosted: the ASDL parser is itself a GPS machine.
