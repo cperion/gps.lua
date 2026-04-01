@@ -10,7 +10,14 @@
 --   function T.Source.Osc:compile(sr) return GPS.machine(gen, param, state) end
 --   local machine = my_project:compile()
 --
--- Low-level usage (no ASDL):
+-- Primary parser usage:
+--
+--   local G = GPS.grammar()
+--   local P = G:compile(spec)
+--   local tree = GPS.parse(P, input)
+--   local ok   = GPS.parse(P, input, "match")
+--
+-- Low-level usage:
 --
 --   GPS.machine(gen, param, state_layout)
 --   GPS.compose(children, body_fn)
@@ -19,6 +26,8 @@
 --   GPS.leaf(gen, state_layout, param_fn)
 --   GPS.match(arms) / GPS.match(value, arms)
 --   GPS.filter / GPS.take / GPS.map / GPS.fuse
+--   GPS.lex(spec)
+--   GPS.rd(lexer, input, grammar_fn)
 
 local has_ffi, ffi = pcall(require, "ffi")
 local asdl_context = require("gps.asdl_context")
@@ -26,7 +35,7 @@ local asdl_context = require("gps.asdl_context")
 local GPS = {}
 
 GPS.lex = require("gps.lex")
-GPS.parse = require("gps.parse")
+GPS.rd = require("gps.rd")
 
 -- ═══════════════════════════════════════════════════════════════
 -- GPS MACHINE
@@ -611,5 +620,6 @@ function GPS.report(boundaries)
 end
 
 GPS.grammar = require("gps.grammar")(GPS, asdl_context)
+GPS.parse = require("gps.parse")(GPS)
 
 return GPS

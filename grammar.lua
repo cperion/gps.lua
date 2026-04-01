@@ -658,7 +658,7 @@ return function(GPS, asdl_context)
             local start_fn = rule_fns[start]
             local gen_key = start .. "|reduce"
 
-            local family = {}
+            local family = { __gps_reducer = true }
 
             local function run_compiled(param, source)
                 local rt = new_runtime(param, source)
@@ -924,7 +924,7 @@ return function(GPS, asdl_context)
             return cached
         end
 
-        local parser = {}
+        local parser = { __gps_parser = true }
 
         function parser:match(input_string)
             local ok = run_match(lexer.compile(input_string), input_string)

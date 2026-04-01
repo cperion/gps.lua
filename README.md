@@ -2,7 +2,7 @@
 
 A Lua framework for building interactive software as compilers.
 
-**2595 lines. Zero external dependencies. Self-hosted.**
+**2712 lines. Zero external dependencies. Self-hosted.**
 
 ## What It Is
 
@@ -21,8 +21,9 @@ The framework provides:
 - **GPS.compose** — structural composition with automatic fusion
 - **GPS.slot** — hot swap that preserves state on param-only changes
 - **GPS.context** — auto-wires the ASDL tree into a compilation pipeline
-- **GPS.lex / GPS.parse** — low-level GPS-native lexer/parser helpers
 - **GPS.grammar** — builtin grammar compiler: grammar ASDL → fused lexer+parser
+- **GPS.parse** — primary parser facade over compiled grammar families
+- **GPS.lex / GPS.rd** — low-level GPS-native lexer and manual recursive-descent helpers
 
 The ASDL type system already encodes GPS roles: **sum types are gen-shaping, scalars are param**. The framework reads the schema and caches accordingly. No annotations needed.
 
@@ -3297,6 +3298,30 @@ A compiled parser `P` provides:
 - `P:tree(input)` / `P:try_tree(input)` — convenience tree mode
 - `P:machine(input, mode?, arg?)` — produce a GPS machine
 
+#### `GPS.parse(parser_or_spec, input, mode_or_actions?, arg?)`
+
+Primary parse facade.
+
+- If given a compiled parser family `P`, it drives that family
+- If given a `Grammar.Spec`, it compiles it once per spec identity, then drives it
+- Default mode is tree parse
+- Passing an actions table is a reducer shortcut
+
+```lua
+local P = GPS.grammar(spec)
+
+local tree  = GPS.parse(P, input)                -- same as P:tree(input)
+local ok    = GPS.parse(P, input, "match")      -- recognizer
+local value = GPS.parse(P, input, actions)       -- reducer shortcut
+local n     = GPS.parse(P, input, "emit", sink) -- event replay
+```
+
+Also available:
+
+- `GPS.parse.compile(parser_or_spec)`
+- `GPS.parse.try(parser_or_spec, input, mode_or_actions?, arg?)`
+- `GPS.parse.machine(parser_or_spec, input, mode?, arg?)`
+
 Machine modes:
 
 - `"match"` — recognizer machine
@@ -3345,9 +3370,9 @@ Events are replayed only after a successful parse.
 For lower-level use, the module also exposes:
 
 - `GPS.lex(spec)` — build a GPS-native lexer from a simple spec table
-- `GPS.parse(lexer, input, grammar_fn)` — direct fused recursive-descent helper
+- `GPS.rd(lexer, input, grammar_fn)` — manual fused recursive-descent helper
 
-These are the low-level tools. `GPS.grammar` is the grammar-compiler path.
+These are the low-level tools. `GPS.grammar` + `GPS.parse` are the primary parser path.
 
 ---
 
@@ -3604,9 +3629,10 @@ gps/
   asdl_parser.lua     ASDL parser (lexer fused in param)
   asdl_lexer.lua      ASDL lexer (gen/param/state over FFI bytes)
   lex.lua             general-purpose GPS-native lexer toolkit
-  parse.lua           low-level fused parser helper
+  rd.lua              low-level fused recursive-descent helper
+  parse.lua           primary parser facade over compiled grammars
   grammar.lua         grammar compiler: grammar ASDL → fused lexer+parser
   README.md           this document
 ```
 
-Zero external dependencies. ~2600 lines. Self-hosted: the ASDL parser is itself a GPS machine.
+Zero external dependencies. ~2700 lines. Self-hosted: the ASDL parser is itself a GPS machine.

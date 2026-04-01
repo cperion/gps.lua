@@ -1,103 +1,126 @@
--- gps/parse.lua — General-purpose GPS parser toolkit
+-- gps/parse.lua — Primary parser API
 --
--- Creates a parser with a lexer fused in param.
--- Zero-allocation token stepping. Recursive descent helpers.
+-- Correct shape:
+--   Grammar ASDL → compiled parser family → parse/emit/reduce/machine
+--
+-- GPS.parse is a facade over compiled parser families produced by GPS.grammar.
+-- It may also accept a Grammar.Spec directly and compile it once per spec identity.
 --
 -- Usage:
---   local lex = require("gps.lex")
---   local parse = require("gps.parse")
+--   local GPS = require("gps")
+--   local P = GPS.grammar(spec)
+--   local tree = GPS.parse(P, input)               -- tree mode (default)
+--   local ok   = GPS.parse(P, input, "match")     -- recognizer
+--   local val  = GPS.parse(P, input, actions)      -- reducer shortcut
+--   local n    = GPS.parse(P, input, "emit", sink)
 --
---   local L = lex { symbols = "+ - * / ( )", number = true, ident = true, whitespace = true }
---
---   local result = parse(L, "1 + 2 * 3", function(p)
---       return p:expr(0)  -- or write your own recursive descent
---   end)
---
--- The parser object `p` provides:
---   p:advance()           — step the lexer (fused in param)
---   p:at(kind)            — check current token
---   p:try(kind)           — consume if match, return text or true
---   p:expect(kind, what?) — consume or error
---   p:text()              — current token text
---   p:eof()               — at end of input?
---   p.kind                — current token kind (number)
---   p.start, p.stop       — current token span
+-- Low-level handwritten recursive descent lives in GPS.rd.
 
-local ffi = require("ffi")
+return function(GPS)
+    local compiled_by_spec = setmetatable({}, { __mode = "k" })
 
-return function(L, input_string, grammar_fn)
-    local param = L.compile(input_string)
-    local source = input_string
-    local pos = 0
+    local function is_parser_family(x)
+        return type(x) == "table" and rawget(x, "__gps_parser") == true
+    end
 
-    -- Current token
-    local tok_kind = -1
-    local tok_start = 0
-    local tok_stop = 0
+    local function is_reducer_family(x)
+        return type(x) == "table" and rawget(x, "__gps_reducer") == true
+    end
 
-    -- Parser object
-    local p = {}
+    local function is_grammar_spec(x)
+        local ctx = GPS.grammar.context()
+        return ctx and ctx.Grammar and ctx.Grammar.Spec and ctx.Grammar.Spec:isclassof(x) or false
+    end
 
-    function p:advance()
-        local new_pos, kind, start, stop = L.lex_next(param, pos)
-        if new_pos == nil then
-            tok_kind = 0  -- EOF
-            tok_start = pos
-            tok_stop = pos
-        else
-            pos = new_pos
-            tok_kind = kind
-            tok_start = start
-            tok_stop = stop
+    local function ensure_compiled(x)
+        if is_parser_family(x) or is_reducer_family(x) then return x end
+        if is_grammar_spec(x) then
+            local hit = compiled_by_spec[x]
+            if hit then return hit end
+            local compiled = GPS.grammar(x)
+            compiled_by_spec[x] = compiled
+            return compiled
         end
-        p.kind = tok_kind
-        p.start = tok_start
-        p.stop = tok_stop
-        return tok_kind
+        error("GPS.parse: expected compiled parser family, reducer family, or Grammar.Spec", 3)
     end
 
-    function p:at(kind)
-        if type(kind) == "string" then kind = L.TOKEN[kind] end
-        return tok_kind == kind
+    local Api = {}
+
+    function Api.compile(x)
+        return ensure_compiled(x)
     end
 
-    function p:try(kind)
-        if type(kind) == "string" then kind = L.TOKEN[kind] end
-        if tok_kind == kind then
-            local text = source:sub(tok_start + 1, tok_stop)
-            self:advance()
-            return text
+    function Api.run(x, input_string, mode_or_actions, arg)
+        local compiled = ensure_compiled(x)
+
+        if is_reducer_family(compiled) then
+            if mode_or_actions == nil or mode_or_actions == "tree" or mode_or_actions == "parse" then
+                return compiled:parse(input_string)
+            elseif mode_or_actions == "machine" then
+                return compiled:machine(input_string)
+            elseif mode_or_actions == "try" or mode_or_actions == "try_parse" then
+                return compiled:try_parse(input_string)
+            else
+                error("GPS.parse: reducer family supports parse/try_parse/machine only", 2)
+            end
         end
-        return nil
-    end
 
-    function p:expect(kind, what)
-        if type(kind) == "string" then kind = L.TOKEN[kind] end
-        if tok_kind ~= kind then
-            local got = L.TOKEN_NAME[tok_kind] or tostring(tok_kind)
-            local expected = what or L.TOKEN_NAME[kind] or tostring(kind)
-            error(string.format("parse error at %d: expected %s, got %s '%s'",
-                tok_start, expected, got, source:sub(tok_start + 1, tok_stop)), 2)
+        if mode_or_actions == nil or mode_or_actions == "tree" or mode_or_actions == "parse" then
+            return compiled:tree(input_string)
         end
-        local text = source:sub(tok_start + 1, tok_stop)
-        self:advance()
-        return text
+
+        if mode_or_actions == "match" then
+            return compiled:match(input_string)
+        end
+
+        if mode_or_actions == "emit" then
+            return compiled:emit(input_string, arg)
+        end
+
+        if mode_or_actions == "try_emit" then
+            return compiled:try_emit(input_string, arg)
+        end
+
+        if mode_or_actions == "try_tree" or mode_or_actions == "try_parse" then
+            return compiled:try_tree(input_string)
+        end
+
+        if mode_or_actions == "reduce" then
+            return compiled:reduce(input_string, arg)
+        end
+
+        if mode_or_actions == "try_reduce" then
+            return compiled:try_reduce(input_string, arg)
+        end
+
+        if mode_or_actions == "machine" then
+            return compiled:machine(input_string, arg and arg.mode, arg and arg.arg)
+        end
+
+        if type(mode_or_actions) == "table" then
+            return compiled:reduce(input_string, mode_or_actions)
+        end
+
+        error("GPS.parse: unknown mode '" .. tostring(mode_or_actions) .. "'", 2)
     end
 
-    function p:text()
-        return source:sub(tok_start + 1, tok_stop)
+    function Api.try(x, input_string, mode_or_actions, arg)
+        local ok, a, b = pcall(Api.run, x, input_string, mode_or_actions, arg)
+        if ok then return true, a, b end
+        return false, a
     end
 
-    function p:eof()
-        return tok_kind == 0
+    function Api.machine(x, input_string, mode, arg)
+        local compiled = ensure_compiled(x)
+        if is_reducer_family(compiled) then
+            return compiled:machine(input_string)
+        end
+        return compiled:machine(input_string, mode, arg)
     end
 
-    -- Prime the parser (get first token)
-    p:advance()
-    p.kind = tok_kind
-    p.start = tok_start
-    p.stop = tok_stop
-
-    -- Run the grammar function
-    return grammar_fn(p)
+    return setmetatable(Api, {
+        __call = function(_, x, input_string, mode_or_actions, arg)
+            return Api.run(x, input_string, mode_or_actions, arg)
+        end,
+    })
 end
