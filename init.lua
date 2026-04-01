@@ -25,6 +25,9 @@ local asdl_context = require("gps.asdl_context")
 
 local GPS = {}
 
+GPS.lex = require("gps.lex")
+GPS.parse = require("gps.parse")
+
 -- ═══════════════════════════════════════════════════════════════
 -- GPS MACHINE
 -- ═══════════════════════════════════════════════════════════════
