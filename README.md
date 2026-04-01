@@ -1,10 +1,122 @@
-# Gen-Param-State Machines
+# gps.lua
 
-*A different way to think about programs.*
+A Lua framework for building interactive software as compilers.
+
+**1231 lines. Zero external dependencies. Self-hosted.**
+
+## What It Is
+
+Every executable thing decomposes into three roles:
+
+- **gen** — the rule (what code runs)
+- **param** — the stable data (what the code reads)
+- **state** — the mutable runtime data (what evolves per step)
+
+A function is a collapsed machine. A closure is a machine with hidden param. An object is a machine with hidden everything. GPS makes the roles explicit.
+
+The framework provides:
+
+- **ASDL** (builtin) — define your domain types with structural interning
+- **GPS.lower** — memoized compilation boundary with two-level cache
+- **GPS.compose** — structural composition with automatic fusion
+- **GPS.slot** — hot swap that preserves state on param-only changes
+- **GPS.context** — auto-wires the ASDL tree into a compilation pipeline
+
+The ASDL type system already encodes GPS roles: **sum types are gen-shaping, scalars are param**. The framework reads the schema and caches accordingly. No annotations needed.
+
+## Install
+
+Clone into your project as `gps/`:
+
+```bash
+git clone git@github.com:cperion/gps.lua.git gps
+```
+
+Requires LuaJIT (for FFI). No other dependencies.
+
+## Quick Example
+
+```lua
+local GPS = require("gps")
+
+local T = GPS.context()
+    :Define [[
+        module Source {
+            Project = (Track* tracks, number sample_rate) unique
+            Track = (number id, string name, Device* devices, number volume_db) unique
+            Device = Osc(number id, number hz) unique
+                   | Filter(number id, FilterMode mode, number freq, number q) unique
+                   | Gain(number id, number db) unique
+            FilterMode = LowPass | HighPass | BandPass
+        }
+    ]]
+
+-- Only write leaf machines — the framework wires everything else
+function T.Source.Osc:compile(sr)
+    return GPS.machine(
+        function(p, s, t) return math.sin(p.phase_inc * t * 6.283) end,
+        { phase_inc = self.hz / sr },
+        GPS.state_ffi("struct { double phase; }"))
+end
+
+function T.Source.Filter:compile(sr)
+    local coeffs = compute_coeffs(self.mode, self.freq, self.q, sr)
+    return GPS.machine(biquad_gen, coeffs, biquad_state)
+end
+
+function T.Source.Gain:compile(sr)
+    return GPS.machine(gain_gen, { gain = 10 ^ (self.db / 20) })
+end
+
+-- Build, compile, run
+local project = T.Source.Project({ ... }, 44100)
+local machine = project:compile()
+
+local slot = GPS.slot()
+slot:update(machine)
+slot.callback(...)  -- run the machine
+
+-- Edit: turn a knob (param-only → state preserved, no glitch)
+local project2 = T.Source.Project({ ... }, 44100)  -- freq changed
+slot:update(project2:compile())  -- same gen_key → rebind param, keep state
+```
+
+## Module Pattern
+
+```lua
+-- audio.lua
+return function(T, GPS)
+    function T.Source.Osc:compile(sr) ... end
+    function T.Source.Filter:compile(sr) ... end
+    function T.Source.Gain:compile(sr) ... end
+end
+
+-- main.lua
+local T = GPS.context()
+    :Define(schema_text)
+    :use(require("audio"))
+```
+
+## How It Works
+
+1. **`T:Define`** parses the ASDL schema, creates types with structural interning, and auto-wires sum type dispatch + containment composition
+2. You install `:compile()` methods on leaf variant types — the only hand-written code
+3. Calling `node:compile()` walks the ASDL tree: sum types dispatch to variant methods, containment fields map children + compose
+4. `GPS.lower` wraps each dispatch with a two-level cache: L1 (node identity for siblings) + L2 (gen_key for param-only changes)
+5. `GPS.compose` fuses children's gens as upvalues — one hot trace, no indirection
+6. `GPS.slot` detects gen vs param changes: same gen_key → rebind param, preserve state
+
+The gen_key is the variant name, set automatically by `GPS.match`. Most edits (knob turns, value changes) are param-only: the gen_key doesn't change, the gen is reused, the state is preserved.
 
 ---
 
-## Part 0: The Hard Rules
+# Guide
+
+*The ideas behind the framework.*
+
+---
+
+## The Hard Rules
 
 Before the examples, the rules.
 
@@ -12,7 +124,7 @@ This document is not only an explanation of a useful pattern. It is also an oper
 
 If you are designing ASDL, phases, Machine IR, backend lowering, or runtime contracts using this model, these rules are not optional.
 
-### 0.1 Every field has exactly one GPS role
+### Every field has exactly one GPS role
 
 Every field in every phase must be classified as one of:
 
@@ -26,7 +138,7 @@ If a field seems to play multiple roles at once, the phase is wrong.
 
 If a field is present only because "the next phase might need it," the IR is wrong.
 
-### 0.2 Every phase must justify itself by role movement
+### Every phase must justify itself by role movement
 
 A phase is real only if it moves knowledge between GPS roles.
 
@@ -49,7 +161,7 @@ Bad phase descriptions:
 
 If you cannot say which gen-shaping facts are being consumed into param or state, the phase is not real yet.
 
-### 0.3 Terminal input must have zero gen-shaping facts
+### Terminal input must have zero gen-shaping facts
 
 A terminal is allowed to define execution meaning.
 
@@ -63,7 +175,7 @@ The terminal input should contain:
 - state declarations
 - no unresolved machine choice
 
-### 0.4 Unclassified bags are forbidden
+### Unclassified bags are forbidden
 
 Reject IR that looks like this:
 
@@ -74,7 +186,7 @@ Reject IR that looks like this:
 
 Those are signs that GPS roles are being mixed instead of phased.
 
-### 0.5 Runtime dispatch on gen-shaping facts is a design error
+### Runtime dispatch on gen-shaping facts is a design error
 
 If execution code does any of these, treat it as a type error in the architecture:
 
@@ -85,7 +197,7 @@ If execution code does any of these, treat it as a type error in the architectur
 
 The fix is upstream: consume the gen-shaping fact in an earlier phase.
 
-### 0.6 State is explicit, never smuggled
+### State is explicit, never smuggled
 
 If evolving machine state is hidden in:
 
@@ -99,7 +211,7 @@ then the machine boundary is underspecified.
 
 State must be explicit data with a clear owner.
 
-### 0.7 The mandatory role audit
+### The mandatory role audit
 
 For every new type, every new field, and every new phase, ask:
 
@@ -111,7 +223,7 @@ For every new type, every new field, and every new phase, ask:
 
 If you cannot answer all five, stop and redesign before coding.
 
-### 0.8 The ASDL already knows GPS roles
+### The ASDL already knows GPS roles
 
 There is a deeper rule that makes role classification mechanical rather than manual:
 
@@ -132,7 +244,7 @@ The design discipline follows: **if changing a value changes what code runs, mod
 
 A `boolean muted` that determines whether a machine is emitted should be `MuteState = Active | Muted`. A `number channel_count` that determines mono vs stereo processing should be `ChannelConfig = Mono | Stereo`. If it shapes code, it wants to be a sum type.
 
-### 0.9 Worked role-audit example
+### Worked role-audit example
 
 Here is a bad IR:
 
@@ -202,7 +314,7 @@ Now the role movement is visible:
 
 The gen_key at the terminal is the **type name** itself: `BiquadJob` vs `OscJob` vs `GainJob`. The ASDL already knows this. No annotation needed.
 
-### 0.10 The quick test for any candidate type
+### The quick test for any candidate type
 
 For any type you are about to add, fill this in before accepting it:
 
@@ -225,9 +337,9 @@ If you cannot fill it in cleanly, the type is not ready.
 
 ---
 
-## Part 1: The Rabbit Hole Starts with a For Loop
+## The Rabbit Hole Starts with a For Loop
 
-### 1.1 Something you already know
+### Something you already know
 
 If you have written any Lua, you have written this:
 
@@ -264,7 +376,7 @@ The function `ipairs` does not "iterate." It returns a triple: a stepping rule, 
 
 That is a machine.
 
-### 1.2 Why this matters
+### Why this matters
 
 Most languages hide this. In Python, you get an iterator object with `__next__`. In Java, you get an `Iterator<T>` with `hasNext()` and `next()`. In C++, you get begin/end pairs with operator overloads. In JavaScript, you get the Symbol.iterator protocol.
 
@@ -274,7 +386,7 @@ Lua does something different. It says: here are three values. Drive them yoursel
 
 That seems like a small implementation detail. It is not. It is the beginning of a completely different way to think about programs.
 
-### 1.3 The first surprise: separation
+### The first surprise: separation
 
 Look at the triple again:
 
@@ -293,7 +405,7 @@ No iterator object can give you that. An iterator object bundles all three toget
 
 That separation is the key to everything that follows.
 
-### 1.4 The second surprise: zero allocation
+### The second surprise: zero allocation
 
 Because the triple is three values — not an object — iterating costs nothing beyond the loop itself.
 
@@ -305,7 +417,7 @@ Lua's triple eliminates all of it.
 
 That is not just a performance trick. It means you can iterate in places where allocation is forbidden: audio callbacks, real-time rendering, embedded systems, hot inner loops. The triple is always safe to use.
 
-### 1.5 The third surprise: composition
+### The third surprise: composition
 
 Because the triple is just three values, you can transform it:
 
@@ -337,7 +449,7 @@ No temporary arrays. No intermediate collections. Just a new triple that wraps t
 
 This is called **fusion**. Operations compose without materializing intermediate results. Map, filter, take, drop, zip, chain — all expressible as triple transformations.
 
-### 1.6 Where the rabbit hole goes
+### Where the rabbit hole goes
 
 At this point, most people think: "OK, Lua has a nice iterator protocol. Neat."
 
@@ -345,7 +457,7 @@ But the rabbit hole goes much deeper. Because the triple is not just an iterator
 
 And once you see that, everything changes.
 
-### 1.7 The VM already knows `gen, param, state`
+### The VM already knows `gen, param, state`
 
 The deepest part is this: in LuaJIT, `gen, param, state` is not merely a convenient source-level convention.
 
@@ -378,7 +490,7 @@ The consequence is profound.
 You are not building an abstraction *above* the VM and hoping the JIT sees through it.
 You are writing code in a shape that the VM already treats as a loop primitive.
 
-### 1.8 Why this is near-free in LuaJIT
+### Why this is near-free in LuaJIT
 
 This is why GPS machines are so cheap in LuaJIT.
 
@@ -463,7 +575,7 @@ The machine is spread across coroutine machinery instead of being presented dire
 GPS avoids all of this by not adding a wrapper in the first place.
 The machine is already in the host's loop shape.
 
-### 1.9 A lexer is not wrapped as an iterator — it is the iterator
+### A lexer is not wrapped as an iterator — it is the iterator
 
 This is why the following matters so much:
 
@@ -506,7 +618,7 @@ One machine's `param` can hold another machine's `gen` and `param`, and the oute
 
 That means fusion is not an after-the-fact optimization. It is the natural composition rule of the machine shape.
 
-### 1.9.1 Fusion for free
+### Fusion for free
 
 This deserves to be stated as bluntly as possible:
 
@@ -574,7 +686,7 @@ This is one of the strongest practical consequences of the GPS view:
 
 That is why GPS is not only a clean way to describe machines. It is also a clean way to get the performance properties people usually need a separate optimizer to recover.
 
-### 1.10 The architecture goes deeper than Lua
+### The architecture goes deeper than Lua
 
 LuaJIT makes this insight unusually visible because the host loop protocol already exposes the triple directly.
 
@@ -599,7 +711,7 @@ That is why the model transfers so cleanly across backends:
 
 The concrete mechanism changes, but the roles do not.
 
-### 1.11 The real conclusion
+### The real conclusion
 
 The real conclusion is not simply that Lua has a clever iterator protocol.
 
@@ -612,7 +724,7 @@ Lua's generic `for` loop just happens to reveal that truth unusually clearly.
 
 ---
 
-## Part 2: A Function Is a Collapsed Machine
+## A Function Is a Collapsed Machine
 
 Part 1 showed something stronger than "Lua has a nice iterator protocol."
 It showed that the VM already knows how to execute a machine shaped as `gen, param, state`.
@@ -622,7 +734,7 @@ Part 2 now turns that insight around.
 If `gen, param, state` is the explicit machine form, then an ordinary function is not the primitive thing we should reason from.
 An ordinary function is what you get after some or all of those roles have been collapsed together and hidden.
 
-### 2.1 The most familiar thing in programming
+### The most familiar thing in programming
 
 You write functions every day:
 
@@ -645,7 +757,7 @@ It hides the same three roles that Part 1 made explicit in the loop:
 When those roles are left implicit, a function looks like a primitive.
 When those roles are separated, the function is revealed as a compressed presentation of a machine.
 
-### 2.2 What a closure really is
+### What a closure really is
 
 Consider:
 
@@ -670,7 +782,7 @@ Now look at it through the triple lens:
 
 A closure is a machine with empty state.
 
-### 2.3 What a stateful closure really is
+### What a stateful closure really is
 
 ```lua
 function make_counter()
@@ -696,7 +808,7 @@ But here is the problem: `count` is hidden inside the closure. You cannot see it
 
 The closure hides its state. That is convenient for simple uses. It is architecturally devastating for anything serious.
 
-### 2.4 The general pattern
+### The general pattern
 
 Every callable thing decomposes into three roles:
 
@@ -713,7 +825,7 @@ These are all the same structure. They differ only in which of the three roles a
 
 A function is not the primitive. A function is the **degenerate case** — a machine where param is implicit and state is absent.
 
-### 2.5 Why this matters
+### Why this matters
 
 If you start from "function," you are starting from the collapsed form. You cannot see the architecture.
 
@@ -729,7 +841,7 @@ When you design a system by asking "what function?", you make one big decision. 
 
 That is a fundamentally different design posture.
 
-### 2.6 The OOP parallel
+### The OOP parallel
 
 If you come from object-oriented programming, you already know a version of this. An object has:
 
@@ -743,7 +855,7 @@ But OOP conflates them into one `self`. The method, the configuration, and the m
 
 GPS keeps them apart. That is the difference.
 
-### 2.7 What you gain from separation
+### What you gain from separation
 
 When gen, param, and state are separate:
 
@@ -761,9 +873,9 @@ None of this is possible when all three roles are collapsed into a function.
 
 ---
 
-## Part 3: Machines Everywhere
+## Machines Everywhere
 
-### 3.1 Audio: the clearest example
+### Audio: the clearest example
 
 An audio filter processes samples. One sample at a time, thousands per second.
 
@@ -807,7 +919,7 @@ Now the architecture is visible:
 
 That is much cleaner.
 
-### 3.2 Parsing: a machine you already write
+### Parsing: a machine you already write
 
 A parser processes tokens. One token at a time.
 
@@ -819,7 +931,7 @@ When the grammar changes, param changes. When a token is consumed, state advance
 
 Most parser implementations hide this structure behind recursive descent (state hidden in the call stack) or table-driven automata (gen hidden in a dispatch loop). GPS makes it explicit.
 
-### 3.3 UI rendering: a machine you don't think of as one
+### UI rendering: a machine you don't think of as one
 
 A UI renderer draws widgets. One widget at a time (or one draw command at a time).
 
@@ -831,7 +943,7 @@ When the user edits a widget, param changes (the layout plan is recomputed). Whe
 
 Most UI frameworks hide this behind object trees, virtual DOM diffs, or retained-mode scene graphs. Those all work, but they all conflate gen (what to draw), param (where and how), and state (GPU-level frame state) into one amorphous "render pass."
 
-### 3.4 Compilers: a machine writing machines
+### Compilers: a machine writing machines
 
 A compiler pass transforms IR nodes. One node at a time (or one region at a time).
 
@@ -843,7 +955,7 @@ When the source changes, param changes. When the pass advances, state evolves. G
 
 Most compilers hide this behind visitor patterns, recursive descent, or ad hoc pass managers. GPS makes the structure explicit — and that explicitness is exactly what enables incrementality and resumability.
 
-### 3.5 Spreadsheets: every cell is a machine
+### Spreadsheets: every cell is a machine
 
 A spreadsheet formula is a machine:
 
@@ -857,7 +969,7 @@ The spreadsheet evaluation engine is also a machine:
 - **param** — the dependency graph + formula table
 - **state** — which cells have been evaluated, current values
 
-### 3.6 The pattern is everywhere
+### The pattern is everywhere
 
 Once you see it, you cannot unsee it:
 
@@ -878,9 +990,9 @@ These are not metaphors. They are literally the same decomposition.
 
 ---
 
-## Part 4: What This Means for How You Think
+## What This Means for How You Think
 
-### 4.1 The procedural programmer's habit
+### The procedural programmer's habit
 
 If you learned to program procedurally, you think in steps:
 
@@ -897,7 +1009,7 @@ That is a fine way to think about the *inside* of gen. But it is a terrible way 
 
 Procedural code conflates rule, environment, and state into one stream of instructions. You cannot see which parts are stable, which parts evolve, and which parts determine code shape.
 
-### 4.2 The OOP programmer's habit
+### The OOP programmer's habit
 
 If you learned to program with objects, you think in nouns:
 
@@ -913,7 +1025,7 @@ That is better — you have named things. But OOP conflates method behavior (gen
 
 Worse, OOP encourages **identity over value**. Objects are mutable references. Two objects with the same data are still two different objects. That destroys caching, sharing, and structural comparison.
 
-### 4.3 The functional programmer's habit
+### The functional programmer's habit
 
 If you learned functional programming, you think in transformations:
 
@@ -927,7 +1039,7 @@ That is closest to GPS thinking. But pure FP avoids state entirely, which means 
 
 GPS says: state is real. It is not something to be avoided or hidden. It is one of three explicit roles.
 
-### 4.4 The GPS programmer's way
+### The GPS programmer's way
 
 GPS thinking asks three questions, always:
 
@@ -946,7 +1058,7 @@ That is it. Those three questions replace:
 
 Most of those questions dissolve when you think in machines.
 
-### 4.5 A concrete example: the shift
+### A concrete example: the shift
 
 Suppose you are building a volume fader for an audio track.
 
@@ -1005,7 +1117,7 @@ The *view projection* (source → visual):
 
 Nothing is hidden. Nothing is coupled through mutable shared state. Nothing needs a "manager" or "engine" or "bus" to coordinate.
 
-### 4.6 Why this feels unfamiliar
+### Why this feels unfamiliar
 
 GPS thinking is unfamiliar because it reverses the usual priority:
 
@@ -1026,13 +1138,13 @@ It takes time to internalize. But once you do, you will find that many problems 
 
 ---
 
-## Part 5: Fast Data Structures — The Practical Payoff
+## Fast Data Structures — The Practical Payoff
 
 Before going deeper into compiler architecture, let us see the immediate practical payoff of GPS thinking: fast, allocation-free data structure APIs.
 
 This is where the Lua iterator protocol becomes genuinely powerful.
 
-### 5.1 The allocation problem
+### The allocation problem
 
 In most languages, working with collections means allocating:
 
@@ -1056,7 +1168,7 @@ end
 
 No intermediate collections. The filter is just a different gen over the same param. The multiply happens inside the loop body. One traversal. Zero allocation.
 
-### 5.2 Building a vector with GPS iteration
+### Building a vector with GPS iteration
 
 ```lua
 local function vec_next(vec, i)
@@ -1092,7 +1204,7 @@ end
 
 The key insight: `vec_next` is defined once at module load time. Every call to `Vec.items` returns the same function. Only param and state differ. No closure is created per iteration.
 
-### 5.3 Sparse sets
+### Sparse sets
 
 A sparse set stores entities in a dense array with O(1) add, remove, and membership test. It is the workhorse data structure of Entity Component Systems.
 
@@ -1111,7 +1223,7 @@ end
 
 Iterating only visits alive entities. Dead entities are never touched. The dense array is contiguous in memory. LuaJIT traces this perfectly.
 
-### 5.4 Ring buffers
+### Ring buffers
 
 ```lua
 local function ring_next(ring, i)
@@ -1128,7 +1240,7 @@ end
 
 The loop looks linear. The storage wraps. The caller does not need to know. Param carries the ring metadata. State is the logical position.
 
-### 5.5 Zero-copy views
+### Zero-copy views
 
 Instead of copying a subarray:
 
@@ -1145,7 +1257,7 @@ end
 
 No copy. No allocation (beyond the small param table, which could be avoided with packing). The view is a different traversal of the same storage.
 
-### 5.6 Multiple traversals over one structure
+### Multiple traversals over one structure
 
 The same data structure can expose multiple GPS triples:
 
@@ -1161,7 +1273,7 @@ container:slice(lo, hi)  -- subrange
 
 Each is a different `(gen, param, state)` triple. Same storage. Different policy. Zero allocation per traversal.
 
-### 5.7 Resumable iteration
+### Resumable iteration
 
 Because state is explicit data, you can save it and resume later:
 
@@ -1197,7 +1309,7 @@ This matters for:
 - incremental processing
 - chunked traversals over many ticks
 
-### 5.8 Why LuaJIT loves GPS
+### Why LuaJIT loves GPS
 
 LuaJIT's tracing JIT compiler is specifically good at GPS patterns because:
 
@@ -1217,9 +1329,9 @@ GPS and LuaJIT are a natural fit.
 
 ---
 
-## Part 6: The Deeper Pattern — GPS as a Type System
+## The Deeper Pattern — GPS as a Type System
 
-### 6.1 Every field has a role
+### Every field has a role
 
 We have seen that every executable thing decomposes into gen, param, and state. Now comes the deeper insight.
 
@@ -1247,7 +1359,7 @@ Every one of those fields serves a specific GPS role:
 
 No field is "just a field." Every field feeds one of three machine roles.
 
-### 6.2 This is a type system
+### This is a type system
 
 That classification has the properties of a type system:
 
@@ -1259,7 +1371,7 @@ That classification has the properties of a type system:
 
 **Phase-ordered.** Gen-shaping facts must be consumed before code is emitted. Param must be available before installation. State must be declared before execution. The roles impose an order.
 
-### 6.3 What changes in practice
+### What changes in practice
 
 Without GPS roles, you design an IR by asking: "what fields does the next phase need?"
 
@@ -1273,7 +1385,7 @@ With GPS roles, you ask three specific questions for each field:
 
 If a field does not answer any of these, it does not belong here. It belongs in a different phase, a different projection, or nowhere.
 
-### 6.4 Sum types are gen-shaping. Scalars are param.
+### Sum types are gen-shaping. Scalars are param.
 
 This is the key insight that makes GPS roles mechanical rather than subjective.
 
@@ -1309,7 +1421,7 @@ The variant choice directly determines which gen is emitted. An oscillator gets 
 
 The scalars (`hz`, `db`, `freq`, `q`) become param — they feed into coefficient computation but do not change the code shape. The biquad equation is the same for freq=2000 and freq=3000.
 
-### 6.5 Lower phases consume sum types
+### Lower phases consume sum types
 
 As the compiler pipeline progresses, sum types get consumed:
 
@@ -1331,7 +1443,7 @@ By the time you reach a single `BiquadJob` node, there are zero sum-type fields 
 
 The gen_key at the terminal is just the variant tag: `"BiquadJob"` vs `"OscJob"` vs `"GainJob"`. The ASDL knows this from the type definitions. No annotation needed.
 
-### 6.6 The pipeline is sum-type consumption
+### The pipeline is sum-type consumption
 
 Now we can say precisely what a compiler pipeline does:
 
@@ -1343,7 +1455,7 @@ When all sum types have been consumed, you have a machine. The machine's gen is 
 
 That is what "compilation" means. And the ASDL tracks it automatically: count the sum-type fields at each phase. The number must decrease monotonically. At the terminal, it reaches zero.
 
-### 6.7 How to use this as a design discipline
+### How to use this as a design discipline
 
 At this point the most important shift is operational, not philosophical.
 
@@ -1374,7 +1486,7 @@ If the answer to any of those is yes, stop.
 
 Do not patch the implementation. Do not add helper tables. Do not add context objects. Do not add runtime switches. Fix the ASDL or insert the missing phase.
 
-### 6.8 The three immediate rejection tests
+### The three immediate rejection tests
 
 Reject a design immediately if any of these happen:
 
@@ -1400,9 +1512,9 @@ These are not style problems. They are architectural failures.
 
 ---
 
-## Part 7: Interactive Software Is a Compiler
+## Interactive Software Is a Compiler
 
-### 7.1 The old way
+### The old way
 
 Most interactive software works like this:
 
@@ -1428,7 +1540,7 @@ This works, but it is architecturally expensive:
 - Incrementality is hard (every change potentially affects everything)
 - Testing requires mocks, fixtures, and elaborate setup
 
-### 7.2 The compiler way
+### The compiler way
 
 The compiler pattern says: treat the user's work as a **program**, and compile it.
 
@@ -1446,7 +1558,7 @@ User does something
 
 The source ASDL is the program. Events are input. Apply is the state transition. Compilation moves knowledge through GPS roles. Machines — all the way down — are GPS machines.
 
-### 7.3 Why this is better
+### Why this is better
 
 **Incrementality for free.** Because ASDL nodes are unique (structurally interned), unchanged subtrees are the same objects. Memoized transitions hit the cache instantly. Only changed subtrees recompile.
 
@@ -1458,7 +1570,7 @@ The source ASDL is the program. Events are input. Apply is the state transition.
 
 **Hot swap.** When the source changes, affected machines recompile. New artifacts replace old ones. Execution continues. No restart. No rebuild. No "did you save?"
 
-### 7.4 GPS makes the compiler pattern precise
+### GPS makes the compiler pattern precise
 
 The original "Modeling Programs as Compilers" document described this architecture powerfully but did not fully name the underlying mechanism.
 
@@ -1474,9 +1586,9 @@ And because GPS is a structural type system, you can check the health of your pi
 
 ---
 
-## Part 8: The Source Language
+## The Source Language
 
-### 8.1 ASDL: the user's programming language
+### ASDL: the user's programming language
 
 The ASDL (Abstract Syntax Description Language) is not a data format. It is not a config schema. It is not a serialization format.
 
@@ -1493,7 +1605,7 @@ A good ASDL has:
 
 These are the same properties that make any programming language good.
 
-### 8.2 Designing the source ASDL
+### Designing the source ASDL
 
 This is the hard part. GPS does not make it easy — it makes it precise.
 
@@ -1562,9 +1674,9 @@ Scheduled → Machine   (verb: compile — emit gen/param/state)
 
 GPS adds step 8:
 
-**Step 8: Annotate GPS roles.** At each phase, mark every field. Verify gen-shaping decreases monotonically. Verify terminal input has zero gen-shaping.
+**Step 8: Verify GPS roles.** At each phase, check that sum types decrease monotonically. Verify terminal input has zero sum-type fields. The ASDL already encodes the roles — sum types are gen-shaping, scalars are param. No manual annotation needed.
 
-### 8.3 The quality tests
+### The quality tests
 
 Before writing any code, verify:
 
@@ -1586,9 +1698,9 @@ GPS adds:
 
 ---
 
-## Part 9: Phases as Role Movements
+## Phases as Role Movements
 
-### 9.1 What a phase transition really does
+### What a phase transition really does
 
 In the old formulation: "a transition consumes unresolved knowledge."
 
@@ -1596,7 +1708,7 @@ In GPS terms: "a transition moves fields from gen-shaping to param or state."
 
 Those are the same thing said more precisely. "Unresolved knowledge" is gen-shaping facts. "Consuming" is turning them into param values or state declarations.
 
-### 9.2 Example: resolve phase
+### Example: resolve phase
 
 Source:
 
@@ -1616,7 +1728,7 @@ Resolved.Send = (number id, number target_track_id, number gain_db,
 - `target_bus_ix` is now param: the reference was validated and the bus index computed.
 - The gen-shaping fact (which track?) was consumed into a concrete param value (bus index 3).
 
-### 9.3 Example: schedule phase
+### Example: schedule phase
 
 Resolved:
 
@@ -1641,7 +1753,7 @@ Scheduled.Job = (number node_id, number kind_code,
 - `state_offset`, `state_size` — state declaration (runtime layout)
 - Zero gen-shaping facts remain.
 
-### 9.4 The monotonic decrease
+### The monotonic decrease
 
 Each phase should have fewer gen-shaping facts than the previous one. This is the **narrowing property**.
 
@@ -1658,7 +1770,7 @@ Terminal       0 gen-shaping        compile: machines emitted
 
 If a phase adds gen-shaping facts, something is wrong. You are creating decisions instead of consuming them.
 
-### 9.5 The terminal phase
+### The terminal phase
 
 The terminal phase has **zero gen-shaping facts**. Everything is param or state. The terminal's job is to define the execution machine — which is itself a GPS machine:
 
@@ -1692,7 +1804,7 @@ No gen-shaping facts in the hot path. No variant dispatch. No name lookup. No dy
 
 That is what a clean terminal looks like.
 
-### 9.6 When transitions are GPS machines
+### When transitions are GPS machines
 
 For simple tree-shaped transforms, transitions are just recursive maps: transform each child, collect results, construct the output node.
 
@@ -1720,7 +1832,7 @@ Gen is the worklist step. Param is the stable graph environment. State is the fr
 
 This is much more honest than hiding the worklist inside a recursive function or a mutable object.
 
-### 9.7 The hybrid principle
+### The hybrid principle
 
 Use both:
 
@@ -1742,9 +1854,9 @@ Summaries are stable local facts keyed by node identity. The solver orchestrates
 
 ---
 
-## Part 10: The Live Loop
+## The Live Loop
 
-### 10.1 The six concepts
+### The six concepts
 
 The architecture has six concepts. GPS is not an add-on — it is the unifying principle that makes the separate "proto" and "Unit" concepts unnecessary.
 
@@ -1759,7 +1871,7 @@ There is no separate "Unit" concept. The running artifact IS a GPS machine.
 
 There is no separate "proto language." Backend specialization is just the bottom transition(s) of the same pipeline — the same kind of GPS role movement as every other phase. Some pipelines need one realization step. Some need several. But they are not a different kind of thing.
 
-### 10.2 The loop
+### The loop
 
 ```
 poll → apply → compile → execute
@@ -1775,7 +1887,7 @@ poll → apply → compile → execute
 
 **Repeat.** The program stays alive. The user keeps editing. The system keeps compiling incrementally.
 
-### 10.3 Why this eliminates infrastructure
+### Why this eliminates infrastructure
 
 **No state management framework.** The source ASDL is the state. Apply is the state transition. Done.
 
@@ -1789,9 +1901,9 @@ poll → apply → compile → execute
 
 ---
 
-## Part 11: The Bottom of the Pipeline
+## The Bottom of the Pipeline
 
-### 11.1 There is no separate artifact type, and no separate proto language
+### There is no separate artifact type, and no separate proto language
 
 In the older architecture, the compiler pipeline ended with three extra concepts:
 
@@ -1815,7 +1927,7 @@ Source ASDL           (all gen-shaping)
 
 Every arrow is the same kind of thing: a GPS-to-GPS transition that moves knowledge between roles. The backend transition is not special. It just happens to be last.
 
-### 11.2 What the backend transition actually does
+### What the backend transition actually does
 
 The terminal produces a semantic GPS machine:
 
@@ -1837,7 +1949,7 @@ This is a GPS-to-GPS transition. It takes gen-shaping facts about the backend ("
 
 Same mechanism. Same discipline. Same GPS role movements.
 
-### 11.3 Thin vs rich backend transitions
+### Thin vs rich backend transitions
 
 Some machines need minimal backend work:
 
@@ -1863,7 +1975,7 @@ Multiple steps. Each one is a GPS transition that consumes a backend gen-shaping
 
 The difference between "thin" and "rich" is just: how many backend gen-shaping facts exist. Not a different kind of architecture.
 
-### 11.4 What happened to the proto nouns
+### What happened to the proto nouns
 
 The old architecture had proto-specific nouns: template family, binding plan, artifact key, bytecode blob, shape key, install catalog.
 
@@ -1881,7 +1993,7 @@ Those concerns are real. But they are not a separate language. They are **fields
 
 These are just fields. They follow the same GPS discipline as every other phase. They get consumed by the backend transition into a concrete GPS machine.
 
-### 11.5 Three LuaJIT backend strategies
+### Three LuaJIT backend strategies
 
 All three are just different backend transitions. All produce GPS machines.
 
@@ -1918,7 +2030,7 @@ load(generated_source)
 
 Gen is the loaded source (shaped for exact LuaJIT trace behavior). Still a GPS machine.
 
-### 11.6 Host contracts
+### Host contracts
 
 Different runtime worlds drive GPS machines differently:
 
@@ -1928,7 +2040,7 @@ Different runtime worlds drive GPS machines differently:
 
 The host contract defines HOW the machine is driven. It does not change WHAT the machine is. The machine is always gen/param/state.
 
-### 11.7 Composition and fusion
+### Composition and fusion
 
 When two child machines must run together, the parent is also a GPS machine. But the GPS separation enables something deeper: **fusion**.
 
@@ -1958,7 +2070,7 @@ Children's gens are **baked** (upvalues — stable, traced by LuaJIT). Children'
 
 This is why the old Unit framework could not fuse: `Unit { fn, state_t }` collapses gen and param into one closure. Change param → new closure → new composition → fusion lost. GPS keeps them apart, so the fused gen survives across param changes.
 
-### 11.8 Hot swap with state preservation
+### Hot swap with state preservation
 
 When the source changes and a machine recompiles, the GPS framework compares gen_keys:
 
@@ -1978,11 +2090,11 @@ This is managed by `GPS.slot`, which compares `machine.gen_key` on each update. 
 
 ---
 
-## Part 12: The gps.lua Framework
+## The gps.lua Framework
 
 The insights above are not just conceptual. They are implemented in `gps.lua`, the GPS framework library. This section describes what it provides and how it works internally.
 
-### 12.1 The single boundary primitive: GPS.lower
+### The single boundary primitive: GPS.lower
 
 There is no separate `transition` vs `terminal` distinction. Every phase boundary uses the same primitive:
 
@@ -2015,7 +2127,7 @@ end)
 
 Same API. Same shape. The framework detects whether the result is a GPS machine and applies the right caching strategy.
 
-### 12.2 The two-level cache
+### The two-level cache
 
 `GPS.lower` maintains two caches internally:
 
@@ -2060,7 +2172,7 @@ GPS.lower called with input node
   │       → return result
 ```
 
-### 12.3 What the two levels mean in practice
+### What the two levels mean in practice
 
 Consider a user turning a frequency knob on a biquad filter:
 
@@ -2083,7 +2195,7 @@ Now consider adding a new device to the chain:
 5. New composed gen is built (children's gens baked as upvalues = fused)
 6. `GPS.slot:update()` sees different gen_key → **full swap**, new state allocated
 
-### 12.4 GPS.machine — separated roles
+### GPS.machine — separated roles
 
 The result of compilation is not an opaque `Unit { fn, state_t }`. It is a GPS machine with separated roles:
 
@@ -2100,7 +2212,7 @@ Because gen and param are separate:
 - The slot can preserve state when gen hasn't changed
 - Compose can bake children's gens as upvalues while keeping params rebindable
 
-### 12.5 GPS.slot — gen-aware hot swap
+### GPS.slot — gen-aware hot swap
 
 ```lua
 local slot = GPS.slot()
@@ -2130,7 +2242,7 @@ slot.callback(input_buffer, output_buffer, n)
 -- Internally: current.machine.gen(current.machine.param, current.state, ...)
 ```
 
-### 12.6 GPS.compose — fusion by construction
+### GPS.compose — fusion by construction
 
 ```lua
 local chain = GPS.compose({ osc_machine, filter_machine, gain_machine })
@@ -2155,7 +2267,7 @@ The composed gen_key is the concatenation of children's gen_keys. When a child's
 
 This is fusion for free from the GPS separation. The old Unit framework could not do this because `Unit { fn, state_t }` collapses gen and param into one closure — change param, get a new closure, lose the fused composition.
 
-### 12.7 GPS.leaf — curried machine builder
+### GPS.leaf — curried machine builder
 
 `GPS.leaf` separates gen (fixed) from param (computed) explicitly:
 
@@ -2186,7 +2298,7 @@ GPS.lower("device", GPS.match {
 
 The framework sees three `GPS.leaf` declarations. Each has a fixed gen. The gen_key is the variant name chosen by `GPS.match`. No ASDL metadata walking. No string building. The curry structure tells the framework the gen_key at definition time.
 
-### 12.8 GPS.over — curried containment compiler
+### GPS.over — curried containment compiler
 
 `GPS.over` mirrors the ASDL containment tree:
 
@@ -2211,7 +2323,7 @@ end))
 
 One line per containment level. The ASDL field name (`"devices"`) + the child compiler + optional compose policy. The per-child caching, the gen_key composition, the fusion — all handled by the framework.
 
-### 12.9 The GPS tree IS the ASDL tree
+### The GPS tree IS the ASDL tree
 
 With `GPS.leaf`, `GPS.match`, `GPS.over`, and `GPS.lower`, the compilation tree mirrors the ASDL containment tree exactly:
 
@@ -2245,7 +2357,7 @@ The user writes two things:
 
 Everything else — the tree structure, the caching boundaries, the gen_key computation, the state preservation, the fusion — comes from the ASDL shape plus the framework.
 
-### 12.10 Phases dissolve into fused pipelines
+### Phases dissolve into fused pipelines
 
 Traditional compiler architecture separates phases:
 
@@ -2280,7 +2392,7 @@ One boundary. Source device → GPS machine. No intermediate ASDL nodes. All con
 
 Separate phases are only needed when **multiple consumers** share an intermediate result (e.g., both audio and view pipelines need the resolved form).
 
-### 12.11 The complete API
+### The complete API
 
 | Primitive | Purpose | Replaces |
 |---|---|---|
@@ -2299,7 +2411,7 @@ Separate phases are only needed when **multiple consumers** share an intermediat
 
 Iteration algebra: `GPS.drive`, `GPS.start`, `GPS.resume`, `GPS.finish`, `GPS.value`, `GPS.map`, `GPS.filter`, `GPS.take`, `GPS.fuse`.
 
-### 12.12 What the user writes
+### What the user writes
 
 The entire compiler for a domain:
 
@@ -2321,7 +2433,7 @@ local compile_project = GPS.lower("project",
 
 Three declarations. The ASDL tree is visible. The variant dispatch is visible. The gen/param split is visible. Everything else is automatic.
 
-### 12.13 Diagnostics
+### Diagnostics
 
 ```lua
 print(GPS.report({ schedule_device, compile_job }))
@@ -2338,9 +2450,9 @@ Reading: 850 edits. 847 were to unchanged siblings (L1 hits). 3 were to the chan
 
 ---
 
-## Part 13: The Convergence Cycle
+## The Convergence Cycle
 
-### 13.1 The lifecycle of an ASDL
+### The lifecycle of an ASDL
 
 The ASDL is never perfect on the first draft. It goes through a predictable lifecycle:
 
@@ -2348,11 +2460,11 @@ The ASDL is never perfect on the first draft. It goes through a predictable life
 DRAFT → EXPANSION → COLLAPSE
 ```
 
-### 13.2 Draft
+### Draft
 
 Top-down. List nouns, find variants, draw containment. All fields are gen-shaping. The draft captures the user's vocabulary but has not been tested against machines.
 
-### 13.3 Expansion
+### Expansion
 
 Bottom-up. Implement leaf machines. Each leaf says:
 
@@ -2365,7 +2477,7 @@ The type count grows. New phases appear. This is expected.
 
 GPS makes expansion systematic: when a leaf's three questions are not answered by the IR above, you know exactly which role movement is missing.
 
-### 13.4 Collapse
+### Collapse
 
 Once all leaves work, patterns emerge:
 
@@ -2376,7 +2488,7 @@ Once all leaves work, patterns emerge:
 
 GPS makes collapse safe: merge two types, re-check GPS roles. If the merge causes a gen-shaping fact to appear where there should be only param, the distinction was real. Undo the merge.
 
-### 13.5 Convergence criterion
+### Convergence criterion
 
 The ASDL has converged when:
 
@@ -2389,9 +2501,9 @@ At that point, the ASDL is the architecture, and the architecture is done.
 
 ---
 
-## Part 14: Performance
+## Performance
 
-### 14.1 Three costs
+### Three costs
 
 Performance in this architecture has three costs:
 
@@ -2399,7 +2511,7 @@ Performance in this architecture has three costs:
 2. **Backend specialization** — running the bottom transitions (GPS → backend-native GPS)
 3. **Runtime** — driving the backend-native GPS machines
 
-### 14.2 GPS-informed diagnostics
+### GPS-informed diagnostics
 
 | Symptom | GPS diagnosis | Fix |
 |---|---|---|
@@ -2410,9 +2522,9 @@ Performance in this architecture has three costs:
 | Backend transition rediscovers meaning | gen-shaping fact leaked past terminal | fix terminal input |
 | Trace exit on type check | gen-shaping in execution | monomorphize |
 | NYI in hot path | param through untyped access | use FFI |
-| Cache miss on unrelated edit | structural sharing broken | use U.with |
+| Cache miss on unrelated edit | structural sharing broken | use GPS.with |
 
-### 14.3 The bake / bind / live split
+### The bake / bind / live split
 
 GPS makes this mechanical:
 
@@ -2422,7 +2534,7 @@ GPS makes this mechanical:
 | Bind as stable payload | param | compile-time-known, too large to inline |
 | Keep as runtime-owned mutable | state | changes per call, execution-time data |
 
-### 14.4 The two-level hit ratio
+### The two-level hit ratio
 
 With the GPS framework, there are two metrics, not one:
 
@@ -2441,11 +2553,11 @@ If the node hit ratio is low, the structural sharing is broken (same diagnosis a
 
 ---
 
-## Part 15: The Iteration Algebra
+## The Iteration Algebra
 
 GPS is not just a decomposition. It is an **algebra** — a set of composable operations over machines.
 
-### 15.1 The primitives
+### The primitives
 
 ```
 value(x)                       — immediate result (degenerate machine)
@@ -2453,7 +2565,7 @@ drive(machine)                 — run to completion
 start(machine) / resume / finish — step with control
 ```
 
-### 15.2 Transformers
+### Transformers
 
 ```
 map(machine, f)     — transform outputs
@@ -2469,7 +2581,7 @@ flatten(m)          — expand nested machines
 
 Each transformer returns a new GPS triple. No allocation of intermediate collections.
 
-### 15.3 Fusion
+### Fusion
 
 The deepest trick: push transformations into gen.
 
@@ -2479,7 +2591,7 @@ Decode-fusion: unpack fields lazily as they are yielded.
 
 Fusion eliminates intermediate data structures.
 
-### 15.4 Resumability
+### Resumability
 
 Because state is explicit data:
 
@@ -2494,7 +2606,7 @@ return GPS.finish(run)
 
 Pause. Save. Fork. Resume. All free.
 
-### 15.5 Budgeted execution
+### Budgeted execution
 
 ```lua
 GPS.resume(run, budget)
@@ -2509,51 +2621,49 @@ Run at most `budget` steps. Then return control. Perfect for:
 
 ---
 
-## Part 16: What Gets Eliminated
+## What Gets Eliminated
 
 The pattern eliminates infrastructure whose job was to reconnect truths that should never have been split apart.
 
-### 16.1 State management frameworks
+### State management frameworks
 
 Eliminated because: source ASDL is the state. Apply is the transition. GPS roles classify what is authored vs derived vs runtime.
 
-### 16.2 Invalidation frameworks
+### Invalidation frameworks
 
 Eliminated because: structural identity + memoization. GPS roles tell you what can cause invalidation (gen-shaping and param changes) and what cannot (state changes).
 
-### 16.3 Observer buses
+### Observer buses
 
 Eliminated because: events are typed Event ASDL. Apply handles them. Compilation chases consequences.
 
-### 16.4 Dependency injection
+### Dependency injection
 
 Eliminated because: every function gets what it needs from its ASDL input. Missing data → missing phase.
 
-### 16.5 Accidental interpreters
+### Accidental interpreters
 
 Eliminated because: gen-shaping facts are consumed during compilation. Any runtime dispatch on a gen-shaping fact is a GPS type error.
 
-### 16.6 Iterator object churn
+### Iterator object churn
 
 Eliminated because: the GPS triple IS the iterator. No allocation needed.
 
-### 16.7 Ad hoc caching
+### Ad hoc caching
 
 Eliminated because: the two-level cache in GPS.lower handles it. L1 for node identity, L2 for gen_key. No per-subsystem cache design needed.
 
-Eliminated because: GPS roles tell you what is cacheable (param + gen-facts). No per-subsystem cache design needed.
-
-### 16.8 Full-swap overhead
+### Full-swap overhead
 
 Eliminated because: GPS.slot detects gen vs param changes. Most interactive edits (knob turns, value changes) are param-only → state preserved, no reallocation. The old Unit framework always did a full swap.
 
-### 16.9 Implicit traversal state
+### Implicit traversal state
 
 Eliminated because: GPS makes traversal state explicit. No hidden call stacks, no closure-captured progress, no implicit cursors.
 
 ---
 
-## Part 17: Smells — GPS-Informed
+## Smells — GPS-Informed
 
 Every code smell can be diagnosed through GPS roles.
 
@@ -2565,7 +2675,7 @@ Every code smell can be diagnosed through GPS roles.
 | Mutable accumulator in pure layer | should be GPS machine with explicit state |
 | if/elseif on kind in boundary | gen-shaping fact not consumed by match |
 | Lua tables as production state | state not typed for backend |
-| Deep copy instead of U.with | memoization destroyed |
+| Deep copy instead of GPS.with | memoization destroyed |
 | Cross-references as pointers | gen-shaping fact as live ref |
 | One boundary doing two things | missing phase (two role movements) |
 | Sum type in hot path | gen-shaping fact not consumed before terminal |
@@ -2584,9 +2694,9 @@ If any answer is yes, the fix is upstream — in the ASDL or phase structure, no
 
 ---
 
-## Part 18: Worked Examples
+## Worked Examples
 
-### 18.1 Audio: biquad filter — full GPS trace
+### Audio: biquad filter — full GPS trace
 
 **Source (all gen-shaping):**
 
@@ -2625,7 +2735,7 @@ state:  { x1, x2, y1, y2 }
 
 **What GPS reveals:** the entire pipeline is a systematic movement from gen-shaping (what the user chose) to param (stable coefficients) to state (mutable delay history). Nothing mysterious. Nothing hidden.
 
-### 18.2 Text editor: keystroke → screen
+### Text editor: keystroke → screen
 
 **Source (gen-shaping):**
 
@@ -2660,7 +2770,7 @@ param:  { x, y, glyph_ids, advances, color }
 state:  { gpu_cursor }
 ```
 
-### 18.3 Dataflow: liveness analysis — GPS-native
+### Dataflow: liveness analysis — GPS-native
 
 **Source (gen-shaping):**
 
@@ -2692,9 +2802,9 @@ This is the **memoized-summary + GPS-solver** hybrid — the strongest pattern w
 
 ---
 
-## Part 19: Machine IR and Lower Architecture
+## Machine IR and Lower Architecture
 
-### 19.1 Machine IR is GPS-typed
+### Machine IR is GPS-typed
 
 Machine IR is the typed layer immediately above the machine. Its job is to make the machine trivial to derive.
 
@@ -2706,7 +2816,7 @@ Every field should have a clear GPS role:
 
 If Machine IR still has gen-shaping facts, a phase is missing above it.
 
-### 19.2 Headers and facets
+### Headers and facets
 
 When multiple downstream machines share structural alignment:
 
@@ -2727,7 +2837,7 @@ View.HitFacet = (number id, HitKind hit, number action_id) unique
 
 Different machines consume different facets. Orthogonal edits stay local.
 
-### 19.3 Backend transition fields
+### Backend transition fields
 
 When the backend transition has its own ASDL, the fields follow GPS roles:
 
@@ -2745,7 +2855,7 @@ These are not a separate "proto language." They are fields in the backend transi
 
 ---
 
-## Part 20: The Master Checklist
+## The Master Checklist
 
 ### Domain
 
@@ -2840,7 +2950,7 @@ These are not a separate "proto language." They are fields in the backend transi
 
 ---
 
-## Part 21: Summary
+## Summary
 
 ```
 THE CENTRAL INSIGHT
