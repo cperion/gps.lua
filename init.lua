@@ -1,112 +1,598 @@
--- gps/init.lua — Gen/Param/State framework
+-- mgps.lua — structural GPS redesign
 --
--- ASDL is a builtin. No external dependencies beyond LuaJIT.
+-- Public contract:
+--   - ASDL-first
+--   - keyless API
+--   - lowerings emit: gen + structural state declaration + payload
+--   - framework derives code/state identity automatically
 --
--- Primary usage:
+-- Core API:
+--   local M = require("mgps")
+--   local T = M.context("paint"):Define [[ module View { ... } ]]
+--   function T.View.Rect:paint(env)
+--       return M.emit(rect_gen, M.state.none(), { ... })
+--   end
 --
---   local GPS = require("gps")
---   local T = GPS.context()
---   T:Define [[ module Source { ... } ]]
---   function T.Source.Osc:compile(sr) return GPS.machine(gen, param, state) end
---   local machine = my_project:compile()
---
--- Primary parser usage:
---
---   local G = GPS.grammar()
---   local P = G:compile(spec)
---   local tree = GPS.parse(P, input)
---   local ok   = GPS.parse(P, input, "match")
---
--- Low-level usage:
---
---   GPS.machine(gen, param, state_layout)
---   GPS.compose(children, body_fn)
---   GPS.slot()
---   GPS.lower(name, fn)
---   GPS.leaf(gen, state_layout, param_fn)
---   GPS.match(arms) / GPS.match(value, arms)
---   GPS.filter / GPS.take / GPS.map / GPS.fuse
---   GPS.lex(spec)
---   GPS.rd(lexer, input, grammar_fn)
+-- See MGPS.md for the full design manifesto.
 
 local has_ffi, ffi = pcall(require, "ffi")
+
+-- Make the existing ASDL implementation available under gps.* names when mgps.lua
+-- is loaded as a standalone file in a flat source tree.
+if not package.preload["gps.asdl_lexer"] then
+    package.preload["gps.asdl_lexer"] = function() return require("asdl_lexer") end
+end
+if not package.preload["gps.asdl_parser"] then
+    package.preload["gps.asdl_parser"] = function() return require("asdl_parser") end
+end
+if not package.preload["gps.asdl_context"] then
+    package.preload["gps.asdl_context"] = function() return require("asdl_context") end
+end
+
 local asdl_context = require("gps.asdl_context")
 
-local GPS = {}
-
-GPS.lex = require("gps.lex")
-GPS.rd = require("gps.rd")
+local M = {}
+M.state = {}
 
 -- ═══════════════════════════════════════════════════════════════
--- GPS MACHINE
+-- SMALL HELPERS
 -- ═══════════════════════════════════════════════════════════════
 
-local EMPTY_STATE = {
+local function shallow_copy(t)
+    local out = {}
+    for k, v in pairs(t) do out[k] = v end
+    return out
+end
+
+local function deep_copy(v)
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, subv in pairs(v) do out[deep_copy(k)] = deep_copy(subv) end
+    return out
+end
+
+local function sorted_keys(t)
+    local ks = {}
+    for k in pairs(t) do ks[#ks + 1] = k end
+    table.sort(ks, function(a, b)
+        local ta, tb = type(a), type(b)
+        if ta ~= tb then return ta < tb end
+        return tostring(a) < tostring(b)
+    end)
+    return ks
+end
+
+local function stable_encode(v, seen)
+    seen = seen or {}
+    local tv = type(v)
+    if tv == "nil" then return "nil" end
+    if tv == "boolean" then return v and "true" or "false" end
+    if tv == "number" then return string.format("%q", tostring(v)) end
+    if tv == "string" then return string.format("%q", v) end
+    if tv == "function" or tv == "userdata" or tv == "thread" then
+        return tv .. ":" .. tostring(v)
+    end
+    if tv == "cdata" then
+        return "cdata:" .. tostring(v)
+    end
+    if tv ~= "table" then
+        return tv .. ":" .. tostring(v)
+    end
+    if seen[v] then return "<cycle>" end
+    seen[v] = true
+    local parts = {}
+    local ks = sorted_keys(v)
+    for i = 1, #ks do
+        local k = ks[i]
+        parts[i] = "[" .. stable_encode(k, seen) .. "]=" .. stable_encode(v[k], seen)
+    end
+    seen[v] = nil
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- STATE DECLARATIONS
+-- ═══════════════════════════════════════════════════════════════
+
+local function is_state_decl(v)
+    return type(v) == "table" and rawget(v, "__mgps_state_decl") == true
+end
+
+local NONE_DECL = { __mgps_state_decl = true, tag = "none" }
+
+local function ensure_state_decl(v)
+    if v == nil then return NONE_DECL end
+    if not is_state_decl(v) then
+        error("mgps: expected structural state declaration", 3)
+    end
+    return v
+end
+
+function M.state.none()
+    return NONE_DECL
+end
+
+function M.state.ffi(ctype, opts)
+    opts = opts or {}
+    return {
+        __mgps_state_decl = true,
+        tag = "ffi",
+        ctype = ctype,
+        shape = opts.shape or (type(ctype) == "string" and ctype or tostring(ctype)),
+        init = opts.init,
+        release = opts.release,
+    }
+end
+
+function M.state.table(name, opts)
+    opts = opts or {}
+    return {
+        __mgps_state_decl = true,
+        tag = "table",
+        name = name or "table",
+        shape = opts.shape,
+        init = opts.init,
+        alloc = opts.alloc,
+        release = opts.release,
+    }
+end
+
+function M.state.value(initial)
+    return {
+        __mgps_state_decl = true,
+        tag = "value",
+        initial = initial,
+    }
+end
+
+function M.state.f64(initial)
+    return {
+        __mgps_state_decl = true,
+        tag = "f64",
+        initial = initial or 0,
+    }
+end
+
+function M.state.record(name, fields)
+    return {
+        __mgps_state_decl = true,
+        tag = "record",
+        name = name or "record",
+        fields = fields or {},
+    }
+end
+
+function M.state.product(name, children)
+    return {
+        __mgps_state_decl = true,
+        tag = "product",
+        name = name or "product",
+        children = children or {},
+    }
+end
+
+function M.state.array(of_decl, n)
+    return {
+        __mgps_state_decl = true,
+        tag = "array",
+        of = ensure_state_decl(of_decl),
+        n = n or 0,
+    }
+end
+
+function M.state.resource(kind, spec, ops)
+    ops = ops or {}
+    return {
+        __mgps_state_decl = true,
+        tag = "resource",
+        kind = kind,
+        spec = spec or {},
+        alloc = ops.alloc,
+        release = ops.release,
+    }
+end
+
+-- Back-compat aliases for older GPS surface names.
+M.state_ffi = M.state.ffi
+M.state_table = function(init, release, shape)
+    return M.state.table("table", {
+        init = init,
+        release = release,
+        shape = shape,
+    })
+end
+
+local function state_shape_of(decl)
+    decl = ensure_state_decl(decl)
+    local tag = decl.tag
+
+    if tag == "none" then
+        return "none"
+    elseif tag == "ffi" then
+        return "ffi(" .. stable_encode(decl.shape) .. ")"
+    elseif tag == "table" then
+        return "table(" .. stable_encode({ name = decl.name, shape = decl.shape }) .. ")"
+    elseif tag == "value" then
+        return "value(" .. stable_encode(decl.initial) .. ")"
+    elseif tag == "f64" then
+        return "f64(" .. stable_encode(decl.initial) .. ")"
+    elseif tag == "record" then
+        local parts = {}
+        local ks = sorted_keys(decl.fields)
+        for i = 1, #ks do
+            local k = ks[i]
+            parts[i] = tostring(k) .. ":" .. state_shape_of(decl.fields[k])
+        end
+        return "record(" .. tostring(decl.name) .. "|" .. table.concat(parts, ",") .. ")"
+    elseif tag == "product" then
+        local parts = {}
+        for i = 1, #decl.children do parts[i] = state_shape_of(decl.children[i]) end
+        return "product(" .. tostring(decl.name) .. "|" .. table.concat(parts, ",") .. ")"
+    elseif tag == "array" then
+        return "array(" .. state_shape_of(decl.of) .. "," .. tostring(decl.n) .. ")"
+    elseif tag == "resource" then
+        return "resource(" .. tostring(decl.kind) .. "|" .. stable_encode(decl.spec) .. ")"
+    end
+
+    error("mgps: unknown state declaration tag '" .. tostring(tag) .. "'", 3)
+end
+
+local EMPTY_LAYOUT = {
     kind = "empty",
     alloc = function() return nil end,
     release = function() end,
 }
-GPS.EMPTY_STATE = EMPTY_STATE
 
-function GPS.machine(gen, param, state_layout, gen_key)
+local realized_state_cache = {}
+
+local function realize_state(decl)
+    decl = ensure_state_decl(decl)
+    local shape = state_shape_of(decl)
+    local hit = realized_state_cache[shape]
+    if hit then return hit end
+
+    local tag = decl.tag
+    local layout
+
+    if tag == "none" then
+        layout = EMPTY_LAYOUT
+
+    elseif tag == "ffi" then
+        if not has_ffi then error("mgps: ffi state requires LuaJIT FFI", 3) end
+        local ctype = type(decl.ctype) == "string" and ffi.typeof(decl.ctype) or decl.ctype
+        layout = {
+            kind = "ffi",
+            state_shape = shape,
+            alloc = function()
+                local s = ffi.new(ctype)
+                if decl.init then decl.init(s) end
+                return s
+            end,
+            release = decl.release or function() end,
+        }
+
+    elseif tag == "table" then
+        layout = {
+            kind = "table",
+            state_shape = shape,
+            alloc = function()
+                if decl.alloc then return decl.alloc() end
+                local s = {}
+                if decl.init then
+                    local r = decl.init(s)
+                    if r ~= nil then s = r end
+                end
+                return s
+            end,
+            release = decl.release or function() end,
+        }
+
+    elseif tag == "value" then
+        layout = {
+            kind = "value",
+            state_shape = shape,
+            alloc = function() return deep_copy(decl.initial) end,
+            release = function() end,
+        }
+
+    elseif tag == "f64" then
+        layout = {
+            kind = "f64",
+            state_shape = shape,
+            alloc = function()
+                if has_ffi then return ffi.new("double[1]", decl.initial or 0) end
+                return decl.initial or 0
+            end,
+            release = function() end,
+        }
+
+    elseif tag == "record" then
+        local child_layouts = {}
+        local keys = sorted_keys(decl.fields)
+        for i = 1, #keys do
+            local k = keys[i]
+            child_layouts[k] = realize_state(decl.fields[k])
+        end
+        layout = {
+            kind = "record",
+            state_shape = shape,
+            alloc = function()
+                local out = {}
+                for i = 1, #keys do
+                    local k = keys[i]
+                    out[k] = child_layouts[k].alloc()
+                end
+                return out
+            end,
+            release = function(s)
+                if not s then return end
+                for i = #keys, 1, -1 do
+                    local k = keys[i]
+                    child_layouts[k].release(s[k])
+                end
+            end,
+        }
+
+    elseif tag == "product" then
+        local child_layouts = {}
+        for i = 1, #decl.children do
+            child_layouts[i] = realize_state(decl.children[i])
+        end
+        layout = {
+            kind = "product",
+            state_shape = shape,
+            alloc = function()
+                local out = {}
+                for i = 1, #child_layouts do out[i] = child_layouts[i].alloc() end
+                return out
+            end,
+            release = function(s)
+                if not s then return end
+                for i = #child_layouts, 1, -1 do child_layouts[i].release(s[i]) end
+            end,
+        }
+
+    elseif tag == "array" then
+        local child_layout = realize_state(decl.of)
+        layout = {
+            kind = "array",
+            state_shape = shape,
+            alloc = function()
+                local out = {}
+                for i = 1, decl.n do out[i] = child_layout.alloc() end
+                return out
+            end,
+            release = function(s)
+                if not s then return end
+                for i = #s, 1, -1 do child_layout.release(s[i]) end
+            end,
+        }
+
+    elseif tag == "resource" then
+        layout = {
+            kind = "resource",
+            state_shape = shape,
+            alloc = function()
+                if decl.alloc then return decl.alloc(deep_copy(decl.spec)) end
+                return { kind = decl.kind, spec = deep_copy(decl.spec) }
+            end,
+            release = decl.release or function() end,
+        }
+
+    else
+        error("mgps: unknown state declaration tag '" .. tostring(tag) .. "'", 3)
+    end
+
+    layout.state_decl = decl
+    realized_state_cache[shape] = layout
+    return layout
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- EMITTED TERMS / FAMILIES / BOUND VALUES
+-- ═══════════════════════════════════════════════════════════════
+
+local function is_emit(v)
+    return type(v) == "table" and rawget(v, "__mgps_emit") == true
+end
+
+local function is_bound(v)
+    return type(v) == "table" and rawget(v, "__mgps_bound") == true
+end
+
+local function bind_family(family, param)
     return {
-        __gps = true,
-        gen = gen,
+        __mgps_bound = true,
+        family = family,
         param = param,
-        state_layout = state_layout or EMPTY_STATE,
-        gen_key = gen_key,
+        gen = family.gen,
+        state_layout = family.state_layout,
+        code_shape = family.code_shape,
+        state_shape = family.state_shape,
     }
 end
 
-function GPS.is_machine(value)
-    return type(value) == "table" and rawget(value, "__gps") == true
-end
-
-function GPS.state_ffi(ctype_str, opts)
-    if not has_ffi then error("GPS.state_ffi: LuaJIT FFI required", 2) end
-    opts = opts or {}
-    local ctype = type(ctype_str) == "string" and ffi.typeof(ctype_str) or ctype_str
+function M.emit(gen, state_decl, param)
     return {
-        kind = "ffi",
-        alloc = function()
-            local s = ffi.new(ctype)
-            if opts.init then opts.init(s) end
-            return s
-        end,
-        release = opts.release or function() end,
+        __mgps_emit = true,
+        gen = gen,
+        state_decl = ensure_state_decl(state_decl),
+        param = param,
     }
 end
 
-function GPS.state_table(init, release)
-    return {
-        kind = "table",
-        alloc = function()
-            local s = {}
-            if init then
-                local r = init(s)
-                if r ~= nil then s = r end
+local function stamp_code_shape(result, shape)
+    if is_emit(result) then
+        if result.code_shape == nil then result.code_shape = shape end
+    elseif is_bound(result) then
+        if result.family.code_shape == nil then result.family.code_shape = shape end
+        result.code_shape = result.family.code_shape
+    end
+    return result
+end
+
+local function ensure_bound(result)
+    if is_bound(result) then return result end
+    if not is_emit(result) then
+        error("mgps: expected emitted or bound result", 3)
+    end
+
+    local code_shape = result.code_shape or ("gen:" .. tostring(result.gen))
+    local state_decl = ensure_state_decl(result.state_decl)
+    local state_shape = state_shape_of(state_decl)
+    local state_layout = realize_state(state_decl)
+    local family = {
+        __mgps_family = true,
+        gen = result.gen,
+        state_decl = state_decl,
+        state_layout = state_layout,
+        code_shape = code_shape,
+        state_shape = state_shape,
+    }
+    return bind_family(family, result.param)
+end
+
+function M.is_compiled(v)
+    return is_emit(v) or is_bound(v)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- LEAF HELPERS
+-- ═══════════════════════════════════════════════════════════════
+
+function M.leaf(gen, state_fn, param_fn)
+    return function(node, ...)
+        local state_decl = state_fn and state_fn(node, ...) or NONE_DECL
+        local param = param_fn and param_fn(node, ...) or nil
+        return M.emit(gen, state_decl, param)
+    end
+end
+
+function M.variant(spec)
+    spec = spec or {}
+    return function(node, ...)
+        local shape = spec.classify and spec.classify(node, ...) or {}
+        local gen = spec.gen and spec.gen(shape, ...) or spec.rule or spec[1]
+        if type(gen) ~= "function" then
+            error("mgps.variant: missing gen(shape, ...) function", 2)
+        end
+        local state_decl
+        if type(spec.state) == "function" then
+            state_decl = spec.state(shape, ...)
+        elseif spec.state ~= nil then
+            state_decl = spec.state
+        else
+            state_decl = NONE_DECL
+        end
+        local param = spec.param and spec.param(node, shape, ...) or nil
+        local out = M.emit(gen, state_decl, param)
+        if spec.code_shape ~= nil then out.code_shape = spec.code_shape end
+        return out
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- STRUCTURAL COMPOSITION
+-- ═══════════════════════════════════════════════════════════════
+
+function M.compose(children, body_fn)
+    local n = #children
+    if n == 0 then
+        local out = M.emit(function() end, NONE_DECL, {})
+        out.code_shape = "empty"
+        return out
+    end
+    if n == 1 and body_fn == nil then return children[1] end
+
+    local bound_children = {}
+    local code_parts = {}
+    local state_decls = {}
+    local param = {}
+
+    for i = 1, n do
+        local child = ensure_bound(children[i])
+        bound_children[i] = child
+        code_parts[i] = child.code_shape or ("gen:" .. tostring(child.gen))
+        state_decls[i] = child.family.state_decl
+        param[i] = child.param
+    end
+
+    local child_gens = {}
+    for i = 1, n do child_gens[i] = bound_children[i].gen end
+
+    local gen
+    local compose_tag
+    if body_fn then
+        compose_tag = "body:" .. tostring(body_fn)
+        gen = function(parent_param, parent_state, ...)
+            return body_fn(child_gens, parent_param, parent_state, ...)
+        end
+    else
+        compose_tag = "seq"
+        gen = function(parent_param, parent_state, ...)
+            local result = ...
+            for i = 1, n do
+                result = child_gens[i](parent_param[i], parent_state[i], result)
             end
-            return s
-        end,
-        release = release or function() end,
-    }
+            return result
+        end
+    end
+
+    local out = M.emit(gen, M.state.product("Compose", state_decls), param)
+    out.code_shape = "compose(" .. compose_tag .. "|" .. table.concat(code_parts, ",") .. ")"
+    return out
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GPS.lower — MEMOIZED BOUNDARY (two-level cache)
+-- DISPATCH
 -- ═══════════════════════════════════════════════════════════════
---
--- Level 1: node identity → full result (unchanged siblings)
--- Level 2: gen_key → { gen, state_layout } (param-only changes)
 
-function GPS.lower(name, fn)
+function M.match(value_or_arms, arms)
+    if arms ~= nil then
+        local node = value_or_arms
+        local kind = node.kind
+        if kind == nil then error("mgps.match: value has no .kind", 2) end
+        local arm = arms[kind]
+        if type(arm) ~= "function" then
+            error("mgps.match: missing arm for '" .. tostring(kind) .. "'", 2)
+        end
+        return stamp_code_shape(arm(node), kind)
+    end
+
+    local curried_arms = value_or_arms
+    return function(node, ...)
+        local kind = node.kind
+        if kind == nil then error("mgps.match: value has no .kind", 2) end
+        local arm = curried_arms[kind]
+        if type(arm) ~= "function" then
+            error("mgps.match: missing arm for '" .. tostring(kind) .. "'", 2)
+        end
+        return stamp_code_shape(arm(node, ...), kind)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- BOUNDARIES
+-- ═══════════════════════════════════════════════════════════════
+
+function M.lower(name, fn)
     if type(name) == "function" and fn == nil then
-        fn = name; name = "lower"
+        fn = name
+        name = "lower"
     end
 
     local node_cache = setmetatable({}, { __mode = "k" })
-    local gen_cache = {}
-    local stats = { name = name, calls = 0, node_hits = 0, gen_hits = 0, gen_misses = 0 }
+    local code_cache = {}
+    local state_cache = {}
+    local stats = {
+        name = name,
+        calls = 0,
+        node_hits = 0,
+        code_hits = 0,
+        code_misses = 0,
+        state_hits = 0,
+        state_misses = 0,
+    }
 
     local boundary = {}
 
@@ -123,187 +609,145 @@ function GPS.lower(name, fn)
 
         local result = fn(input, ...)
 
-        if GPS.is_machine(result) then
-            local gk = result.gen_key or ""
-            local entry = gen_cache[gk]
-            if entry then
-                stats.gen_hits = stats.gen_hits + 1
-                result = GPS.machine(entry.gen, result.param, entry.state_layout, gk)
+        if M.is_compiled(result) then
+            local bound = ensure_bound(result)
+            local code_shape = bound.code_shape
+            local state_shape = bound.state_shape
+
+            local cached_gen = code_cache[code_shape]
+            if cached_gen ~= nil then
+                stats.code_hits = stats.code_hits + 1
             else
-                stats.gen_misses = stats.gen_misses + 1
-                gen_cache[gk] = { gen = result.gen, state_layout = result.state_layout }
+                stats.code_misses = stats.code_misses + 1
+                code_cache[code_shape] = bound.family.gen
+                cached_gen = bound.family.gen
             end
+
+            local cached_state = state_cache[state_shape]
+            if cached_state ~= nil then
+                stats.state_hits = stats.state_hits + 1
+            else
+                stats.state_misses = stats.state_misses + 1
+                state_cache[state_shape] = {
+                    state_decl = bound.family.state_decl,
+                    state_layout = bound.family.state_layout,
+                }
+                cached_state = state_cache[state_shape]
+            end
+
+            local family = {
+                __mgps_family = true,
+                gen = cached_gen,
+                state_decl = cached_state.state_decl,
+                state_layout = cached_state.state_layout,
+                code_shape = code_shape,
+                state_shape = state_shape,
+            }
+            result = bind_family(family, bound.param)
         end
 
-        if type(input) == "table" then
-            node_cache[input] = result
-        end
+        if type(input) == "table" then node_cache[input] = result end
         return result
     end
 
     function boundary.stats() return stats end
     function boundary.reset()
         node_cache = setmetatable({}, { __mode = "k" })
-        gen_cache = {}
-        stats = { name = name, calls = 0, node_hits = 0, gen_hits = 0, gen_misses = 0 }
+        code_cache = {}
+        state_cache = {}
+        stats = {
+            name = name,
+            calls = 0,
+            node_hits = 0,
+            code_hits = 0,
+            code_misses = 0,
+            state_hits = 0,
+            state_misses = 0,
+        }
     end
 
     return setmetatable(boundary, boundary)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GPS.slot — GEN-AWARE HOT SWAP
+-- SLOT / RUNTIME
 -- ═══════════════════════════════════════════════════════════════
 
-function GPS.slot()
-    local current = { machine = nil, state = nil, gen_key = nil }
+function M.slot()
+    local current = {
+        bound = nil,
+        state = nil,
+        code_shape = nil,
+        state_shape = nil,
+    }
     local retired = {}
     local slot = {}
 
     function slot.callback(...)
-        local m = current.machine
-        if m then return m.gen(m.param, current.state, ...) end
-    end
-
-    function slot:update(machine)
-        if not GPS.is_machine(machine) then
-            error("GPS.slot:update: expected GPS machine", 2)
-        end
-        if current.gen_key ~= nil and current.gen_key == machine.gen_key then
-            current.machine = machine
-        else
-            if current.state and current.machine then
-                retired[#retired + 1] = {
-                    state = current.state, layout = current.machine.state_layout,
-                }
-            end
-            current.machine = machine
-            current.state = machine.state_layout.alloc()
-            current.gen_key = machine.gen_key
+        local bound = current.bound
+        if bound then
+            return bound.family.gen(bound.param, current.state, ...)
         end
     end
 
-    function slot:peek() return current.machine, current.state end
+    function slot:update(compiled)
+        if not M.is_compiled(compiled) then
+            error("mgps.slot:update: expected compiled mgps result", 2)
+        end
+
+        local bound = ensure_bound(compiled)
+        local same_code = current.code_shape ~= nil and current.code_shape == bound.code_shape
+        local same_state = current.state_shape ~= nil and current.state_shape == bound.state_shape
+
+        if same_code and same_state then
+            current.bound = bound
+            return
+        end
+
+        if current.state and current.bound then
+            retired[#retired + 1] = {
+                state = current.state,
+                layout = current.bound.family.state_layout,
+            }
+        end
+
+        current.bound = bound
+        current.state = bound.family.state_layout.alloc()
+        current.code_shape = bound.code_shape
+        current.state_shape = bound.state_shape
+    end
+
+    function slot:peek()
+        return current.bound, current.state
+    end
+
     function slot:collect()
         for i = 1, #retired do
             local r = retired[i]
-            if r.layout and r.layout.release then r.layout.release(r.state) end
+            r.layout.release(r.state)
         end
         retired = {}
     end
+
     function slot:close()
         slot:collect()
-        if current.state and current.machine then
-            current.machine.state_layout.release(current.state)
+        if current.state and current.bound then
+            current.bound.family.state_layout.release(current.state)
         end
-        current = { machine = nil, state = nil, gen_key = nil }
+        current = { bound = nil, state = nil, code_shape = nil, state_shape = nil }
     end
 
     return slot
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GPS.compose — STRUCTURAL COMPOSITION WITH FUSION
+-- STRUCTURAL HELPERS
 -- ═══════════════════════════════════════════════════════════════
 
-function GPS.compose(children, body_fn)
-    local n = #children
-
-    local key_parts = {}
-    for i = 1, n do key_parts[i] = children[i].gen_key or "" end
-    local composite_key = table.concat(key_parts, "|")
-
-    local child_gens = {}
-    for i = 1, n do child_gens[i] = children[i].gen end
-
-    local gen
-    if body_fn then
-        gen = function(param, state, ...)
-            return body_fn(child_gens, param, state, ...)
-        end
-    else
-        gen = function(param, state, ...)
-            local result = ...
-            for i = 1, n do
-                result = child_gens[i](param[i], state[i], result)
-            end
-            return result
-        end
-    end
-
-    local param = {}
-    for i = 1, n do param[i] = children[i].param end
-
-    local state_layout = {
-        kind = "compose",
-        alloc = function()
-            local states = {}
-            for i = 1, n do states[i] = children[i].state_layout.alloc() end
-            return states
-        end,
-        release = function(states)
-            if not states then return end
-            for i = n, 1, -1 do
-                if states[i] and children[i].state_layout.release then
-                    children[i].state_layout.release(states[i])
-                end
-            end
-        end,
-    }
-
-    return GPS.machine(gen, param, state_layout, composite_key)
-end
-
--- ═══════════════════════════════════════════════════════════════
--- GPS.leaf — CURRIED MACHINE BUILDER
--- ═══════════════════════════════════════════════════════════════
-
-function GPS.leaf(gen, state_layout, param_fn)
-    state_layout = state_layout or EMPTY_STATE
-    return function(node, ...)
-        return GPS.machine(gen, param_fn(node, ...), state_layout)
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- GPS.match — EXHAUSTIVE DISPATCH
--- ═══════════════════════════════════════════════════════════════
-
-function GPS.match(value_or_arms, arms)
-    if arms ~= nil then
-        local kind = value_or_arms.kind
-        if kind == nil then error("GPS.match: value has no .kind", 2) end
-        local arm = arms[kind]
-        if type(arm) ~= "function" then
-            error("GPS.match: missing arm for '" .. tostring(kind) .. "'", 2)
-        end
-        return arm(value_or_arms)
-    end
-
-    local curried_arms = value_or_arms
-    return function(node, ...)
-        local kind = node.kind
-        if kind == nil then error("GPS.match: value has no .kind", 2) end
-        local arm = curried_arms[kind]
-        if type(arm) ~= "function" then
-            error("GPS.match: missing arm for '" .. tostring(kind) .. "'", 2)
-        end
-        local result = arm(node, ...)
-        if GPS.is_machine(result) and result.gen_key == nil then
-            result.gen_key = kind
-        end
-        return result
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- GPS.with — STRUCTURAL SHARING
--- ═══════════════════════════════════════════════════════════════
-
-function GPS.with(node, overrides)
+function M.with(node, overrides)
     local mt = getmetatable(node)
     if not mt or not mt.__fields then
-        error("GPS.with: not an ASDL node", 2)
+        error("mgps.with: not an ASDL node", 2)
     end
     local fields = mt.__fields
     local args = {}
@@ -319,152 +763,29 @@ function GPS.with(node, overrides)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GPS.errors — ERROR COLLECTION
+-- CONTEXT / ASDL AUTO-WIRING
 -- ═══════════════════════════════════════════════════════════════
 
-function GPS.errors()
-    local self = { items = {} }
-    function self:add(err)
-        if err ~= nil then self.items[#self.items + 1] = err end
-    end
-    function self:merge(errs)
-        if type(errs) == "table" and errs[1] ~= nil then
-            for i = 1, #errs do self:add(errs[i]) end
-        elseif errs ~= nil then
-            self:add(errs)
-        end
-    end
-    function self:call(target, fn, neutral_fn)
-        local ok, result, errs = pcall(fn, target)
-        if not ok then
-            self:add(result)
-            return neutral_fn and neutral_fn(target) or nil
-        end
-        self:merge(errs)
-        return result
-    end
-    function self:each(items, fn, neutral_fn)
-        local out = {}
-        for i = 1, #items do
-            local value = self:call(items[i], fn, neutral_fn)
-            if value ~= nil then out[#out + 1] = value end
-        end
-        return out
-    end
-    function self:get()
-        if #self.items == 0 then return nil end
-        return self.items
-    end
-    return self
-end
-
--- ═══════════════════════════════════════════════════════════════
--- ITERATION ALGEBRA
--- ═══════════════════════════════════════════════════════════════
-
-function GPS.drive(gen, param, state)
-    local last
-    for s, v in gen, param, state do last = v end
-    return last
-end
-
-function GPS.map(gen, param, state, fn)
-    local function g(p, s)
-        local ns, v = p.g(p.p, s)
-        if ns == nil then return nil end
-        return ns, fn(v)
-    end
-    return g, { g = gen, p = param }, state
-end
-
-function GPS.filter(gen, param, state, pred)
-    local function g(p, s)
-        while true do
-            local ns, a, b, c, d = p.g(p.p, s)
-            if ns == nil then return nil end
-            if pred(a, b, c, d) then return ns, a, b, c, d end
-            s = ns
-        end
-    end
-    return g, { g = gen, p = param }, state
-end
-
-function GPS.take(gen, param, state, n)
-    local function g(p, s)
-        if s.c >= p.n then return nil end
-        local ns, a, b, c, d = p.g(p.p, s.s)
-        if ns == nil then return nil end
-        return { s = ns, c = s.c + 1 }, a, b, c, d
-    end
-    return g, { g = gen, p = param, n = n }, { s = state, c = 0 }
-end
-
-function GPS.fuse(outer, inner_gen, inner_param, inner_state)
-    local function g(p, s)
-        local ns, v = p.ig(p.ip, s)
-        if ns == nil then return nil end
-        return ns, p.o(v)
-    end
-    return g, { o = outer, ig = inner_gen, ip = inner_param }, inner_state
-end
-
--- ═══════════════════════════════════════════════════════════════
--- COLLECTION HELPERS
--- ═══════════════════════════════════════════════════════════════
-
-function GPS.each(items, fn)
-    if type(items) ~= "table" then return end
-    for i = 1, #items do fn(items[i], i) end
-end
-
-function GPS.map_list(items, fn)
-    local out = {}
-    if type(items) == "table" then
-        for i = 1, #items do out[i] = fn(items[i], i) end
-    end
-    return out
-end
-
-function GPS.fold(items, fn, init)
-    local acc = init
-    if type(items) == "table" then
-        for i = 1, #items do acc = fn(acc, items[i], i) end
-    end
-    return acc
-end
-
-function GPS.find(items, pred)
-    if type(items) ~= "table" then return nil end
-    for i = 1, #items do
-        if pred(items[i], i) then return items[i], i end
-    end
-    return nil
-end
-
--- ═══════════════════════════════════════════════════════════════
--- GPS.context — ASDL CONTEXT WITH GPS WIRING
--- ═══════════════════════════════════════════════════════════════
-
-function GPS.context(verb)
+function M.context(verb)
     verb = verb or "compile"
     local T = asdl_context.NewContext()
 
     local orig_Define = T.Define
     function T:Define(text)
         orig_Define(self, text)
-        self:_gps_wire(verb)
+        self:_mgps_wire(verb)
         return self
     end
 
     function T:use(module)
         if type(module) == "string" then module = require(module) end
-        if type(module) == "function" then module(self, GPS) end
+        if type(module) == "function" then module(self, M) end
         return self
     end
 
-    function T:_gps_wire(verb)
+    function T:_mgps_wire(verb_name)
         local defs = self.definitions
-        local gps_key = "_gps_" .. verb
+        local mgps_key = "_mgps_" .. verb_name
 
         local sum_types = {}
         local containers = {}
@@ -473,9 +794,7 @@ function GPS.context(verb)
             if class.members then
                 local variants = {}
                 for member in pairs(class.members) do
-                    if member ~= class then
-                        variants[#variants + 1] = member
-                    end
+                    if member ~= class then variants[#variants + 1] = member end
                 end
                 if #variants > 0 then
                     sum_types[name] = { parent = class, variants = variants }
@@ -499,47 +818,47 @@ function GPS.context(verb)
         end
 
         for name, info in pairs(sum_types) do
-            local dispatch = GPS.lower(name .. ":" .. verb, function(node, ...)
-                local method = node[verb]
+            local dispatch = M.lower(name .. ":" .. verb_name, function(node, ...)
+                local method = node[verb_name]
                 if not method then
-                    error(name .. ":" .. verb .. ": no :" .. verb .. "() on " .. (node.kind or "?"), 2)
+                    error(name .. ":" .. verb_name .. ": no :" .. verb_name .. "() on " .. (node.kind or "?"), 2)
                 end
-                local result = method(node, ...)
-                if GPS.is_machine(result) and result.gen_key == nil then
-                    result.gen_key = node.kind or ""
-                end
-                return result
+                return stamp_code_shape(method(node, ...), node.kind or "")
             end)
-            rawset(info.parent, gps_key, dispatch)
+            rawset(info.parent, mgps_key, dispatch)
         end
 
-        for name, info in pairs(containers) do
+        for _, info in pairs(containers) do
             local class = info.class
             local child_fields = info.child_fields
 
-            if not rawget(class, verb) then
-                class[verb] = function(node, ...)
+            if not rawget(class, verb_name) then
+                class[verb_name] = function(node, ...)
                     local all = {}
                     for _, cf in ipairs(child_fields) do
                         local items = node[cf.name]
                         if items then
                             local parent_class = defs[cf.type_name]
-                            local gps_dispatch = parent_class and rawget(parent_class, gps_key)
+                            local dispatch = parent_class and rawget(parent_class, mgps_key)
                             for i = 1, #items do
                                 local child = items[i]
                                 local result
-                                if gps_dispatch then
-                                    result = gps_dispatch(child, ...)
-                                elseif child[verb] then
-                                    result = child[verb](child, ...)
+                                if dispatch then
+                                    result = dispatch(child, ...)
+                                elseif child[verb_name] then
+                                    result = child[verb_name](child, ...)
                                 end
                                 if result then all[#all + 1] = result end
                             end
                         end
                     end
-                    if #all == 0 then return GPS.machine(function() end, {}, EMPTY_STATE, "empty") end
+                    if #all == 0 then
+                        local out = M.emit(function() end, NONE_DECL, {})
+                        out.code_shape = "empty"
+                        return out
+                    end
                     if #all == 1 then return all[1] end
-                    return GPS.compose(all)
+                    return M.compose(all)
                 end
             end
         end
@@ -549,11 +868,11 @@ function GPS.context(verb)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GPS.app — THE LIVE LOOP
+-- APP LOOP
 -- ═══════════════════════════════════════════════════════════════
 
-function GPS.app(config)
-    if type(config) ~= "table" then error("GPS.app: config must be a table", 2) end
+function M.app(config)
+    if type(config) ~= "table" then error("mgps.app: config must be a table", 2) end
 
     local names = {}
     if config.compile then
@@ -562,7 +881,7 @@ function GPS.app(config)
     end
 
     local slots = {}
-    for i = 1, #names do slots[names[i]] = GPS.slot() end
+    for i = 1, #names do slots[names[i]] = M.slot() end
     local source = config.initial()
 
     for i = 1, #names do
@@ -602,24 +921,35 @@ function GPS.app(config)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GPS.report — DIAGNOSTICS
+-- DIAGNOSTICS
 -- ═══════════════════════════════════════════════════════════════
 
-function GPS.report(boundaries)
+function M.report(boundaries)
     local lines = {}
     for i = 1, #boundaries do
         local s = boundaries[i].stats()
-        local total = s.gen_hits + s.gen_misses
-        local pct = total > 0 and math.floor(s.gen_hits / total * 100) or 0
+        local code_total = s.code_hits + s.code_misses
+        local state_total = s.state_hits + s.state_misses
+        local code_pct = code_total > 0 and math.floor(s.code_hits / code_total * 100) or 0
+        local state_pct = state_total > 0 and math.floor(s.state_hits / state_total * 100) or 0
         lines[#lines + 1] = string.format(
-            "%-30s calls=%-6d node_hits=%-6d gen_hits=%-4d gen_misses=%-4d gen_reuse=%d%%",
-            s.name, s.calls, s.node_hits, s.gen_hits, s.gen_misses, pct
+            "%-28s calls=%-6d node_hits=%-6d code_hits=%-4d code_misses=%-4d code_reuse=%d%% state_hits=%-4d state_misses=%-4d state_reuse=%d%%",
+            s.name, s.calls, s.node_hits, s.code_hits, s.code_misses, code_pct,
+            s.state_hits, s.state_misses, state_pct
         )
     end
     return table.concat(lines, "\n")
 end
 
-GPS.grammar = require("gps.grammar")(GPS, asdl_context)
-GPS.parse = require("gps.parse")(GPS)
+local function not_yet_ported(name)
+    return function()
+        error("gps." .. name .. " is not yet ported to the new mgps core", 2)
+    end
+end
 
-return GPS
+M.lex = not_yet_ported("lex")
+M.rd = not_yet_ported("rd")
+M.grammar = not_yet_ported("grammar")
+M.parse = not_yet_ported("parse")
+
+return M
