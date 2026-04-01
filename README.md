@@ -2,7 +2,7 @@
 
 A Lua framework for building interactive software as compilers.
 
-**3478 lines. Zero external dependencies. Self-hosted.**
+**3785 lines. Zero external dependencies. Self-hosted.**
 
 ## What It Is
 
@@ -3232,6 +3232,9 @@ module Grammar {
          | ZeroOrMore(Expr body)
          | OneOrMore(Expr body)
          | Optional(Expr body)
+         | Between(Expr open, Expr body, Expr close)
+         | SepBy(Expr item, Expr sep)
+         | Assoc(Expr key, Expr sep, Expr value)
          | Ref(string name)
          | Tok(string name)
          | Lit(string text)
@@ -3245,9 +3248,10 @@ Current fast subset:
 
 - Lexer mode: `Symbol`, `Keyword`, `Ident`, `Number`, `String`, `Whitespace`, `LineComment`, `BlockComment`
 - Direct mode: `Lit`, `Num`, `Str` (scannerless parser-over-bytes)
-- Parse: `Seq`, `Choice`, `ZeroOrMore`, `OneOrMore`, `Optional`, `Ref`, `Tok`, `Empty`
+- Parse: `Seq`, `Choice`, `ZeroOrMore`, `OneOrMore`, `Optional`, `Between`, `SepBy`, `Assoc`, `Ref`, `Tok`, `Empty`
 - Left recursion is rejected
 - Nullable repetition is rejected
+- `SepBy(item, sep)` requires a non-nullable `item`
 - `Tok(...)` cannot be mixed with direct terminals (`Lit` / `Num` / `Str`) in one grammar
 
 `GPS.grammar` chooses the path automatically:
@@ -3256,6 +3260,14 @@ Current fast subset:
 - grammars using `Lit` / `Num` / `Str` compile to **direct parser-over-bytes**
 
 The direct path is the one you want for JSON-like formats.
+
+The three structured-data fast forms are:
+
+- `Between(open, body, close)` — parse delimiters, return the body value
+- `SepBy(item, sep)` — parse a separated list, return a flat Lua array of item values
+- `Assoc(key, sep, value)` — parse a key/value pair, return `{ key, value }`
+
+These remove the nested `Seq + ZeroOrMore` shapes that slow generic reducers down.
 
 #### Example
 
@@ -3308,17 +3320,25 @@ local spec = G.Spec(
       G.Ref("Object"), G.Ref("Array"), G.Str, G.Num,
       G.Lit("true"), G.Lit("false"), G.Lit("null")
     })),
-    G.Rule("Pair", G.Seq({ G.Str, G.Lit(":"), G.Ref("Value") })),
-    G.Rule("Pairs", G.Seq({ G.Ref("Pair"), G.ZeroOrMore(G.Seq({ G.Lit(","), G.Ref("Pair") })) })),
-    G.Rule("Object", G.Seq({ G.Lit("{"), G.Optional(G.Ref("Pairs")), G.Lit("}") })),
-    G.Rule("Values", G.Seq({ G.Ref("Value"), G.ZeroOrMore(G.Seq({ G.Lit(","), G.Ref("Value") })) })),
-    G.Rule("Array", G.Seq({ G.Lit("["), G.Optional(G.Ref("Values")), G.Lit("]") }))
+    G.Rule("Pair", G.Assoc(G.Str, G.Lit(":"), G.Ref("Value"))),
+    G.Rule("Object", G.Between(
+      G.Lit("{"),
+      G.Optional(G.SepBy(G.Ref("Pair"), G.Lit(","))),
+      G.Lit("}")
+    )),
+    G.Rule("Array", G.Between(
+      G.Lit("["),
+      G.Optional(G.SepBy(G.Ref("Value"), G.Lit(","))),
+      G.Lit("]")
+    ))
   }, "Value")
 )
 
 local P = G:compile(spec)
 print(P:match('{"a": [1, 2, 3]}'))
 ```
+
+With a reducer, that shape is much closer to a handwritten JSON parser than a generic token stream + parse tree.
 
 #### Compiled parser API
 
@@ -3337,8 +3357,11 @@ In direct mode, reducers lower grammar terminals directly over bytes:
 - `Lit("{")` matches bytes directly
 - `Num` parses a number directly
 - `Str` parses a JSON-style string directly
+- `Between` strips delimiters without building extra sequence structure
+- `SepBy` returns a flat list directly
+- `Assoc` returns a key/value pair directly
 
-This avoids the intermediate token layer and is the fast path for structured data formats like JSON.
+This avoids the intermediate token layer and removes common generic reducer shapes. It is the fast path for structured data formats like JSON.
 
 #### `GPS.parse(parser_or_spec, input, mode_or_actions?, arg?)`
 
@@ -3677,4 +3700,4 @@ gps/
   README.md           this document
 ```
 
-Zero external dependencies. ~3500 lines. Self-hosted: the ASDL parser is itself a GPS machine.
+Zero external dependencies. ~3800 lines. Self-hosted: the ASDL parser is itself a GPS machine.

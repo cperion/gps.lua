@@ -42,6 +42,9 @@ return function(GPS, asdl_context)
                  | ZeroOrMore(Expr body) unique
                  | OneOrMore(Expr body) unique
                  | Optional(Expr body) unique
+                 | Between(Expr open, Expr body, Expr close) unique
+                 | SepBy(Expr item, Expr sep) unique
+                 | Assoc(Expr key, Expr sep, Expr value) unique
                  | Ref(string name) unique
                  | Tok(string name) unique
                  | Lit(string text) unique
@@ -78,6 +81,17 @@ return function(GPS, asdl_context)
             for i = 1, #expr.arms do collect_rule_refs(expr.arms[i], out) end
         elseif kind == "ZeroOrMore" or kind == "OneOrMore" or kind == "Optional" then
             collect_rule_refs(expr.body, out)
+        elseif kind == "Between" then
+            collect_rule_refs(expr.open, out)
+            collect_rule_refs(expr.body, out)
+            collect_rule_refs(expr.close, out)
+        elseif kind == "SepBy" then
+            collect_rule_refs(expr.item, out)
+            collect_rule_refs(expr.sep, out)
+        elseif kind == "Assoc" then
+            collect_rule_refs(expr.key, out)
+            collect_rule_refs(expr.sep, out)
+            collect_rule_refs(expr.value, out)
         end
         return out
     end
@@ -118,6 +132,12 @@ return function(GPS, asdl_context)
                 for i = 1, #expr.arms do walk_expr(expr.arms[i]) end
             elseif kind == "ZeroOrMore" or kind == "OneOrMore" or kind == "Optional" then
                 walk_expr(expr.body)
+            elseif kind == "Between" then
+                walk_expr(expr.open); walk_expr(expr.body); walk_expr(expr.close)
+            elseif kind == "SepBy" then
+                walk_expr(expr.item); walk_expr(expr.sep)
+            elseif kind == "Assoc" then
+                walk_expr(expr.key); walk_expr(expr.sep); walk_expr(expr.value)
             end
         end
 
@@ -185,6 +205,12 @@ return function(GPS, asdl_context)
                 for i = 1, #expr.arms do walk(expr.arms[i]) end
             elseif kind == "ZeroOrMore" or kind == "OneOrMore" or kind == "Optional" then
                 walk(expr.body)
+            elseif kind == "Between" then
+                walk(expr.open); walk(expr.body); walk(expr.close)
+            elseif kind == "SepBy" then
+                walk(expr.item); walk(expr.sep)
+            elseif kind == "Assoc" then
+                walk(expr.key); walk(expr.sep); walk(expr.value)
             end
         end
         for i = 1, #rule_order do walk(rule_order[i].body) end
@@ -263,6 +289,30 @@ return function(GPS, asdl_context)
                     local child = info[expr.body]
                     if child.nullable and not inf.nullable then inf.nullable = true; changed = true end
                     if union(inf.first, child.first) then changed = true end
+                elseif kind == "Between" then
+                    local open_i, body_i, close_i = info[expr.open], info[expr.body], info[expr.close]
+                    if union(inf.first, open_i.first) then changed = true end
+                    if open_i.nullable then
+                        if union(inf.first, body_i.first) then changed = true end
+                        if body_i.nullable and union(inf.first, close_i.first) then changed = true end
+                    end
+                    if open_i.nullable and body_i.nullable and close_i.nullable and not inf.nullable then
+                        inf.nullable = true; changed = true
+                    end
+                elseif kind == "SepBy" then
+                    local item_i = info[expr.item]
+                    if union(inf.first, item_i.first) then changed = true end
+                    if item_i.nullable and not inf.nullable then inf.nullable = true; changed = true end
+                elseif kind == "Assoc" then
+                    local key_i, sep_i, val_i = info[expr.key], info[expr.sep], info[expr.value]
+                    if union(inf.first, key_i.first) then changed = true end
+                    if key_i.nullable then
+                        if union(inf.first, sep_i.first) then changed = true end
+                        if sep_i.nullable and union(inf.first, val_i.first) then changed = true end
+                    end
+                    if key_i.nullable and sep_i.nullable and val_i.nullable and not inf.nullable then
+                        inf.nullable = true; changed = true
+                    end
                 elseif kind == "Empty" then
                     if not inf.nullable then inf.nullable = true; changed = true end
                 end
@@ -273,6 +323,9 @@ return function(GPS, asdl_context)
             local expr = exprs[i]
             if (expr.kind == "ZeroOrMore" or expr.kind == "OneOrMore") and info[expr.body].nullable then
                 error("GPS.grammar: repetition body is nullable: " .. tostring(expr.kind), 3)
+            end
+            if expr.kind == "SepBy" and info[expr.item].nullable then
+                error("GPS.grammar: SepBy item is nullable", 3)
             end
         end
 
@@ -294,6 +347,16 @@ return function(GPS, asdl_context)
             for i = 1, #expr.arms do collect_leading_refs(expr.arms[i], info, out) end
         elseif kind == "ZeroOrMore" or kind == "OneOrMore" or kind == "Optional" then
             collect_leading_refs(expr.body, info, out)
+        elseif kind == "Between" then
+            collect_leading_refs(expr.open, info, out)
+            if info[expr.open].nullable then
+                collect_leading_refs(expr.body, info, out)
+                if info[expr.body].nullable then collect_leading_refs(expr.close, info, out) end
+            end
+        elseif kind == "SepBy" then
+            collect_leading_refs(expr.item, info, out)
+        elseif kind == "Assoc" then
+            collect_leading_refs(expr.key, info, out)
         end
         return out
     end
@@ -420,6 +483,48 @@ return function(GPS, asdl_context)
                                 rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = mark_pos, mark_kind, mark_start, mark_stop, mark_end
                                 break
                             end
+                        end
+                        return true
+                    end
+
+                elseif kind == "Between" then
+                    local open = compile_expr(expr.open)
+                    local body = compile_expr(expr.body)
+                    local close = compile_expr(expr.close)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                        if not open(rt) or not body(rt) or not close(rt) then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = mark_pos, mark_kind, mark_start, mark_stop, mark_end
+                            return false
+                        end
+                        return true
+                    end
+
+                elseif kind == "SepBy" then
+                    local item = compile_expr(expr.item)
+                    local sep = compile_expr(expr.sep)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                        if not item(rt) then return false end
+                        while true do
+                            local tail_pos, tail_kind, tail_start, tail_stop, tail_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                            if not sep(rt) or not item(rt) then
+                                rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = tail_pos, tail_kind, tail_start, tail_stop, tail_end
+                                break
+                            end
+                        end
+                        return true
+                    end
+
+                elseif kind == "Assoc" then
+                    local key = compile_expr(expr.key)
+                    local sep = compile_expr(expr.sep)
+                    local value = compile_expr(expr.value)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                        if not key(rt) or not sep(rt) or not value(rt) then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = mark_pos, mark_kind, mark_start, mark_stop, mark_end
+                            return false
                         end
                         return true
                     end
@@ -601,6 +706,73 @@ return function(GPS, asdl_context)
                             if value ~= nil then out[#out + 1] = value end
                         end
                         return true, out
+                    end
+
+                elseif kind == "Between" then
+                    local open = compile_expr(expr.open)
+                    local body = compile_expr(expr.body)
+                    local close = compile_expr(expr.close)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                        local ok_open = open(rt)
+                        if not ok_open then return false end
+                        local ok_body, body_value = body(rt)
+                        if not ok_body then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = mark_pos, mark_kind, mark_start, mark_stop, mark_end
+                            return false
+                        end
+                        local ok_close = close(rt)
+                        if not ok_close then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = mark_pos, mark_kind, mark_start, mark_stop, mark_end
+                            return false
+                        end
+                        return true, body_value
+                    end
+
+                elseif kind == "SepBy" then
+                    local item = compile_expr(expr.item)
+                    local sep = compile_expr(expr.sep)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                        local ok, first = item(rt)
+                        if not ok then return false end
+                        local out = {}
+                        if first ~= nil then out[1] = first end
+                        while true do
+                            local tail_pos, tail_kind, tail_start, tail_stop, tail_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                            local ok_sep = sep(rt)
+                            if not ok_sep then
+                                rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = tail_pos, tail_kind, tail_start, tail_stop, tail_end
+                                break
+                            end
+                            local ok_item, value = item(rt)
+                            if not ok_item then
+                                rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = tail_pos, tail_kind, tail_start, tail_stop, tail_end
+                                break
+                            end
+                            if value ~= nil then out[#out + 1] = value end
+                        end
+                        return true, out
+                    end
+
+                elseif kind == "Assoc" then
+                    local key = compile_expr(expr.key)
+                    local sep = compile_expr(expr.sep)
+                    local value = compile_expr(expr.value)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end
+                        local ok_key, key_value = key(rt)
+                        if not ok_key then return false end
+                        if not sep(rt) then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = mark_pos, mark_kind, mark_start, mark_stop, mark_end
+                            return false
+                        end
+                        local ok_val, val_value = value(rt)
+                        if not ok_val then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end = mark_pos, mark_kind, mark_start, mark_stop, mark_end
+                            return false
+                        end
+                        return true, { key_value, val_value }
                     end
 
                 elseif kind == "Seq" then
@@ -801,6 +973,48 @@ return function(GPS, asdl_context)
                                 rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n = mark_pos, mark_kind, mark_start, mark_stop, mark_end, mark_log
                                 break
                             end
+                        end
+                        return true
+                    end
+
+                elseif kind == "Between" then
+                    local open = compile_expr(expr.open)
+                    local body = compile_expr(expr.body)
+                    local close = compile_expr(expr.close)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end, mark_log = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n
+                        if not open(rt) or not body(rt) or not close(rt) then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n = mark_pos, mark_kind, mark_start, mark_stop, mark_end, mark_log
+                            return false
+                        end
+                        return true
+                    end
+
+                elseif kind == "SepBy" then
+                    local item = compile_expr(expr.item)
+                    local sep = compile_expr(expr.sep)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end, mark_log = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n
+                        if not item(rt) then return false end
+                        while true do
+                            local tail_pos, tail_kind, tail_start, tail_stop, tail_end, tail_log = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n
+                            if not sep(rt) or not item(rt) then
+                                rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n = tail_pos, tail_kind, tail_start, tail_stop, tail_end, tail_log
+                                break
+                            end
+                        end
+                        return true
+                    end
+
+                elseif kind == "Assoc" then
+                    local key = compile_expr(expr.key)
+                    local sep = compile_expr(expr.sep)
+                    local value = compile_expr(expr.value)
+                    fn = function(rt)
+                        local mark_pos, mark_kind, mark_start, mark_stop, mark_end, mark_log = rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n
+                        if not key(rt) or not sep(rt) or not value(rt) then
+                            rt.pos, rt.tok_kind, rt.tok_start, rt.tok_stop, rt.last_end, rt.log_n = mark_pos, mark_kind, mark_start, mark_stop, mark_end, mark_log
+                            return false
                         end
                         return true
                     end
@@ -1294,6 +1508,35 @@ return function(GPS, asdl_context)
                         end
                         return true
                     end
+                elseif kind == "Between" then
+                    local open = compile_expr(expr.open)
+                    local body = compile_expr(expr.body)
+                    local close = compile_expr(expr.close)
+                    fn = function(rt)
+                        local mark_pos, mark_end = rt.pos, rt.last_end
+                        if not open(rt) or not body(rt) or not close(rt) then rt.pos, rt.last_end = mark_pos, mark_end; return false end
+                        return true
+                    end
+                elseif kind == "SepBy" then
+                    local item = compile_expr(expr.item)
+                    local sep = compile_expr(expr.sep)
+                    fn = function(rt)
+                        if not item(rt) then return false end
+                        while true do
+                            local mark_pos, mark_end = rt.pos, rt.last_end
+                            if not sep(rt) or not item(rt) then rt.pos, rt.last_end = mark_pos, mark_end; break end
+                        end
+                        return true
+                    end
+                elseif kind == "Assoc" then
+                    local key = compile_expr(expr.key)
+                    local sep = compile_expr(expr.sep)
+                    local value = compile_expr(expr.value)
+                    fn = function(rt)
+                        local mark_pos, mark_end = rt.pos, rt.last_end
+                        if not key(rt) or not sep(rt) or not value(rt) then rt.pos, rt.last_end = mark_pos, mark_end; return false end
+                        return true
+                    end
                 elseif kind == "Seq" then
                     local items = {}
                     for i = 1, #expr.items do items[i] = compile_expr(expr.items[i]) end
@@ -1445,6 +1688,47 @@ return function(GPS, asdl_context)
                             if value ~= nil then out[#out + 1] = value end
                         end
                         return true, out
+                    end
+                elseif kind == "Between" then
+                    local open = compile_expr(expr.open)
+                    local body = compile_expr(expr.body)
+                    local close = compile_expr(expr.close)
+                    fn = function(rt)
+                        local mark_pos, mark_end = rt.pos, rt.last_end
+                        local ok_open = open(rt)
+                        if not ok_open then return false end
+                        local ok_body, body_value = body(rt)
+                        if not ok_body or not close(rt) then rt.pos, rt.last_end = mark_pos, mark_end; return false end
+                        return true, body_value
+                    end
+                elseif kind == "SepBy" then
+                    local item = compile_expr(expr.item)
+                    local sep = compile_expr(expr.sep)
+                    fn = function(rt)
+                        local ok, first = item(rt)
+                        if not ok then return false end
+                        local out = {}
+                        if first ~= nil then out[1] = first end
+                        while true do
+                            local mark_pos, mark_end = rt.pos, rt.last_end
+                            if not sep(rt) then rt.pos, rt.last_end = mark_pos, mark_end; break end
+                            local next_ok, value = item(rt)
+                            if not next_ok then rt.pos, rt.last_end = mark_pos, mark_end; break end
+                            if value ~= nil then out[#out + 1] = value end
+                        end
+                        return true, out
+                    end
+                elseif kind == "Assoc" then
+                    local key = compile_expr(expr.key)
+                    local sep = compile_expr(expr.sep)
+                    local value = compile_expr(expr.value)
+                    fn = function(rt)
+                        local mark_pos, mark_end = rt.pos, rt.last_end
+                        local ok_key, key_value = key(rt)
+                        if not ok_key or not sep(rt) then rt.pos, rt.last_end = mark_pos, mark_end; return false end
+                        local ok_value, value_value = value(rt)
+                        if not ok_value then rt.pos, rt.last_end = mark_pos, mark_end; return false end
+                        return true, { key_value, value_value }
                     end
                 elseif kind == "Seq" then
                     local items = {}
@@ -1610,6 +1894,35 @@ return function(GPS, asdl_context)
                             local mark_pos, mark_end, mark_log = rt.pos, rt.last_end, rt.log_n
                             if not body(rt) then rt.pos, rt.last_end, rt.log_n = mark_pos, mark_end, mark_log; break end
                         end
+                        return true
+                    end
+                elseif kind == "Between" then
+                    local open = compile_expr(expr.open)
+                    local body = compile_expr(expr.body)
+                    local close = compile_expr(expr.close)
+                    fn = function(rt)
+                        local mark_pos, mark_end, mark_log = rt.pos, rt.last_end, rt.log_n
+                        if not open(rt) or not body(rt) or not close(rt) then rt.pos, rt.last_end, rt.log_n = mark_pos, mark_end, mark_log; return false end
+                        return true
+                    end
+                elseif kind == "SepBy" then
+                    local item = compile_expr(expr.item)
+                    local sep = compile_expr(expr.sep)
+                    fn = function(rt)
+                        if not item(rt) then return false end
+                        while true do
+                            local mark_pos, mark_end, mark_log = rt.pos, rt.last_end, rt.log_n
+                            if not sep(rt) or not item(rt) then rt.pos, rt.last_end, rt.log_n = mark_pos, mark_end, mark_log; break end
+                        end
+                        return true
+                    end
+                elseif kind == "Assoc" then
+                    local key = compile_expr(expr.key)
+                    local sep = compile_expr(expr.sep)
+                    local value = compile_expr(expr.value)
+                    fn = function(rt)
+                        local mark_pos, mark_end, mark_log = rt.pos, rt.last_end, rt.log_n
+                        if not key(rt) or not sep(rt) or not value(rt) then rt.pos, rt.last_end, rt.log_n = mark_pos, mark_end, mark_log; return false end
                         return true
                     end
                 elseif kind == "Seq" then
