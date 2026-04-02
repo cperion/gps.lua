@@ -1,11 +1,13 @@
 -- examples/ui/hittest.lua
 --
--- Minimal hit-testing terminal on top of mgps.
+-- Hit-testing terminal on top of ugps.
 -- Runtime contract:
---   slot.callback({ x = ..., y = ... }) -> hit or nil
+--   slot:run({ x = ..., y = ... }) -> hit or nil
 
-return function(M)
-    local T = M.context("probe")
+local ugps = require("ugps")
+
+return function(GPS)
+    local T = GPS.context("probe")
         :Define [[
             module Hit {
                 Root = (Node* nodes) unique
@@ -22,131 +24,160 @@ return function(M)
         return px >= x and py >= y and px < x + w and py < y + h
     end
 
-    local function rect_probe_gen(param, state, query)
-        if inside(query.x, query.y, param.x, param.y, param.w, param.h) then
-            return {
+    local function emit(out, cmd)
+        out[#out + 1] = cmd
+        return out
+    end
+
+    local function flatten_node(node, out)
+        local kind = node.kind
+
+        if kind == "Group" then
+            for i = #node.children, 1, -1 do
+                flatten_node(node.children[i], out)
+            end
+
+        elseif kind == "Clip" then
+            emit(out, {
+                kind = "PushClip",
+                x = node.x,
+                y = node.y,
+                w = node.w,
+                h = node.h,
+            })
+            for i = #node.children, 1, -1 do
+                flatten_node(node.children[i], out)
+            end
+            emit(out, { kind = "PopClip" })
+
+        elseif kind == "Transform" then
+            emit(out, {
+                kind = "PushTransform",
+                tx = node.tx,
+                ty = node.ty,
+            })
+            for i = #node.children, 1, -1 do
+                flatten_node(node.children[i], out)
+            end
+            emit(out, { kind = "PopTransform" })
+
+        elseif kind == "Rect" then
+            emit(out, {
                 kind = "Rect",
-                tag = param.tag,
-                x = param.x,
-                y = param.y,
-                w = param.w,
-                h = param.h,
-            }
-        end
-        return nil
-    end
+                x = node.x,
+                y = node.y,
+                w = node.w,
+                h = node.h,
+                tag = node.tag,
+            })
 
-    local function text_probe_gen(param, state, query)
-        if inside(query.x, query.y, param.x, param.y, param.w, param.h) then
-            return {
+        elseif kind == "Text" then
+            emit(out, {
                 kind = "Text",
-                tag = param.tag,
-                x = param.x,
-                y = param.y,
-                w = param.w,
-                h = param.h,
-            }
-        end
-        return nil
-    end
+                x = node.x,
+                y = node.y,
+                w = node.w,
+                h = node.h,
+                tag = node.tag,
+            })
 
-    local function probe_children_back_to_front(child_gens, param, state, query)
-        for i = #child_gens, 1, -1 do
-            local hit = child_gens[i](param[i], state[i], query)
-            if hit ~= nil then return hit end
+        else
+            error("Hit: unknown node kind " .. tostring(kind), 2)
         end
-        return nil
     end
 
     function T.Hit.Root:probe()
-        local children, child_shapes = {}, {}
-        for i = 1, #self.nodes do
-            children[i] = self.nodes[i]:probe()
-            child_shapes[i] = tostring(children[i].code_shape or self.nodes[i].kind or "child")
+        local out = {}
+        for i = #self.nodes, 1, -1 do
+            flatten_node(self.nodes[i], out)
         end
-        local out = M.compose(children, function(child_gens, param, state, query)
-            return probe_children_back_to_front(child_gens, param, state, query)
-        end)
-        out.code_shape = "HitRoot(" .. table.concat(child_shapes, ",") .. ")"
         return out
     end
 
-    function T.Hit.Group:probe()
-        local children, child_shapes = {}, {}
-        for i = 1, #self.children do
-            children[i] = self.children[i]:probe()
-            child_shapes[i] = tostring(children[i].code_shape or self.children[i].kind or "child")
-        end
-        local out = M.compose(children, function(child_gens, param, state, query)
-            return probe_children_back_to_front(child_gens, param, state, query)
-        end)
-        out.code_shape = "HitGroup(" .. table.concat(child_shapes, ",") .. ")"
-        return out
+    local function current_transform(ctx)
+        local top = ctx:peek("transform")
+        if top then return top[1], top[2] end
+        return 0, 0
     end
 
-    function T.Hit.Clip:probe()
-        local children, child_shapes = {}, {}
-        for i = 1, #self.children do
-            children[i] = self.children[i]:probe()
-            child_shapes[i] = tostring(children[i].code_shape or self.children[i].kind or "child")
+    local function push_clip(ctx, x, y, w, h)
+        local tx, ty = current_transform(ctx)
+        local nx, ny, nw, nh = x + tx, y + ty, w, h
+        local top = ctx:peek("clip")
+        if top then
+            local x2 = math.max(nx, top[1])
+            local y2 = math.max(ny, top[2])
+            local r2 = math.min(nx + nw, top[1] + top[3])
+            local b2 = math.min(ny + nh, top[2] + top[4])
+            nx, ny, nw, nh = x2, y2, math.max(0, r2 - x2), math.max(0, b2 - y2)
         end
-        local out = M.compose(children, function(child_gens, param, state, query)
-            if not inside(query.x, query.y, param.x, param.y, param.w, param.h) then
-                return nil
+        ctx:push("clip", { nx, ny, nw, nh })
+    end
+
+    local function visible_in_clip(ctx, query, x, y, w, h)
+        local clip = ctx:peek("clip")
+        if clip and not inside(query.x, query.y, clip[1], clip[2], clip[3], clip[4]) then
+            return false
+        end
+        return inside(query.x, query.y, x, y, w, h)
+    end
+
+    local backend = ugps.backend("examples.ui.hittest", {
+        PushTransform = function(cmd, ctx)
+            local tx, ty = current_transform(ctx)
+            ctx:push("transform", { tx + cmd.tx, ty + cmd.ty })
+        end,
+
+        PopTransform = function(cmd, ctx)
+            ctx:pop("transform")
+        end,
+
+        PushClip = function(cmd, ctx)
+            push_clip(ctx, cmd.x, cmd.y, cmd.w, cmd.h)
+        end,
+
+        PopClip = function(cmd, ctx)
+            ctx:pop("clip")
+        end,
+
+        Rect = function(cmd, ctx, _, query)
+            local tx, ty = current_transform(ctx)
+            local x, y = cmd.x + tx, cmd.y + ty
+            if visible_in_clip(ctx, query, x, y, cmd.w, cmd.h) then
+                return {
+                    kind = "Rect",
+                    tag = cmd.tag,
+                    x = x,
+                    y = y,
+                    w = cmd.w,
+                    h = cmd.h,
+                }
             end
-            return probe_children_back_to_front(child_gens, param, state, query)
-        end)
-        out.param.x = self.x
-        out.param.y = self.y
-        out.param.w = self.w
-        out.param.h = self.h
-        out.code_shape = "HitClip(" .. table.concat(child_shapes, ",") .. ")"
-        return out
+            return nil
+        end,
+
+        Text = function(cmd, ctx, _, query)
+            local tx, ty = current_transform(ctx)
+            local x, y = cmd.x + tx, cmd.y + ty
+            if visible_in_clip(ctx, query, x, y, cmd.w, cmd.h) then
+                return {
+                    kind = "Text",
+                    tag = cmd.tag,
+                    x = x,
+                    y = y,
+                    w = cmd.w,
+                    h = cmd.h,
+                }
+            end
+            return nil
+        end,
+    })
+
+    function T:new_slot()
+        return ugps.slot(backend)
     end
 
-    function T.Hit.Transform:probe()
-        local children, child_shapes = {}, {}
-        for i = 1, #self.children do
-            children[i] = self.children[i]:probe()
-            child_shapes[i] = tostring(children[i].code_shape or self.children[i].kind or "child")
-        end
-        local out = M.compose(children, function(child_gens, param, state, query)
-            local local_query = { x = query.x - param.tx, y = query.y - param.ty }
-            return probe_children_back_to_front(child_gens, param, state, local_query)
-        end)
-        out.param.tx = self.tx
-        out.param.ty = self.ty
-        out.code_shape = "HitTransform(" .. table.concat(child_shapes, ",") .. ")"
-        return out
-    end
-
-    function T.Hit.Rect:probe()
-        return M.emit(
-            rect_probe_gen,
-            M.state.none(),
-            {
-                x = self.x,
-                y = self.y,
-                w = self.w,
-                h = self.h,
-                tag = self.tag,
-            }
-        )
-    end
-
-    function T.Hit.Text:probe()
-        return M.emit(
-            text_probe_gen,
-            M.state.none(),
-            {
-                x = self.x,
-                y = self.y,
-                w = self.w,
-                h = self.h,
-                tag = self.tag,
-            }
-        )
-    end
+    T.backend = backend
 
     return T
 end

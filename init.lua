@@ -1115,4 +1115,195 @@ M.rd = not_yet_ported("rd")
 M.grammar = not_yet_ported("grammar")
 M.parse = not_yet_ported("parse")
 
+-- ═══════════════════════════════════════════════════════════════
+-- FLAT COMMAND PATH (ugps normal form)
+--
+-- The flat command path is the recommended way to write terminals.
+-- Instead of M.emit(gen, state_decl, param), the terminal appends
+-- flat ASDL commands to an array. The slot executes them with one
+-- loop and derived stacks.
+--
+-- State is a stack: the framework derives it from Push/Pop commands.
+-- Resources are per-command-position: the framework manages lifecycle.
+-- M.lower() still provides subtree caching. That is preserved.
+--
+-- Usage:
+--   M.backend("paint", { FillRect = fn, PushClip = fn, PopClip = fn, ... })
+--   local slot = M.flat_slot("paint")
+--   slot:update(cmds)   -- flat Cmd* array
+--   slot:run(backend)   -- one loop, one stack
+-- ═══════════════════════════════════════════════════════════════
+
+local registered_backends = {}
+
+function M.backend(name, spec)
+    -- Normalize: every entry becomes { run=fn, resource=spec_or_nil }
+    -- A simple function is a command with no resources.
+    -- A table with .run and .resource is a command with managed resources.
+    local handlers = {}
+    for kind, v in pairs(spec) do
+        if type(v) == "function" then
+            handlers[kind] = { run = v, resource = nil }
+        elseif type(v) == "table" then
+            handlers[kind] = {
+                run = v.run or v[1],
+                resource = v.resource or nil,
+            }
+        end
+    end
+    registered_backends[name] = handlers
+    return handlers
+end
+
+function M.flat_slot(backend_name_or_handlers)
+    -- A flat slot executes a flat Cmd* array with one loop.
+    -- State is derived: stacks from Push/Pop, resources per-command.
+    -- This is the ugps normal form applied within mgps.
+    --
+    -- Use with M.lower() for caching:
+    --   local compile = M.lower("paint", function(root)
+    --       local cmds = {}; root:paint(cmds); return cmds
+    --   end)
+    --   slot:update(compile(root))
+    --   slot:run(backend)
+
+    local handlers
+    if type(backend_name_or_handlers) == "string" then
+        handlers = registered_backends[backend_name_or_handlers]
+        if not handlers then
+            error("mgps.flat_slot: unknown backend '" .. backend_name_or_handlers .. "'", 2)
+        end
+    elseif type(backend_name_or_handlers) == "table" then
+        handlers = backend_name_or_handlers
+    else
+        error("mgps.flat_slot: expected backend name or handler table", 2)
+    end
+
+    local cur_cmds = nil
+    local res_slots = {}  -- [cmd_index] = { key, value, release }
+    local stats = {
+        updates = 0, skipped = 0, runs = 0,
+        res_allocs = 0, res_reuses = 0, res_releases = 0,
+    }
+
+    -- Reusable context with stack helpers (not reallocated per run)
+    local ctx_stacks = {}
+    local ctx = { stacks = ctx_stacks }
+
+    function ctx:push(name, frame)
+        local s = ctx_stacks[name]
+        if not s then s = {}; ctx_stacks[name] = s end
+        s[#s + 1] = frame
+    end
+    function ctx:pop(name)
+        local s = ctx_stacks[name]
+        if s and #s > 0 then local f = s[#s]; s[#s] = nil; return f end
+    end
+    function ctx:peek(name)
+        local s = ctx_stacks[name]
+        return s and s[#s] or nil
+    end
+    function ctx:depth(name)
+        local s = ctx_stacks[name]
+        return s and #s or 0
+    end
+
+    local function reset_stacks()
+        for _, s in pairs(ctx_stacks) do
+            for i = #s, 1, -1 do s[i] = nil end
+        end
+    end
+
+    local slot = {}
+
+    function slot:update(cmds)
+        stats.updates = stats.updates + 1
+        if cmds == cur_cmds then
+            stats.skipped = stats.skipped + 1
+            return false
+        end
+
+        -- Pool old resources by key for reuse
+        local old_pool = {}
+        for i, r in pairs(res_slots) do
+            local k = r.key
+            if k ~= nil then
+                local bucket = old_pool[k]
+                if not bucket then bucket = {}; old_pool[k] = bucket end
+                bucket[#bucket + 1] = { value = r.value, release = r.release }
+            end
+        end
+
+        -- Assign resources to new commands
+        local new_res = {}
+        for i = 1, #cmds do
+            local cmd = cmds[i]
+            local h = handlers[cmd.kind]
+            if h and h.resource then
+                local key = h.resource.key(cmd)
+                local bucket = old_pool[key]
+                if bucket and #bucket > 0 then
+                    local entry = bucket[#bucket]; bucket[#bucket] = nil
+                    new_res[i] = { key = key, value = entry.value, release = h.resource.release }
+                    stats.res_reuses = stats.res_reuses + 1
+                else
+                    new_res[i] = {
+                        key = key,
+                        value = h.resource.alloc(cmd),
+                        release = h.resource.release,
+                    }
+                    stats.res_allocs = stats.res_allocs + 1
+                end
+            end
+        end
+
+        -- Release unclaimed
+        for _, bucket in pairs(old_pool) do
+            for _, entry in ipairs(bucket) do
+                if entry.release then entry.release(entry.value) end
+                stats.res_releases = stats.res_releases + 1
+            end
+        end
+
+        res_slots = new_res
+        cur_cmds = cmds
+        return true
+    end
+
+    function slot:run(...)
+        if not cur_cmds then return nil end
+        stats.runs = stats.runs + 1
+        reset_stacks()
+        local cmds = cur_cmds
+        for i = 1, #cmds do
+            local cmd = cmds[i]
+            local h = handlers[cmd.kind]
+            if h then
+                local res = res_slots[i]
+                local result = h.run(cmd, ctx, res and res.value or nil, ...)
+                if result ~= nil then return result end
+            end
+        end
+        return nil
+    end
+
+    function slot:close()
+        for _, r in pairs(res_slots) do
+            if r.release then r.release(r.value) end
+            stats.res_releases = stats.res_releases + 1
+        end
+        res_slots = {}
+        cur_cmds = nil
+        reset_stacks()
+    end
+
+    function slot:cmd_count()
+        return cur_cmds and #cur_cmds or 0
+    end
+
+    slot.stats = function() return stats end
+
+    return slot
+end
+
 return M

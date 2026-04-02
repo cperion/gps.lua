@@ -1,8 +1,11 @@
 -- examples/ui/lovepaint.lua
 --
--- Minimal LovePaint terminal on top of mgps.
--- It compiles a small paint IR into emitted mgps terms whose gens draw into
--- a graphics-like object passed at runtime.
+-- LovePaint terminal on top of ugps.
+--
+-- The authored paint tree is still ASDL, but runtime execution is flattened
+-- into a linear command array executed by a ugps slot.
+
+local ugps = require("ugps")
 
 local function next_power_of_two(n)
     local p = 1
@@ -10,8 +13,8 @@ local function next_power_of_two(n)
     return p
 end
 
-return function(M)
-    local T = M.context("draw")
+return function(GPS)
+    local T = GPS.context("draw")
         :Define [[
             module LovePaint {
                 Frame = (Pass* passes) unique
@@ -27,7 +30,7 @@ return function(M)
         ]]
 
     local resource_counter = 0
-    local function alloc_text_blob(spec)
+    local function alloc_text_blob(cmd)
         resource_counter = resource_counter + 1
         local text_obj = nil
         if love and love.graphics then
@@ -39,9 +42,13 @@ return function(M)
         return {
             kind = "TextBlob",
             resource_id = resource_counter,
-            spec = spec,
+            spec = {
+                cap = next_power_of_two(#cmd.text),
+                font_id = cmd.font_id,
+            },
             text_obj = text_obj,
             text_cache = false,
+            font = nil,
         }
     end
 
@@ -56,90 +63,127 @@ return function(M)
         return r, g, b, a
     end
 
-    local function rect_fill_gen(param, state, g)
-        g:fill_rect(param.x, param.y, param.w, param.h, param.rgba8)
-        return g
+    local function text_resource_key(cmd)
+        return string.format("%d:%d", cmd.font_id, next_power_of_two(#cmd.text))
     end
 
-    local function text_gen(param, state, g)
-        g:draw_text(state, param.font_id, param.text, param.x, param.y, param.rgba8)
-        return g
-    end
+    local backend = ugps.backend("examples.ui.lovepaint", {
+        PushClip = function(cmd, ctx, _, g)
+            g:push_clip(cmd.x, cmd.y, cmd.w, cmd.h)
+        end,
 
-    function T.LovePaint.Clip:draw()
-        local children, child_shapes = {}, {}
-        for i = 1, #self.body do
-            children[i] = self.body[i]:draw()
-            child_shapes[i] = tostring(children[i].code_shape or self.body[i].kind or "child")
-        end
-        local out = M.compose(children, function(child_gens, param, state, g)
-            g:push_clip(param.x, param.y, param.w, param.h)
-            for i = 1, #child_gens do
-                g = child_gens[i](param[i], state[i], g) or g
-            end
+        PopClip = function(cmd, ctx, _, g)
             g:pop_clip()
-            return g
-        end)
-        out.param.x = self.x
-        out.param.y = self.y
-        out.param.w = self.w
-        out.param.h = self.h
-        out.code_shape = "Clip(" .. table.concat(child_shapes, ",") .. ")"
-        return out
-    end
+        end,
 
-    function T.LovePaint.Transform:draw()
-        local children, child_shapes = {}, {}
-        for i = 1, #self.body do
-            children[i] = self.body[i]:draw()
-            child_shapes[i] = tostring(children[i].code_shape or self.body[i].kind or "child")
-        end
-        local out = M.compose(children, function(child_gens, param, state, g)
-            g:push_transform(param.tx, param.ty)
-            for i = 1, #child_gens do
-                g = child_gens[i](param[i], state[i], g) or g
-            end
+        PushTransform = function(cmd, ctx, _, g)
+            g:push_transform(cmd.tx, cmd.ty)
+        end,
+
+        PopTransform = function(cmd, ctx, _, g)
             g:pop_transform()
-            return g
-        end)
-        out.param.tx = self.tx
-        out.param.ty = self.ty
-        out.code_shape = "Transform(" .. table.concat(child_shapes, ",") .. ")"
+        end,
+
+        RectFill = function(cmd, ctx, _, g)
+            g:fill_rect(cmd.x, cmd.y, cmd.w, cmd.h, cmd.rgba8)
+        end,
+
+        Text = {
+            resource = {
+                key = text_resource_key,
+                alloc = alloc_text_blob,
+            },
+            run = function(cmd, ctx, resource, g)
+                g:draw_text(resource, cmd.font_id, cmd.text, cmd.x, cmd.y, cmd.rgba8)
+            end,
+        },
+    })
+
+    local function emit(out, cmd)
+        out[#out + 1] = cmd
         return out
     end
 
-    function T.LovePaint.RectFill:draw()
-        return M.emit(
-            rect_fill_gen,
-            M.state.none(),
-            {
-                x = self.x,
-                y = self.y,
-                w = self.w,
-                h = self.h,
-                rgba8 = self.rgba8,
-            }
-        )
+    local function flatten_node(node, out)
+        local kind = node.kind
+
+        if kind == "Group" then
+            for i = 1, #node.children do
+                flatten_node(node.children[i], out)
+            end
+
+        elseif kind == "Clip" then
+            emit(out, {
+                kind = "PushClip",
+                x = node.x,
+                y = node.y,
+                w = node.w,
+                h = node.h,
+            })
+            for i = 1, #node.body do
+                flatten_node(node.body[i], out)
+            end
+            emit(out, { kind = "PopClip" })
+
+        elseif kind == "Transform" then
+            emit(out, {
+                kind = "PushTransform",
+                tx = node.tx,
+                ty = node.ty,
+            })
+            for i = 1, #node.body do
+                flatten_node(node.body[i], out)
+            end
+            emit(out, { kind = "PopTransform" })
+
+        elseif kind == "RectFill" then
+            emit(out, {
+                kind = "RectFill",
+                x = node.x,
+                y = node.y,
+                w = node.w,
+                h = node.h,
+                rgba8 = node.rgba8,
+            })
+
+        elseif kind == "Text" then
+            emit(out, {
+                kind = "Text",
+                x = node.x,
+                y = node.y,
+                font_id = node.font_id,
+                rgba8 = node.rgba8,
+                text = node.text,
+            })
+
+        else
+            error("LovePaint: unknown node kind " .. tostring(kind), 2)
+        end
     end
 
-    function T.LovePaint.Text:draw()
-        return M.emit(
-            text_gen,
-            M.state.resource("TextBlob", {
-                cap = next_power_of_two(#self.text),
-                font_id = self.font_id,
-            }, {
-                alloc = alloc_text_blob,
-            }),
-            {
-                x = self.x,
-                y = self.y,
-                font_id = self.font_id,
-                rgba8 = self.rgba8,
-                text = self.text,
-            }
-        )
+    local function flatten_pass(pass, out)
+        if pass.kind == "Screen" then
+            for i = 1, #pass.body do
+                flatten_node(pass.body[i], out)
+            end
+            return
+        end
+        error("LovePaint: unknown pass kind " .. tostring(pass.kind), 2)
     end
+
+    function T.LovePaint.Frame:draw()
+        local out = {}
+        for i = 1, #self.passes do
+            flatten_pass(self.passes[i], out)
+        end
+        return out
+    end
+
+    function T:new_slot()
+        return ugps.slot(backend)
+    end
+
+    T.backend = backend
 
     local FakeGraphics = {}
     FakeGraphics.__index = FakeGraphics
@@ -246,6 +290,9 @@ return function(M)
         return setmetatable({
             fonts = fonts or {},
             clip_stack = {},
+            transform_stack = {},
+            tx = 0,
+            ty = 0,
         }, self)
     end
 
@@ -256,20 +303,29 @@ return function(M)
             love.graphics.setColor(1, 1, 1, 1)
         end
         self.clip_stack = {}
+        self.transform_stack = {}
+        self.tx = 0
+        self.ty = 0
     end
 
     function LoveGraphics:push_transform(tx, ty)
+        self.transform_stack[#self.transform_stack + 1] = { self.tx, self.ty }
+        self.tx = self.tx + tx
+        self.ty = self.ty + ty
         love.graphics.push("transform")
         love.graphics.translate(tx, ty)
     end
 
     function LoveGraphics:pop_transform()
         love.graphics.pop()
+        local top = self.transform_stack[#self.transform_stack]
+        self.transform_stack[#self.transform_stack] = nil
+        self.tx, self.ty = top[1], top[2]
     end
 
     function LoveGraphics:push_clip(x, y, w, h)
         local stack = self.clip_stack
-        local nx, ny, nw, nh = x, y, w, h
+        local nx, ny, nw, nh = x + self.tx, y + self.ty, w, h
         local top = stack[#stack]
         if top then
             local x2 = math.max(nx, top[1])
@@ -301,7 +357,7 @@ return function(M)
 
     function LoveGraphics:draw_text(resource, font_id, text, x, y, rgba8)
         local font = self.fonts[font_id] or love.graphics.getFont()
-        if resource.text_obj and font and resource.spec.font_id == font_id then
+        if resource and resource.text_obj and font and resource.spec.font_id == font_id then
             if resource.font ~= font then
                 resource.font = font
                 resource.text_obj = love.graphics.newText(font)

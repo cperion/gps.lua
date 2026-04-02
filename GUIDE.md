@@ -2378,11 +2378,843 @@ resolved, positioned nodes.
 
 ---
 
+## Chapter 37: The Flatten-Early Rule — Recursive Structures Are Expensive
+
+This is arguably the single most important canonical rule in GPS/ASDL
+design. It is easy to miss because trees feel natural and the ASDL
+schema language makes them easy to write.
+
+> **The Rule**: A recursive data structure (tree, graph) must be
+> flattened into a linear traversal as early as possible. The first
+> thing after a tree is a gen/param/state that iterates linearly.
+> Containment goes on the side.
+
+### Why Trees Are Expensive
+
+A tree costs you at every level:
+
+1. **Construction**: Allocating/interning nodes at every nesting level.
+   An N-leaf tree with depth D creates O(N+D) intermediate nodes.
+
+2. **Traversal**: Every lowering that walks the tree is O(N) recursive
+   calls. Method dispatch at every node. Stack frames. Cache-unfriendly
+   pointer chasing.
+
+3. **Repetition**: If you have Tree → Tree → Tree → Machine, you are
+   paying the recursive traversal cost THREE times before anything
+   runs linearly.
+
+4. **Composition overhead**: `M.compose()` on a tree produces nested
+   gen calls. The runtime machine has N levels of function call
+   nesting matching the tree shape.
+
+Consider the current UI demo pipeline:
+
+```
+UI ASDL (tree)
+  → recursive :measure() + :place()       ← traversal #1
+    → View ASDL (tree)                     ← still a tree!
+      → recursive :paint_ast()             ← traversal #2
+        → LovePaint ASDL (tree)            ← still a tree!
+          → recursive :draw()              ← traversal #3
+            → recursive M.compose()        ← traversal #4
+              → nested gen(param,state)     ← execution is nested calls
+```
+
+Four tree walks. The tree shape persists all the way to the terminal.
+
+### What Flattening Means
+
+Flattening means converting the tree into a **linear command sequence**
+with **containment expressed as push/pop markers**:
+
+```
+Tree:                           Flat:
+  Clip(0,0,800,600,             push_clip(0,0,800,600)
+    Transform(10,20,              push_transform(10,20)
+      Rect(0,0,100,30,0xff)        fill_rect(0,0,100,30,0xff)
+      Text(0,0,1,0xff,"hi")        draw_text(0,0,1,0xff,"hi")
+    )                             pop_transform
+  )                             pop_clip
+```
+
+The flat list is just an array. Iterating it is a single `for` loop.
+No recursion. No method dispatch. No pointer chasing. Cache-friendly
+linear memory access.
+
+Containment is expressed by push/pop pairs, not by nesting. The
+**depth** information is implicit in the push/pop stack — it exists
+on the side, as runtime state of the iterator, not in the structure
+of the data.
+
+### The Canonical Flattened IR
+
+Instead of:
+
+```
+module Paint {
+    Frame = (Node* nodes) unique
+    Node = Group(Node* children) unique           ← RECURSIVE
+         | Clip(... Node* body) unique             ← RECURSIVE
+         | Transform(... Node* body) unique        ← RECURSIVE
+         | RectFill(...) unique
+         | Text(...) unique
+}
+```
+
+The flattened IR is:
+
+```
+module DrawList {
+    Frame = (Cmd* cmds) unique
+    Cmd = PushClip(number x, number y, number w, number h) unique
+        | PopClip unique
+        | PushTransform(number tx, number ty) unique
+        | PopTransform unique
+        | FillRect(number x, number y, number w, number h, number rgba8) unique
+        | DrawText(number x, number y, number font_id, number rgba8, string text) unique
+}
+```
+
+No recursion. `Cmd*` is a flat list. The sum type has push/pop
+variants for containment. A `Frame` is just an array of commands.
+
+### The gen/param/state for a Flat DrawList
+
+The flattened IR maps directly to a single gen/param/state machine:
+
+```lua
+local function drawlist_gen(param, state, g)
+    local cmds = param.cmds
+    for i = 1, #cmds do
+        local cmd = cmds[i]
+        local k = cmd.kind
+        if k == "FillRect" then
+            g:fill_rect(cmd.x, cmd.y, cmd.w, cmd.h, cmd.rgba8)
+        elseif k == "DrawText" then
+            g:draw_text(cmd.x, cmd.y, cmd.font_id, cmd.rgba8, cmd.text)
+        elseif k == "PushClip" then
+            g:push_clip(cmd.x, cmd.y, cmd.w, cmd.h)
+        elseif k == "PopClip" then
+            g:pop_clip()
+        elseif k == "PushTransform" then
+            g:push_transform(cmd.tx, cmd.ty)
+        elseif k == "PopTransform" then
+            g:pop_transform()
+        end
+    end
+    return g
+end
+```
+
+One gen. One param (the command array). State is whatever the
+graphics backend tracks (clip stack, transform stack). No
+`M.compose()`, no recursive gen nesting. Just a flat loop.
+
+### Where Flattening Should Happen
+
+The rule says: **immediately after the tree**.
+
+The tree is the user's mental model. The user thinks in nested
+containment: "this column contains these rows, each row contains
+these widgets." That is correct and natural for authoring.
+
+But the moment layout is resolved and we know positions, the tree
+should become a flat list:
+
+```
+UI ASDL (tree)      ← user thinks in trees, that's fine
+  │
+  │  layout: :measure() + :place()
+  │  ← the place() walk is the ONLY recursive traversal
+  │  ← it produces flat commands, not a new tree
+  ▼
+DrawList (flat)     ← containment as push/pop markers
+  │
+  │  terminal: one emit() with a flat-loop gen
+  ▼
+Running machine     ← single gen, linear iteration
+```
+
+This replaces:
+
+```
+UI ASDL (tree)
+  → View ASDL (tree)          ← eliminated
+    → Paint ASDL (tree)       ← eliminated
+      → composed machines     ← eliminated
+```
+
+Three intermediate tree layers collapse into one flat IR.
+
+### How :place() Produces a Flat List
+
+The layout walk already visits every node. Instead of producing
+nested View nodes, it appends to a flat command list:
+
+```lua
+function UI.Clip:place(x, y, cmds)
+    cmds[#cmds+1] = DrawList.Cmd.PushClip(x, y, self.w, self.h)
+    self.child:place(x, y, cmds)     -- children append to same list
+    cmds[#cmds+1] = DrawList.Cmd.PopClip
+end
+
+function UI.Rect:place(x, y, cmds)
+    cmds[#cmds+1] = DrawList.Cmd.FillRect(x, y, self.w, self.h, self.rgba8)
+end
+
+function UI.Column:place(x, y, cmds)
+    local cy = y
+    for i = 1, #self.children do
+        local _, ch = self.children[i]:measure()
+        self.children[i]:place(x, cy, cmds)
+        cy = cy + ch + self.spacing
+    end
+end
+```
+
+One recursive walk (the layout pass) produces a flat output.
+Everything downstream is linear.
+
+### State-Shaping in a Flat List
+
+The question is: where does state-shaping classification happen in a
+flat world?
+
+Answer: **in the command itself**. Each `DrawText` command carries
+enough information for the terminal gen to classify state:
+
+```lua
+local function drawlist_gen(param, state, g)
+    local cmds = param.cmds
+    for i = 1, #cmds do
+        local cmd = cmds[i]
+        if cmd.kind == "DrawText" then
+            -- State management: check if this text's resource needs
+            -- reallocation (capacity bucket changed, font changed)
+            local res = state.text_resources[i]
+            local cap = next_pow2(#cmd.text)
+            if not res or res.cap ~= cap or res.font_id ~= cmd.font_id then
+                if res then release_text_blob(res) end
+                res = alloc_text_blob(cap, cmd.font_id)
+                state.text_resources[i] = res
+            end
+            g:draw_text(res, cmd.font_id, cmd.text, cmd.x, cmd.y, cmd.rgba8)
+        end
+    end
+    return g
+end
+```
+
+State is managed per-command-slot in a flat array. When the command
+list changes shape (commands added/removed/reordered), the state
+array is reconciled — but that reconciliation is a flat diff, not a
+tree diff.
+
+### Containment on the Side
+
+The phrase "containment on the side" means: the push/pop structure is
+not in the data layout. It is in the **runtime execution state**.
+
+The gen function maintains a clip stack and transform stack as it
+walks the flat list:
+
+```lua
+-- Inside the gen:
+if cmd.kind == "PushClip" then
+    state.clip_depth = state.clip_depth + 1
+    state.clip_stack[state.clip_depth] = { cmd.x, cmd.y, cmd.w, cmd.h }
+    g:push_clip(cmd.x, cmd.y, cmd.w, cmd.h)
+elseif cmd.kind == "PopClip" then
+    g:pop_clip()
+    state.clip_depth = state.clip_depth - 1
+end
+```
+
+Containment is state. Iteration is linear. Data is flat.
+That is the canonical shape.
+
+### When NOT to Flatten
+
+The user's authoring ASDL should remain a tree. Users think in
+containment. Forcing them to think in push/pop is hostile.
+
+The rule is about **the IR between authoring and execution**, not
+about the authoring language itself.
+
+Also, if you need multiple backends from one source (paint + hit-test),
+you might flatten into different lists for each backend during the
+same layout walk. The layout walk visits the tree once and appends
+to multiple flat lists simultaneously:
+
+```lua
+function UI.Rect:place(x, y, paint_cmds, hit_cmds)
+    paint_cmds[#paint_cmds+1] = PaintCmd.FillRect(x, y, self.w, self.h, self.rgba8)
+    hit_cmds[#hit_cmds+1]     = HitCmd.Rect(x, y, self.w, self.h, self.tag)
+end
+
+function UI.Text:place(x, y, paint_cmds, hit_cmds)
+    local w, h = self:measure()
+    paint_cmds[#paint_cmds+1] = PaintCmd.DrawText(x, y, self.font_id, self.rgba8, self.text)
+    hit_cmds[#hit_cmds+1]     = HitCmd.Rect(x, y, w, h, self.tag)
+end
+```
+
+One tree walk, two flat outputs. No intermediate View tree needed.
+
+### How This Changes the Layer Stack
+
+Before (current mgps demo):
+```
+UI ASDL (tree, user-authored)
+  → View ASDL (tree, positioned)       ← unnecessary intermediate tree
+    → Paint ASDL (tree, backend)        ← unnecessary intermediate tree
+      → M.compose() (recursive)         ← tree-shaped runtime
+        → nested gen calls
+```
+
+After (flattened):
+```
+UI ASDL (tree, user-authored)
+  │
+  │  layout walk (one recursive pass, the ONLY recursive pass)
+  │  outputs flat command lists for each backend
+  ▼
+PaintCmds (flat array) + HitCmds (flat array)
+  │
+  │  one emit() per backend, flat-loop gen
+  ▼
+Running machines (linear iteration)
+```
+
+### The Interning Story for Flat Lists
+
+Flat command lists are still ASDL with `unique`. A `Frame(Cmd* cmds)`
+is interned by its command sequence. If the same commands appear in
+the same order, you get the same Frame object — L1 cache hit in
+`M.lower()`, entire pipeline skipped.
+
+Individual `Cmd` nodes are also interned. If a rect does not move,
+its `FillRect(10, 20, 100, 30, 0xff0000ff)` is the same interned
+object as last frame. The list interning walks the elements and
+finds the same canonical list.
+
+So structural caching still works. But now the cached object is a
+flat array, not a tree. Cache comparison is a linear element walk,
+not a recursive tree walk.
+
+### The Performance Consequence
+
+With flattening:
+
+- **One** recursive traversal (layout) instead of three or four
+- **Zero** intermediate tree allocations (View, Paint IR)
+- **Zero** `M.compose()` overhead (no recursive gen nesting)
+- **Linear** execution: one gen, one loop, cache-friendly
+- **Simpler** state management: flat array of per-command resources
+
+For N leaf nodes, the current pipeline does ~4N recursive method
+calls across four tree layers. The flattened pipeline does ~N
+recursive calls (layout) plus ~N linear iterations (execution).
+
+### Summary: The Canonical Shape
+
+```
+User ASDL:    tree     (natural for authoring)
+                │
+         layout walk    (the ONE recursive pass)
+                │
+                ▼
+Backend IR:   flat     (Cmd* array, push/pop for containment)
+                │
+         one emit()     (single gen with a for loop)
+                │
+                ▼
+Execution:    linear   (gen iterates commands, state on the side)
+```
+
+Tree in. Flat out. Linear forever after.
+
+That is the canonical rule.
+
+---
+
+## Chapter 38: The Layer-Count Rule — Mutual Recursion Materializes as Layers
+
+Chapter 37 gives you the flatten-early rule: tree in, flat out, linear
+forever. But it leaves a question open: **what if one recursive pass
+is not enough?**
+
+This happens constantly in real systems. The answer is the second
+canonical pattern:
+
+> Every cycle in the data dependency between parent and child
+> costs you one materialized intermediate representation.
+
+### The Problem: Parent-Child Dependency Cycles
+
+Consider word-wrapping text inside a flex-grow container:
+
+```
+Parent asks child:  "how tall are you?"
+Child (text) says:  "depends — how wide am I allowed to be?"
+Parent says:        "depends — how wide are all my children."
+```
+
+That is a cycle:
+
+```
+parent height ← child height ← child width ← parent width ← child widths
+                                                              ↑
+                                                         (cycle back)
+```
+
+A single tree pass cannot resolve this. A top-down pass does not know
+child heights yet. A bottom-up pass does not know parent width
+constraints yet. You need **both directions**.
+
+### The Solution: Two Passes, One Intermediate
+
+Split the cycle into two passes over the same tree, with an
+intermediate representation carrying partial results between them:
+
+```
+Pass 1 (down):  propagate constraints
+  • parent tells child: "you have at most 300px width"
+  • child records the constraint
+
+Pass 2 (up):    resolve sizes
+  • child wraps text within 300px → needs 4 lines → height = 80px
+  • parent collects child heights → total height = 240px
+```
+
+The intermediate is the **constraint record** — the thing that pass 1
+produces and pass 2 consumes. It can be as simple as a number
+(available width) threaded through the recursion, or as complex as a
+full constraint object (min/max width, min/max height, flex basis).
+
+### The General Rule
+
+Count the dependency cycles between parent and child:
+
+| Cycles | Passes needed | Intermediate layers | Example                          |
+|--------|---------------|--------------------|---------------------------------|
+| 0      | 1             | 0                  | Static layout, fixed sizes       |
+| 1      | 2             | 1                  | Word wrap + grow                 |
+| 2      | 3             | 2                  | Intrinsic sizing + flex + wrap   |
+| N      | N+1           | N                  | Full CSS (many cycles)           |
+
+CSS layout is expensive because it has **many** such cycles:
+percentage widths, min/max constraints, flex grow/shrink, baseline
+alignment, intrinsic sizing. Each demands another pass. That is not
+bad engineering — it is the honest cost of the dependency structure.
+
+### What the Intermediate Looks Like
+
+The intermediate is NOT a new ASDL tree. It is data attached to the
+existing tree — or threaded through the traversal as parameters:
+
+```lua
+-- Pass 1: propagate constraints down
+function UI.Column:layout(max_w)
+    local child_constraints = {}
+    for i = 1, #self.children do
+        child_constraints[i] = { max_w = max_w }  -- or flex-computed
+    end
+    return child_constraints
+end
+
+-- Pass 2: resolve sizes up, emit flat commands
+function UI.Column:place(x, y, max_w, dc, hc)
+    local cy = y
+    for i = 1, #self.children do
+        local c = self.children[i]
+        local ch = c:measure(max_w)   -- measure WITHIN constraint
+        c:place(x, cy, max_w, dc, hc) -- emit flat commands
+        cy = cy + ch + self.spacing
+    end
+end
+```
+
+In this example, `max_w` IS the intermediate. It flows down in pass 1
+(often folded into the same traversal as pass 2 when the constraint is
+simple enough). The resolved height flows up as the return value.
+
+For more complex constraints (flex), the intermediate might be a
+struct:
+
+```lua
+-- Constraint object threaded between passes
+{
+    min_w = 0, max_w = 300,
+    min_h = 0, max_h = math.huge,
+    flex_basis = 0, flex_grow = 1, flex_shrink = 1,
+}
+```
+
+### The Two-Pass Flatten Pattern
+
+Combining this with the flatten-early rule gives the complete
+canonical shape for layout-heavy systems:
+
+```
+UI ASDL (tree, user-authored)
+  │
+  │  Pass 1 (down): propagate constraints
+  │  Pass 2 (up):   resolve sizes + emit flat commands
+  │
+  │  (these can be fused into a single walk if the constraint
+  │   is simple enough — e.g. just "available width")
+  ▼
+Flat Cmd* arrays — linear forever after
+```
+
+The key insight: **the two passes are still over the same tree**.
+No new tree is materialized. The intermediate is a parameter
+(constraint flowing down) and a return value (size flowing up).
+The output is flat.
+
+### When You Actually Need a Separate Tree Layer
+
+Sometimes the intermediate really is big enough to justify its own
+ASDL. This happens when:
+
+1. **The intermediate is shared across multiple consumers.** If both
+   the paint backend and the hit backend need the resolved layout
+   (positions + sizes), you might materialize it as a positioned
+   node list so both can read it.
+
+2. **The intermediate needs to be cached independently.** If
+   constraints change rarely but content changes often, caching the
+   resolved layout separately lets you skip re-layout when only
+   paint data changes.
+
+3. **The intermediate has a different shape than the input.** If
+   layout resolution collapses containers (Column disappears, its
+   children become positioned leaves), the output shape differs
+   enough from the input to warrant its own type.
+
+But even in these cases, the materialized layer should be **flat**
+(a list of positioned commands), not another tree.
+
+### The Design Procedure
+
+When designing your layer stack:
+
+1. Write down what parents need from children.
+2. Write down what children need from parents.
+3. Count the dependency cycles.
+4. That number is how many intermediate representations
+   (constraint records) you need between passes.
+5. All passes are over the **same** UI tree.
+6. The output of the **last** pass is flat.
+
+```
+0 cycles →  1 pass  →  flat output
+1 cycle  →  2 passes →  constraint + flat output
+N cycles →  N+1 passes →  N intermediates + flat output
+```
+
+### Worked Example: Finding Cycles in a UI Layout System from Scratch
+
+You are designing a UI from nothing. You want columns, rows, text
+with word wrap, padding, and maybe flex-grow later. How do you know
+how many passes you need?
+
+**Step 1: List your layout features.**
+
+Write them down plainly:
+
+```
+1. Fixed-size rectangles (Rect with explicit w, h)
+2. Text with word wrap (width affects height)
+3. Columns (stack children vertically, spacing)
+4. Rows (stack children horizontally, spacing)
+5. Padding (insets around a child)
+6. Flex grow (distribute leftover space to children)
+7. Min/max width constraints on flex children
+```
+
+**Step 2: For each feature, write what flows down and what flows up.**
+
+Draw two columns — what the parent tells the child (constraints flowing
+down), and what the child tells the parent (measurements flowing up):
+
+```
+Feature             Down (parent → child)         Up (child → parent)
+───────────────────────────────────────────────────────────────────────
+1. Fixed rect       (nothing)                     width, height
+2. Text wrap        available width               wrapped height
+3. Column           (nothing special)             total height, max width
+4. Row              (nothing special)             total width, max height
+5. Padding          (reduces available space)      adds to child size
+6. Flex grow        assigned width (after grow)   natural width (before grow)
+7. Min/max          (nothing extra)               clamped size
+```
+
+**Step 3: Trace data-flow arrows and look for loops.**
+
+Start with features 1–5 only (no flex):
+
+```
+Column layout:
+  Column has available width W (from its parent or the window).
+  │
+  ├─▶ Pass available width W to each child
+  │     │
+  │     ▼
+  │   Child measures itself given W
+  │   • Fixed rect: returns (w, h) — ignores W
+  │   • Text: wraps within W → returns (actual_w, wrapped_h)
+  │   • Padding: subtracts insets from W, asks inner child, adds insets back
+  │     │
+  │     ▼
+  ├─◀ Child returns (child_w, child_h)
+  │
+  Column sums child heights + spacing → returns (max_child_w, total_h)
+```
+
+Data flows down (W) then up (sizes). **No cycle.** One pass suffices.
+The parent knows W before it asks children. Children don't need
+anything that depends on other children's answers.
+
+This is why a simple Column + Row + Text + Padding layout needs only
+**one pass**. You can fold measure and place into a single walk.
+
+Now add feature 6 — **flex grow**:
+
+```
+Row with flex-grow children:
+  Row has available width W.
+  │
+  ├─▶ Ask each child: "what is your natural width?"
+  │     │
+  │     ▼
+  │   Child returns natural_w
+  │     │
+  ├─◀───┘
+  │
+  Row computes: leftover = W - sum(natural_widths)
+  Row distributes leftover to children by grow factor
+  │
+  ├─▶ Tell each child: "your assigned width is X"
+  │     │
+  │     ▼
+  │   Child re-measures within assigned width X
+  │   (text re-wraps → new height)
+  │     │
+  ├─◀ Child returns (X, new_h)
+  │
+  Row returns (W, max(new_heights))
+```
+
+Trace the arrows:
+
+```
+child natural_w → parent leftover → parent distribution
+    → child assigned_w → child wraps → child height → parent height
+```
+
+Is there a cycle? Let’s check:
+- Parent needs child natural widths to compute distribution. ✔
+- Child needs distribution result to know assigned width. ✔
+- But child natural width does NOT depend on the distribution.
+  It depends on the child's content and min-content.
+
+So it is NOT a cycle in the strict sense — it is a **two-phase
+linear dependency**:
+
+```
+Phase A (up):   children report natural sizes
+Phase B (down): parent distributes, children resolve within assigned sizes
+```
+
+But it does require **two traversals of the children**: once to
+collect natural sizes, once to assign and resolve. That’s two passes
+over the same list. Whether you call this "one cycle" or "a two-phase
+linear flow" is a matter of terminology — the practical consequence is
+the same: **you need to visit children twice**.
+
+So: flex grow = **1 additional pass** = **2 total passes**.
+
+Now add feature 7 — **min/max constraints on flex children**:
+
+```
+Row with flex-grow + min/max:
+  Phase A: collect natural widths
+  Phase B: distribute leftover
+    → child 3 gets assigned 400px, but max-width is 200px
+    → child 3 is clamped to 200px
+    → 200px of leftover is now unassigned
+    → must redistribute to unclamped children   ← NEW PHASE
+  Phase C: redistribute overflow from clamped children
+    → child 1 and child 2 absorb the extra 200px
+    → but wait — child 1 might now hit ITS max-width
+    → iterate until stable                      ← POTENTIAL LOOP
+```
+
+This is a genuine cycle: redistribution depends on which children
+clamped, but clamping depends on the distribution. In the worst case
+this iterates up to N times (N = number of children). CSS flexbox
+specifies this as a loop that terminates when no more children clamp.
+
+In practice you can bound it: each iteration clamps at least one more
+child, so at most N iterations. But it IS an additional pass (or
+several).
+
+So: min/max constraints on flex = **1 more potential pass** = **3 total**.
+
+**Step 4: Build the cycle count table for your design.**
+
+```
+Design level         Features                        Cycles  Passes
+─────────────────────────────────────────────────────────────────────
+① Minimal           fixed + text + col/row + pad     0       1
+② Flex              add grow/shrink                  1       2
+③ Constrained flex  add min/max on flex children      2       3
+④ Full CSS-like     add % sizes, intrinsic, baseline  3–4     4–5
+```
+
+**Step 5: Choose your design level.**
+
+This is the critical engineering decision. You are not forced to
+implement full CSS. Most UI toolkits don't.
+
+- **Level ①** is what the mgps demos use. One pass. Simple. Covers
+  90% of real UI layouts (fixed panels, scrollable lists, text labels,
+  padding, columns, rows).
+
+- **Level ②** is what Flutter and SwiftUI roughly do. Two passes
+  (constraints down, sizes up). Covers flex layouts, which handle
+  most responsive designs.
+
+- **Level ③** is what CSS Flexbox does. Three passes with a clamp
+  loop. Covers min/max constrained flex. More complex, but handles
+  edge cases.
+
+- **Level ④** is full CSS. Four or five passes. Handles everything
+  but is famously complex and hard to optimize.
+
+You choose the level based on what your users actually need. Each
+level adds exactly one more pass, not one more tree layer.
+
+**Step 6: Implement as passes over the same tree.**
+
+For level ② (flex):
+
+```lua
+-- Pass 1: collect natural sizes (bottom-up)
+function UI.Row:measure_natural()
+    local sizes = {}
+    for i = 1, #self.children do
+        sizes[i] = { self.children[i]:measure_natural() }
+    end
+    return sizes
+end
+
+-- Pass 2: distribute and resolve (top-down), emit flat commands
+function UI.Row:place(x, y, available_w, dc, hc)
+    local sizes = self:measure_natural()
+    local total_natural = 0
+    for i = 1, #sizes do total_natural = total_natural + sizes[i][1] end
+
+    local leftover = available_w - total_natural - (self.spacing * (#sizes - 1))
+    local total_grow = 0
+    for i = 1, #self.children do
+        total_grow = total_grow + (self.children[i].grow or 0)
+    end
+
+    local cx = x
+    for i = 1, #self.children do
+        local child = self.children[i]
+        local w = sizes[i][1]
+        if total_grow > 0 and (child.grow or 0) > 0 then
+            w = w + leftover * (child.grow / total_grow)
+        end
+        child:place(cx, y, w, dc, hc)
+        cx = cx + w + self.spacing
+    end
+end
+```
+
+Two passes, same tree, flat output. No intermediate tree layer.
+
+**The complete procedure summarized:**
+
+```
+1. List layout features
+2. For each: what flows down? what flows up?
+3. Trace arrows. Find loops.
+4. Count unique cycles → that’s your pass count - 1
+5. Choose your design level (you don’t have to support everything)
+6. Implement as passes over the same tree
+7. Last pass emits flat command arrays
+8. Linear forever after
+```
+
+### Example: Audio DSP — Cycle Analysis
+
+The same procedure works outside UI. Consider an audio graph:
+
+```
+Parent asks child:  "what is your output buffer?"
+Child asks parent:  "what is the sample rate? buffer size?"
+```
+
+Sample rate and buffer size are **global constants**, not dependent on
+child output. No cycle. One pass suffices.
+
+But add feedback:
+
+```
+Delay node:  output depends on input from a FUTURE node in the graph
+```
+
+That is a cycle in the **graph** (not the tree). It requires a
+different resolution strategy: break the cycle with a one-buffer
+delay, which is standard in audio DSP. The "intermediate" is the
+delay buffer — one per feedback cycle in the graph.
+
+Same rule, different domain.
+
+### Example: Compiler — Cycle Analysis
+
+Type inference with bidirectional typing:
+
+```
+Parent (function call) asks child (argument): "what is your type?"
+Child (lambda) asks parent: "what type are you expecting me to be?"
+```
+
+One cycle. Two passes: first synthesize types bottom-up, then check
+types top-down. That’s exactly what bidirectional type checking does.
+The intermediate is the "expected type" flowing down.
+
+Mutual recursion in type definitions (type A references type B which
+references type A) adds another cycle. The intermediate is a
+"forward declaration" or "type variable" that gets unified later.
+
+Same rule, same counting procedure.
+
+### Combined with Chapter 37
+
+The complete layer-count rule is:
+
+> **Layers from flattening**: exactly 1 (tree → flat).
+> **Layers from mutual recursion**: one per dependency cycle.
+> **Total layers** = 1 + number of parent↔child dependency cycles.
+> **The last output is always flat.**
+
+This is mechanical. You do not guess how many layers you need.
+You count cycles.
+
+---
+
 # Part VII — Advanced Topics
 
 ---
 
-## Chapter 37: Fusion — Why GPS Machines Compose Without Materialization
+## Chapter 39: Fusion — Why GPS Machines Compose Without Materialization
 
 One of the deepest consequences of the GPS model is **fusion**: composed
 machines execute without materializing intermediate results.
@@ -2421,7 +3253,7 @@ This is a design choice, not an accident.
 
 ---
 
-## Chapter 38: The Self-Hosted Story — ASDL Parses Itself
+## Chapter 40: The Self-Hosted Story — ASDL Parses Itself
 
 The mgps ASDL parser is itself a GPS machine:
 
@@ -2466,7 +3298,7 @@ param references. No token array materialized. Pure fusion.
 
 ---
 
-## Chapter 39: Designing for Hot Reload / Live Coding
+## Chapter 41: Designing for Hot Reload / Live Coding
 
 GPS machines naturally support hot reload because gen, param, and state
 are separate:
@@ -2491,7 +3323,7 @@ so the framework can choose the minimal response.
 
 ---
 
-## Chapter 40: The Grammar Compiler — ASDL All the Way Down
+## Chapter 42: The Grammar Compiler — ASDL All the Way Down
 
 The `grammar.lua` module demonstrates the full GPS philosophy applied
 to parsing:
@@ -2519,7 +3351,7 @@ lowering, all the way from grammar specification to parsed output.
 
 ---
 
-## Chapter 41: When Classification Is Ambiguous
+## Chapter 43: When Classification Is Ambiguous
 
 Sometimes a field genuinely resists clean classification. Here are the
 hard cases and how to resolve them.
@@ -2584,7 +3416,7 @@ needs.
 
 ---
 
-## Chapter 42: Composition Depth and Performance
+## Chapter 44: Composition Depth and Performance
 
 Deep composition trees can become expensive if not designed carefully.
 
@@ -2641,7 +3473,7 @@ Composition becomes expensive when:
 
 ---
 
-## Chapter 43: Designing ASDL for Animations and Time-Varying Data
+## Chapter 45: Designing ASDL for Animations and Time-Varying Data
 
 Animations are an interesting GPS design challenge because they
 involve time-varying values.
@@ -2709,7 +3541,7 @@ expressed as a pure function of source data.
 
 ---
 
-## Chapter 44: Testing GPS Systems
+## Chapter 46: Testing GPS Systems
 
 The GPS architecture makes testing unusually clean.
 
@@ -2780,7 +3612,7 @@ assert(stats.node_hits >= 1, "second call should hit L1 cache")
 
 ---
 
-## Chapter 45: Example — Audio DSP Pipeline
+## Chapter 47: Example — Audio DSP Pipeline
 
 ### Schema
 
@@ -2889,7 +3721,7 @@ end
 
 ---
 
-## Chapter 46: Example — Full UI Application Structure
+## Chapter 48: Example — Full UI Application Structure
 
 ### File Organization
 
@@ -3033,7 +3865,7 @@ hit_slot:close()
 
 ---
 
-## Chapter 47: Example — Language Compiler Pipeline
+## Chapter 49: Example — Language Compiler Pipeline
 
 ### Schema
 
@@ -3138,7 +3970,7 @@ scalars become payload, composition follows containment.
 
 ---
 
-## Chapter 48: Example — Spreadsheet Evaluator
+## Chapter 50: Example — Spreadsheet Evaluator
 
 ### Schema
 
@@ -3213,7 +4045,7 @@ domain.
 
 ---
 
-## Chapter 49: Example — Game Entity System
+## Chapter 51: Example — Game Entity System
 
 ### Schema
 
@@ -3261,7 +4093,7 @@ that updates/renders all entities in sequence.
 
 ---
 
-## Chapter 50: The ASDL Design Checklist
+## Chapter 52: The ASDL Design Checklist
 
 Use this checklist when designing any ASDL schema:
 
@@ -3299,7 +4131,7 @@ Use this checklist when designing any ASDL schema:
 
 ---
 
-## Chapter 51: Common Anti-Patterns
+## Chapter 53: Common Anti-Patterns
 
 ### Anti-Pattern: The God ASDL
 
@@ -3372,7 +4204,7 @@ is a caching opportunity.
 
 ---
 
-## Chapter 52: The Fundamental Insight — Programs Are Compilers, Not Interpreters
+## Chapter 54: The Fundamental Insight — Programs Are Compilers, Not Interpreters
 
 The deepest thing GPS teaches is that virtually all interactive
 programs are compilers in disguise.
@@ -3416,7 +4248,7 @@ question reduces to a compiler design question:
 
 ---
 
-## Chapter 53: Why Three Roles and Not Two or Four
+## Chapter 55: Why Three Roles and Not Two or Four
 
 Could we collapse param into gen (like closures do)? Yes, but then we
 lose the ability to rebind param without changing gen. Payload updates
@@ -3447,7 +4279,7 @@ Anything fewer loses expressiveness. Anything more does not add it.
 
 ---
 
-## Chapter 54: Why Structural Identity Over Reference Identity
+## Chapter 56: Why Structural Identity Over Reference Identity
 
 In OOP, two objects with identical fields are still two different
 objects (`a ~= b` even if all fields match). Identity is reference-
@@ -3474,7 +4306,7 @@ and the runtime state is separate (in slots).
 
 ---
 
-## Chapter 55: Why Classification Over Convention
+## Chapter 57: Why Classification Over Convention
 
 Many frameworks use convention to manage the gen/param/state split:
 
@@ -3501,7 +4333,7 @@ classification errors as measurable performance data.
 
 ---
 
-## Chapter 56: Why Structure Over Keys
+## Chapter 58: Why Structure Over Keys
 
 The deepest design principle of GPS/mgps is:
 
@@ -3528,7 +4360,7 @@ instead?" Usually you can.
 
 ---
 
-## Chapter 57: Why ASDL Over Ad Hoc Types
+## Chapter 59: Why ASDL Over Ad Hoc Types
 
 ASDL gives you:
 
@@ -3555,7 +4387,7 @@ spend more time on plumbing than on your domain.
 
 ---
 
-## Chapter 58: Why Compilation Over Interpretation
+## Chapter 60: Why Compilation Over Interpretation
 
 GPS models applications as compilers, not interpreters.
 
@@ -3581,7 +4413,7 @@ functions run without dynamic dispatch.
 
 ---
 
-## Chapter 59: The Invariant That Holds Everything Together
+## Chapter 61: The Invariant That Holds Everything Together
 
 There is one invariant that, if maintained, guarantees the entire
 GPS/mgps system works correctly:
@@ -3604,7 +4436,7 @@ maintain this one invariant.
 
 ---
 
-## Chapter 60: Summary — The Complete Design Discipline
+## Chapter 62: Summary — The Complete Design Discipline
 
 For every type at every layer:
 
@@ -3954,9 +4786,25 @@ Lowering N→N+1:
   - Container handling: [consumed or surviving?]
 ```
 
+## Quick Reference: Layer Count Decision Procedure
+
+```
+1. List what parents need from children:  [heights, baselines, ...]
+2. List what children need from parents:  [max width, flex grow, ...]
+3. Count dependency cycles:               [N]
+4. Layer count = 1 (flatten) + N (cycle resolution)
+5. All N resolution passes traverse the SAME tree
+6. The last pass emits flat command arrays
+7. Everything after that is linear iteration
+
+   0 cycles:  tree ─── 1 pass ───▶ flat Cmd*
+   1 cycle:   tree ─── 2 passes (constraints down, sizes up) ──▶ flat Cmd*
+   N cycles:  tree ─── N+1 passes ───▶ flat Cmd*
+```
+
 ---
 
-## Quick Reference: The Seven Invariants of a Well-Designed GPS System
+## Quick Reference: The Eight Invariants of a Well-Designed GPS System
 
 1. **Every `unique` type is immutable.** Never mutate interned nodes.
 
@@ -3978,19 +4826,28 @@ Lowering N→N+1:
 7. **Every cross-module lowering is wrapped in `M.lower()`.** This
    ensures caching at structural boundaries.
 
+8. **Recursive structures are flattened immediately.** The first IR
+   after a tree/graph is a flat command list. Containment is push/pop.
+   Everything downstream is linear iteration.
+
+9. **Layer count is determined by dependency cycles.** Count the
+   mutual recursion cycles between parent and child. That number
+   is how many intermediate representations (constraint records)
+   you need. Total layers = 1 (flatten) + number of cycles.
+   The last output is always flat.
+
 ---
 
 ## Quick Reference: Common Layer Stacks by Domain
 
-### UI Rendering
+### UI Rendering (canonical flattened form)
 ```
-UI ASDL          (widgets, layout spec)
-  ↓ layout lowering (measure + place)
-View ASDL        (positioned scene graph)
-  ↓ backend projection
-Paint IR         (draw commands)         Hit IR         (spatial queries)
-  ↓ terminal                              ↓ terminal
-emit(gen, state, param)                  emit(gen, state, param)
+UI ASDL          (widgets, layout spec — TREE)
+  ↓ layout walk: measure + place (the ONE recursive pass)
+  ↓ outputs flat command lists directly
+PaintCmds (flat) + HitCmds (flat)    push/pop for containment
+  ↓ one emit() each, flat-loop gen
+emit(gen, state, param)              linear iteration
 ```
 
 ### Audio DSP
