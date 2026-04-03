@@ -1,9 +1,9 @@
 #!/usr/bin/env luajit
--- test_ugps.lua — comprehensive test for ugps
+-- test_ugps.lua — comprehensive test for the flat-command gps runtime
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local M = require("ugps")
+local M = require("gps")
 
 local pass, fail = 0, 0
 local function check(name, cond)
@@ -80,8 +80,8 @@ function U.UI.Clip:place(x, y, dc, hc)
     dc[#dc+1] = D.Draw.PushClip(x, y, self.w, self.h)
     hc[#hc+1] = H.Hit.PushClip(x, y, self.w, self.h)
     self.child:place(x, y, dc, hc)
-    dc[#dc+1] = D.Draw.PopClip
-    hc[#hc+1] = H.Hit.PopClip
+    dc[#dc+1] = D.Draw.PopClip()
+    hc[#hc+1] = H.Hit.PopClip()
 end
 
 function U.UI.Transform:measure() return self.child:measure() end
@@ -89,8 +89,8 @@ function U.UI.Transform:place(x, y, dc, hc)
     dc[#dc+1] = D.Draw.PushTransform(self.tx, self.ty)
     hc[#hc+1] = H.Hit.PushTransform(self.tx, self.ty)
     self.child:place(x, y, dc, hc)
-    dc[#dc+1] = D.Draw.PopTransform
-    hc[#hc+1] = H.Hit.PopTransform
+    dc[#dc+1] = D.Draw.PopTransform()
+    hc[#hc+1] = H.Hit.PopTransform()
 end
 
 function U.UI.Column:measure()

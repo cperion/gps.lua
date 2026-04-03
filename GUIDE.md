@@ -1,5 +1,10 @@
 # The Complete Guide to Designing Good ASDL and GPS Systems
 
+> **Note:** The current canonical runtime in this repository is the flat-command
+> `gps` runtime in `init.lua`. This guide still contains extensive material
+> from the older `emit/state/compose` runtime and should be treated as design
+> background until it is fully rewritten.
+
 ## Bridging the Gap: From Low-Level IR to High-Level Domain Representations
 
 *A practitioner's manual based on deep study of the mgps architecture.*

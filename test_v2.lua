@@ -1,8 +1,8 @@
 #!/usr/bin/env luajit
--- test_v2.lua — full test of init2.lua (mgps v2, flat-only)
+-- test_v2.lua — flat-command gps runtime test
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
-local M = dofile("init2.lua")
+local M = require("gps")
 
 local pass, fail = 0, 0
 local function check(name, cond)
@@ -70,8 +70,8 @@ function U.UI.Clip:place(x, y, dc, hc)
     dc[#dc+1] = D.D.PushClip(x, y, self.w, self.h)
     hc[#hc+1] = H.H.PushClip(x, y, self.w, self.h)
     self.child:place(x, y, dc, hc)
-    dc[#dc+1] = D.D.PopClip
-    hc[#hc+1] = H.H.PopClip
+    dc[#dc+1] = D.D.PopClip()
+    hc[#hc+1] = H.H.PopClip()
 end
 
 function U.UI.Transform:measure() return self.child:measure() end
@@ -79,8 +79,8 @@ function U.UI.Transform:place(x, y, dc, hc)
     dc[#dc+1] = D.D.PushTransform(self.tx, self.ty)
     hc[#hc+1] = H.H.PushTransform(self.tx, self.ty)
     self.child:place(x, y, dc, hc)
-    dc[#dc+1] = D.D.PopTransform
-    hc[#hc+1] = H.H.PopTransform
+    dc[#dc+1] = D.D.PopTransform()
+    hc[#hc+1] = H.H.PopTransform()
 end
 
 function U.UI.Column:measure()
@@ -399,6 +399,6 @@ check("no M.app", M.app == nil)
 
 print("")
 print(string.format("Results: %d passed, %d failed", pass, fail))
-print(string.format("init2.lua: %d lines, %d public functions",
-    330, 6))
+print(string.format("gps init.lua: flat-command runtime, %d public functions",
+    6))
 if fail > 0 then os.exit(1) end

@@ -51,7 +51,7 @@ local json_spec = G.Grammar.Spec(
             G.Grammar.String("STRING", '"'),
             G.Grammar.Number("NUMBER"),
         },
-        { G.Grammar.Whitespace }
+        { G.Grammar.Whitespace() }
     ),
     G.Grammar.Parse({
         G.Grammar.Rule("value", G.Grammar.Choice({
@@ -84,7 +84,7 @@ local jp2 = G2_api(json_spec)
 -- ═══════════════════════════════════════════════════════════════
 
 local arith_spec = G.Grammar.Spec(
-    G.Grammar.Lex({}, { G.Grammar.Whitespace }),
+    G.Grammar.Lex({}, { G.Grammar.Whitespace() }),
     G.Grammar.Parse({
         G.Grammar.Rule("expr", G.Grammar.Seq({
             G.Grammar.Ref("atom"),
@@ -94,7 +94,7 @@ local arith_spec = G.Grammar.Spec(
             })),
         })),
         G.Grammar.Rule("atom", G.Grammar.Choice({
-            G.Grammar.Num,
+            G.Grammar.Num(),
             G.Grammar.Between(G.Grammar.Lit("("), G.Grammar.Ref("expr"), G.Grammar.Lit(")")),
         })),
     }, "expr")

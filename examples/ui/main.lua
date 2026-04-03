@@ -5,9 +5,8 @@ package.path = table.concat({
 }, ";")
 
 local M = require("gps")
-local U = require("ugps")
-local Paint = require("examples/ui/lovepaint")(U)
-local Hit   = require("examples/ui/hittest")(U)
+local Paint = require("examples/ui/lovepaint")(M)
+local Hit   = require("examples/ui/hittest")(M)
 
 -- ══════════════════════════════════════════════════════════════
 --  COLOUR HELPERS
@@ -252,8 +251,8 @@ end
 local Col, Row, Grp, Pad, Ali, Clp, Tfm, Rct, Txt, Spc =
     U.UI.Column, U.UI.Row, U.UI.Group, U.UI.Padding, U.UI.Align,
     U.UI.Clip, U.UI.Transform, U.UI.Rect, U.UI.Text, U.UI.Spacer
-local Lft, Cen, Rgt = U.UI.Left, U.UI.Center, U.UI.Right
-local Top, Mid, Bot = U.UI.Top, U.UI.Middle, U.UI.Bottom
+local Lft, Cen, Rgt = U.UI.Left(), U.UI.Center(), U.UI.Right()
+local Top, Mid, Bot = U.UI.Top(), U.UI.Middle(), U.UI.Bottom()
 
 -- ══════════════════════════════════════════════════════════════
 --  PIPELINES
@@ -846,7 +845,7 @@ function love.draw()
 
     -- debug overlay
     if S.show_debug then
-        local report = U.report({ paint_slot, hit_slot })
+        local report = M.report({ paint_slot, hit_slot })
         love.graphics.setFont(fonts[4])
         love.graphics.setColor(0, 0, 0, 0.75)
         love.graphics.rectangle("fill", 4, S.win_h - 80, 520, 76)

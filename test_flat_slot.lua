@@ -1,5 +1,5 @@
 #!/usr/bin/env luajit
--- test_flat_slot.lua — test the new M.backend + M.flat_slot in mgps
+-- test_flat_slot.lua — test the flat-command gps runtime
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 local M = require("gps")
@@ -63,8 +63,8 @@ function U.UI.Clip:place(x, y, dc, hc)
     dc[#dc+1] = D.D.PushClip(x, y, self.w, self.h)
     hc[#hc+1] = H.H.PushClip(x, y, self.w, self.h)
     self.child:place(x, y, dc, hc)
-    dc[#dc+1] = D.D.PopClip
-    hc[#hc+1] = H.H.PopClip
+    dc[#dc+1] = D.D.PopClip()
+    hc[#hc+1] = H.H.PopClip()
 end
 
 function U.UI.Column:measure()
@@ -143,7 +143,7 @@ M.backend("hit", {
 -- TEST 1: Flat path with M.lower() caching
 -- ═══════════════════════════════════════════════════════════════
 
-print("== Test 1: M.lower() + flat_slot ==")
+print("== Test 1: M.lower() + slot ==")
 
 local compile_draw = M.lower("draw", function(root)
     local dc, _ = root:flatten()
@@ -173,16 +173,16 @@ check("L1 cache hit", dc2 == dc)  -- exact same table
 local ds = compile_draw.stats()
 check("node_hits = 1", ds.node_hits == 1)
 
--- flat_slot paint
-local ps = M.flat_slot("paint")
+-- slot paint
+local ps = M.slot("paint")
 ps:update(dc)
 local ops = {}
 ps:run(ops)
 check("paint produced ops", #ops == 2)
 check("text has resource", ops[2].res_id ~= nil)
 
--- flat_slot hit
-local hs = M.flat_slot("hit")
+-- slot hit
+local hs = M.slot("hit")
 hs:update(hc)
 local hit1 = hs:run({ x = 50, y = 15 })
 check("hit on rect", hit1 ~= nil and hit1.tag == "bg")
@@ -242,7 +242,7 @@ local dcc, hcc = clipped:flatten()
 -- PushClip, FillRect, PopClip = 3 draw cmds
 check("clip produces 3 draw cmds", #dcc == 3)
 
-local psc = M.flat_slot("paint")
+local psc = M.slot("paint")
 psc:update(dcc)
 local opsc = {}
 psc:run(opsc)
@@ -251,37 +251,12 @@ check("rect op", opsc[2].op == "rect")
 check("pop_clip op", opsc[3].op == "pop_clip")
 
 -- ═══════════════════════════════════════════════════════════════
--- TEST 4: Old path still works (backward compat)
+-- TEST 4: Resource lifecycle
 -- ═══════════════════════════════════════════════════════════════
 
-print("== Test 4: Old M.emit + M.slot still works ==")
+print("== Test 4: Resource lifecycle ==")
 
-local function old_gen(param, state, g)
-    g[#g+1] = { op = "old_rect", x = param.x }
-    return g
-end
-
-local T = M.context("paint"):Define [[
-    module V { Node = Rect(number x) unique }
-]]
-function T.V.Rect:paint()
-    return M.emit(old_gen, M.state.none(), { x = self.x })
-end
-
-local old_slot = M.slot()
-local node = T.V.Rect(42)
-old_slot:update(node:paint())
-local old_ops = {}
-old_slot.callback(old_ops)
-check("old path works", #old_ops == 1 and old_ops[1].x == 42)
-
--- ═══════════════════════════════════════════════════════════════
--- TEST 5: Resource lifecycle
--- ═══════════════════════════════════════════════════════════════
-
-print("== Test 5: Resource lifecycle ==")
-
-local ps5 = M.flat_slot("paint")
+local ps5 = M.slot("paint")
 local dc_a = { D.D.DrawText(0, 0, 1, 0xff, "short") }
 ps5:update(dc_a)
 local ops_a = {}; ps5:run(ops_a)

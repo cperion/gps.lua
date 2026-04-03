@@ -1,5 +1,11 @@
 # mgps
 
+> **Note:** The canonical runtime in this repository is now the flat-command
+> `gps` runtime from `init.lua` (`lower(...)` + `backend(...)` + `slot:update(cmds)`
+> + `slot:run(...)`). Large parts of this document still describe the older
+> `emit/state/compose` design and should be read as historical design context,
+> not as the current API.
+
 A Lua framework for building interactive software as compilers.
 
 **ASDL-first. Structural. Keyless in public API. Self-hosted.**
@@ -2235,7 +2241,7 @@ The code in this repository currently reflects the new `mgps` core.
 That means:
 
 - `init.lua` contains the structural `mgps` redesign
-- `mgps.lua` and `gps.lua` are local wrappers for convenience
+- `gps.lua` is the local convenience wrapper; older `mgps` references in this document are historical
 - the old parser subsystem has **not** yet been ported
 - demos should be written in `mgps` style: `emit(gen, state_decl, param)`
 

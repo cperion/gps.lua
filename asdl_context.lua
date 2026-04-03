@@ -13,6 +13,220 @@
 
 local M = {}
 
+-- ── Code generation helper ───────────────────────────────────
+
+local function compile_chunk(src, env, chunkname)
+    local fn, err
+    if loadstring then
+        fn, err = loadstring(src, chunkname)
+        if not fn then error(err, 2) end
+        if setfenv then setfenv(fn, env) end
+    else
+        fn, err = load(src, chunkname, "t", env)
+        if not fn then error(err, 2) end
+    end
+    return fn()
+end
+
+local function gen_unique_ctor(n, names, cache, nilkey)
+    -- Generate a specialized unique constructor for checked values.
+    -- Values are already normalized into v1..vn before the trie walk.
+    local src = {}
+    local args = {}
+    for i = 1, n do args[i] = "a" .. i end
+    local arglist = table.concat(args, ", ")
+
+    src[#src+1] = "return function(self, " .. arglist .. ")"
+    for i = 1, n do
+        src[#src+1] = string.format("  local k%d = a%d; if k%d == nil then k%d = nilkey end", i, i, i, i)
+    end
+
+    if n == 0 then
+        src[#src+1] = "  local hit = cache[nilkey]"
+        src[#src+1] = "  if hit then return hit end"
+        src[#src+1] = "  local obj = setmetatable({}, self)"
+        src[#src+1] = "  cache[nilkey] = obj; return obj"
+    elseif n == 1 then
+        src[#src+1] = "  local hit = cache[k1]"
+        src[#src+1] = "  if hit then return hit end"
+        src[#src+1] = "  local obj = setmetatable({[N1]=a1}, self)"
+        src[#src+1] = "  cache[k1] = obj; return obj"
+    else
+        src[#src+1] = "  local n1 = cache[k1]"
+        src[#src+1] = "  if not n1 then n1 = {}; cache[k1] = n1 end"
+        for i = 2, n - 1 do
+            local prev = "n" .. (i - 1)
+            local cur = "n" .. i
+            src[#src+1] = string.format("  local %s = %s[k%d]", cur, prev, i)
+            src[#src+1] = string.format("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
+        end
+        local last_parent = "n" .. (n - 1)
+        src[#src+1] = string.format("  local hit = %s[k%d]", last_parent, n)
+        src[#src+1] = "  if hit then return hit end"
+        local field_init = {}
+        for i = 1, n do field_init[i] = string.format("[N%d]=a%d", i, i) end
+        src[#src+1] = "  local obj = setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
+        src[#src+1] = string.format("  %s[k%d] = obj; return obj", last_parent, n)
+    end
+
+    src[#src+1] = "end"
+
+    local env = { cache = cache, nilkey = nilkey, setmetatable = setmetatable }
+    for i = 1, n do env["N" .. i] = names[i] end
+
+    return compile_chunk(
+        table.concat(src, "\n"),
+        env,
+        "=(asdl.ctor." .. table.concat(names, ".") .. ")"
+    )
+end
+
+-- Optimized: all-builtin, no nil possible (number, string, boolean)
+local function gen_unique_ctor_fast(n, names, cache)
+    -- Even faster: skip nilkey checks entirely.
+    -- Valid when all fields are non-nil builtins.
+    local src = {}
+    local args = {}
+    for i = 1, n do args[i] = "a" .. i end
+    local arglist = table.concat(args, ", ")
+
+    src[#src+1] = "return function(self, " .. arglist .. ")"
+
+    if n == 0 then
+        src[#src+1] = "  local hit = cache[0]"
+        src[#src+1] = "  if hit then return hit end"
+        src[#src+1] = "  local obj = setmetatable({}, self)"
+        src[#src+1] = "  cache[0] = obj; return obj"
+    else
+        -- Unrolled trie: each level is a direct table lookup, no nil check
+        for i = 1, n - 1 do
+            local prev = (i == 1) and "cache" or ("n" .. (i-1))
+            local cur = "n" .. i
+            src[#src+1] = string.format("  local %s = %s[a%d]; if not %s then %s = {}; %s[a%d] = %s end",
+                cur, prev, i, cur, cur, prev, i, cur)
+        end
+        local last_parent = (n == 1) and "cache" or ("n" .. (n-1))
+        src[#src+1] = string.format("  local hit = %s[a%d]; if hit then return hit end", last_parent, n)
+        -- Create
+        local fi = {}
+        for i = 1, n do fi[i] = string.format("[N%d]=a%d", i, i) end
+        src[#src+1] = "  local obj = setmetatable({" .. table.concat(fi, ",") .. "}, self)"
+        src[#src+1] = string.format("  %s[a%d] = obj; return obj", last_parent, n)
+    end
+
+    src[#src+1] = "end"
+
+    local env = { cache = cache, setmetatable = setmetatable }
+    for i = 1, n do env["N" .. i] = names[i] end
+
+    return compile_chunk(
+        table.concat(src, "\n"),
+        env,
+        "=(asdl.ctor_fast." .. table.concat(names, ".") .. ")"
+    )
+end
+
+local function gen_plain_ctor_fast(n, names)
+    local src = {}
+    local args = {}
+    for i = 1, n do args[i] = "a" .. i end
+    local arglist = table.concat(args, ", ")
+    local field_init = {}
+    for i = 1, n do field_init[i] = string.format("[N%d]=a%d", i, i) end
+
+    src[#src+1] = "return function(self, " .. arglist .. ")"
+    src[#src+1] = "  return setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
+    src[#src+1] = "end"
+
+    local env = { setmetatable = setmetatable }
+    for i = 1, n do env["N" .. i] = names[i] end
+
+    return compile_chunk(
+        table.concat(src, "\n"),
+        env,
+        "=(asdl.plain_fast." .. table.concat(names, ".") .. ")"
+    )
+end
+
+local function gen_checked_ctor(name, names, checks, type_names, unique, cache, nilkey)
+    local n = #names
+    local src = {}
+    local args = {}
+    for i = 1, n do args[i] = "a" .. i end
+    local arglist = table.concat(args, ", ")
+
+    src[#src+1] = "return function(self, " .. arglist .. ")"
+    for i = 1, n do
+        src[#src+1] = string.format("  local v%d = a%d", i, i)
+        src[#src+1] = string.format("  local ok%d, aux%d = C%d(v%d)", i, i, i, i)
+        src[#src+1] = string.format("  if not ok%d then", i)
+        src[#src+1] = string.format([[    error(fmt("bad arg #%d to '%%s': expected '%%s' got '%%s'%%s", NAME, T%d, type(a%d), aux%d and (" at index " .. aux%d) or ""), 2)]], i, i, i, i, i)
+        src[#src+1] = "  end"
+        src[#src+1] = string.format("  if aux%d ~= nil then v%d = aux%d end", i, i, i)
+    end
+
+    if unique then
+        if n == 0 then
+            src[#src+1] = "  local hit = cache[nilkey]"
+            src[#src+1] = "  if hit then return hit end"
+            src[#src+1] = "  local obj = setmetatable({}, self)"
+            src[#src+1] = "  cache[nilkey] = obj; return obj"
+        elseif n == 1 then
+            src[#src+1] = "  local k1 = v1; if k1 == nil then k1 = nilkey end"
+            src[#src+1] = "  local hit = cache[k1]"
+            src[#src+1] = "  if hit then return hit end"
+            src[#src+1] = "  local obj = setmetatable({[N1]=v1}, self)"
+            src[#src+1] = "  cache[k1] = obj; return obj"
+        else
+            src[#src+1] = "  local k1 = v1; if k1 == nil then k1 = nilkey end"
+            src[#src+1] = "  local n1 = cache[k1]"
+            src[#src+1] = "  if not n1 then n1 = {}; cache[k1] = n1 end"
+            for i = 2, n - 1 do
+                local prev = "n" .. (i - 1)
+                local cur = "n" .. i
+                src[#src+1] = string.format("  local k%d = v%d; if k%d == nil then k%d = nilkey end", i, i, i, i)
+                src[#src+1] = string.format("  local %s = %s[k%d]", cur, prev, i)
+                src[#src+1] = string.format("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
+            end
+            src[#src+1] = string.format("  local k%d = v%d; if k%d == nil then k%d = nilkey end", n, n, n, n)
+            local last_parent = "n" .. (n - 1)
+            src[#src+1] = string.format("  local hit = %s[k%d]", last_parent, n)
+            src[#src+1] = "  if hit then return hit end"
+            local field_init = {}
+            for i = 1, n do field_init[i] = string.format("[N%d]=v%d", i, i) end
+            src[#src+1] = "  local obj = setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
+            src[#src+1] = string.format("  %s[k%d] = obj; return obj", last_parent, n)
+        end
+    else
+        local field_init = {}
+        for i = 1, n do field_init[i] = string.format("[N%d]=v%d", i, i) end
+        src[#src+1] = "  return setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
+    end
+
+    src[#src+1] = "end"
+
+    local env = {
+        setmetatable = setmetatable,
+        error = error,
+        type = type,
+        fmt = string.format,
+        NAME = name,
+        cache = cache,
+        nilkey = nilkey,
+    }
+    for i = 1, n do
+        env["C" .. i] = checks[i]
+        env["T" .. i] = type_names[i]
+        env["N" .. i] = names[i]
+    end
+
+    return compile_chunk(
+        table.concat(src, "\n"),
+        env,
+        "=(asdl.checked_ctor." .. name .. ")"
+    )
+end
+
 -- ── Builtin type checks ─────────────────────────────────────
 
 local builtin_checks = {}
@@ -147,28 +361,26 @@ local function build_class(ctx, name, unique, fields)
         end
 
         -- Constructor
-        if unique then
+        if ctx.codegen_constructors then
+            if unique then
+                local cache = {}
+                if all_builtin then
+                    mt.__call = gen_unique_ctor_fast(n, names, cache)
+                else
+                    mt.__call = gen_checked_ctor(name, names, checks, type_names, true, cache, nilkey)
+                end
+            else
+                if all_builtin then
+                    mt.__call = gen_plain_ctor_fast(n, names)
+                else
+                    mt.__call = gen_checked_ctor(name, names, checks, type_names, false, false, nilkey)
+                end
+            end
+        elseif unique then
             local cache = {}
             if all_builtin then
-                -- Fast path: no type checks, direct trie walk
-                function mt:__call(...)
-                    local node, key = cache, nilkey
-                    for i = 1, n do
-                        local next = node[key]
-                        if not next then next = {}; node[key] = next end
-                        node = next
-                        key = select(i, ...)
-                        if key == nil then key = nilkey end
-                    end
-                    local existing = node[key]
-                    if not existing then
-                        local obj = {}
-                        for i = 1, n do obj[names[i]] = select(i, ...) end
-                        existing = setmetatable(obj, self)
-                        node[key] = existing
-                    end
-                    return existing
-                end
+                -- Code-generated: unrolled trie, no loop, no select()
+                mt.__call = gen_unique_ctor_fast(n, names, cache)
             else
                 function mt:__call(...)
                     local obj = {}
@@ -240,6 +452,23 @@ local function build_class(ctx, name, unique, fields)
             return name .. "(" .. table.concat(parts, ", ") .. ")"
         end
     else
+        local singleton = nil
+        local function get_singleton(self)
+            singleton = singleton or setmetatable({}, self)
+            return singleton
+        end
+
+        function mt:__call()
+            return get_singleton(self)
+        end
+
+        -- Allow the singleton value itself to be called like a constructor,
+        -- so nullary constructors can be used uniformly as `Ctor()` while
+        -- still remaining a canonical interned node when referenced directly.
+        class.__call = function()
+            return get_singleton(class)
+        end
+
         function class:__tostring() return name end
     end
 
@@ -291,7 +520,7 @@ function M.define(ctx, definitions)
                 parent.members[child] = true
                 child.kind = basename(c.name)
                 if not c.fields then
-                    ctx:_SetDefinition(c.name, setmetatable({}, child))
+                    ctx:_SetDefinition(c.name, child())
                 end
             end
         else
@@ -302,11 +531,13 @@ end
 
 -- ── NewContext ────────────────────────────────────────────────
 
-function M.NewContext()
+function M.NewContext(opts)
+    opts = opts or {}
     local ctx = setmetatable({
         definitions = {},
         namespaces = {},
         checks = setmetatable({}, { __index = builtin_checks }),
+        codegen_constructors = not not opts.codegen_constructors,
     }, Context)
 
     function ctx:Define(text)

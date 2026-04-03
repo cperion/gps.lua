@@ -1,5 +1,10 @@
 # mgps
 
+> **Note:** The repository runtime has now converged on the flat-command `gps`
+> architecture in `init.lua`. This document remains useful as historical design
+> context for the older `emit/state/compose` direction, but it no longer
+> describes the canonical public API.
+
 A ground-up redesign of GPS around one refined insight:
 
 > Runtime still decomposes into **gen / param / state**.

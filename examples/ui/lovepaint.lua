@@ -1,11 +1,9 @@
 -- examples/ui/lovepaint.lua
 --
--- LovePaint terminal on top of ugps.
+-- LovePaint terminal on top of a flat-command runtime API.
 --
 -- The authored paint tree is still ASDL, but runtime execution is flattened
--- into a linear command array executed by a ugps slot.
-
-local ugps = require("ugps")
+-- into a linear command array executed by the canonical gps slot runtime.
 
 local function next_power_of_two(n)
     local p = 1
@@ -13,8 +11,8 @@ local function next_power_of_two(n)
     return p
 end
 
-return function(GPS)
-    local T = GPS.context("draw")
+return function(RT)
+    local T = RT.context("draw")
         :Define [[
             module LovePaint {
                 Frame = (Pass* passes) unique
@@ -67,7 +65,8 @@ return function(GPS)
         return string.format("%d:%d", cmd.font_id, next_power_of_two(#cmd.text))
     end
 
-    local backend = ugps.backend("examples.ui.lovepaint", {
+    local backend = RT.backend("examples.ui.lovepaint", {
+        _meta = { arity = 1, stacks = { "transform", "clip" } },
         PushClip = function(cmd, ctx, _, g)
             g:push_clip(cmd.x, cmd.y, cmd.w, cmd.h)
         end,
@@ -180,7 +179,7 @@ return function(GPS)
     end
 
     function T:new_slot()
-        return ugps.slot(backend)
+        return RT.slot(backend)
     end
 
     T.backend = backend

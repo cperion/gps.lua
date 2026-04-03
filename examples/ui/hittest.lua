@@ -1,13 +1,11 @@
 -- examples/ui/hittest.lua
 --
--- Hit-testing terminal on top of ugps.
+-- Hit-testing terminal on top of a flat-command runtime API.
 -- Runtime contract:
 --   slot:run({ x = ..., y = ... }) -> hit or nil
 
-local ugps = require("ugps")
-
-return function(GPS)
-    local T = GPS.context("probe")
+return function(RT)
+    local T = RT.context("probe")
         :Define [[
             module Hit {
                 Root = (Node* nodes) unique
@@ -122,7 +120,8 @@ return function(GPS)
         return inside(query.x, query.y, x, y, w, h)
     end
 
-    local backend = ugps.backend("examples.ui.hittest", {
+    local backend = RT.backend("examples.ui.hittest", {
+        _meta = { arity = 1, stacks = { "transform", "clip" } },
         PushTransform = function(cmd, ctx)
             local tx, ty = current_transform(ctx)
             ctx:push("transform", { tx + cmd.tx, ty + cmd.ty })
@@ -174,7 +173,7 @@ return function(GPS)
     })
 
     function T:new_slot()
-        return ugps.slot(backend)
+        return RT.slot(backend)
     end
 
     T.backend = backend

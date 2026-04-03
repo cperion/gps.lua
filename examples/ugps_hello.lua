@@ -1,11 +1,11 @@
 #!/usr/bin/env luajit
--- ugps_hello.lua — complete ugps app in one file
+-- ugps_hello.lua — complete flat-command gps app in one file
 --
 -- This is the whole thing. No lovepaint.lua, no hittest.lua, no View layer.
 -- Tree in. Flat out. One loop. One stack.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
-local M = require("ugps")
+local M = require("gps")
 
 -- ══════════════════════════════════════════════════════════════
 -- 1. DEFINE YOUR TYPES
@@ -69,8 +69,8 @@ function U.UI.Clip:place(x, y, dc, hc)
     dc[#dc+1] = D.D.PushClip(x, y, self.w, self.h)
     hc[#hc+1] = H.H.PushClip(x, y, self.w, self.h)
     self.child:place(x, y, dc, hc)
-    dc[#dc+1] = D.D.PopClip
-    hc[#hc+1] = H.H.PopClip
+    dc[#dc+1] = D.D.PopClip()
+    hc[#hc+1] = H.H.PopClip()
 end
 
 function U.UI.Column:measure()

@@ -1,5 +1,5 @@
 #!/usr/bin/env luajit
--- Quick smoke test: grammar2.lua vs grammar.lua on real grammars
+-- Quick smoke test: grammar3.lua vs grammar.lua on real grammars
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -17,7 +17,7 @@ local lex = require("lex")
 local GPS = { lex = lex }
 
 local G1_api = require("grammar")(GPS, asdl_context)
-local G2_api = require("grammar2")(GPS, asdl_context)
+local G3_api = require("grammar3")(GPS, asdl_context)
 -- Use G1's Grammar types for both (they share the same ASDL shape)
 local G = G1_api()
 
@@ -105,7 +105,7 @@ local json_spec = function(G)
 end
 
 local p1 = G1_api(json_spec(G))
-local p2 = G2_api(json_spec(G))
+local p2 = G3_api(json_spec(G))
 
 local json_tests = {
     '"hello"',
@@ -176,7 +176,7 @@ local arith_spec = function(G)
 end
 
 local a1 = G1_api(arith_spec(G))
-local a2 = G2_api(arith_spec(G))
+local a2 = G3_api(arith_spec(G))
 
 local arith_tests = { "42", "1 + 2", "1 + 2 + 3", "(1 + 2) - 3", "((42))" }
 
