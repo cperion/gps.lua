@@ -1,0 +1,1302 @@
+-- examples/ui7/main.lua — full app with explicit source / view / paint / runtime split
+--
+-- Architecture:
+--   App.State + App.Viewport
+--     ↓ project_view
+--   AppView.Node                 -- shared projected spine
+--     ↓ static_frag / static_plan
+--   UI fragments / plans         -- static compiled image
+--     ↓ ui.compile / ui.assemble
+--   View.Cmd[]                   -- static executable image
+--
+--   App.State + App.Viewport
+--     ↓ project_overlay
+--   AppPaint.Node                -- app-specific dynamic paint facet
+--     ↓ overlay_plan
+--   AppPaintIR.Plan              -- flat dynamic paint image with payload refs
+--
+--   AppRuntime.Payload           -- live runtime state (changes every frame)
+--
+--   Draw:
+--     ui.paint(static_cmds)
+--     paint_overlay(overlay_plan, runtime_payload)
+--
+-- Time stepping updates AppRuntime.Payload only.
+-- Slider edits update App.State and trigger recompilation.
+
+package.path = table.concat({
+    "../../?.lua", "../../?/init.lua", package.path
+}, ";")
+
+local pvm = require("pvm")
+local ui  = require("uilib")
+
+local T = ui.T
+
+-- ══════════════════════════════════════════════════════════════
+--  COLOURS
+-- ══════════════════════════════════════════════════════════════
+
+local function hex(argb)
+    local a = math.floor(argb / 0x1000000) % 256
+    local r = math.floor(argb / 0x10000) % 256
+    local g = math.floor(argb / 0x100) % 256
+    local b = argb % 256
+    return r * 0x1000000 + g * 0x10000 + b * 0x100 + a
+end
+
+local C = {
+    bg=hex(0xff0e1117), panel=hex(0xff161b22), panel_hi=hex(0xff1c2330),
+    border=hex(0xff30363d), text=hex(0xffe6edf3), text_dim=hex(0xff8b949e),
+    text_bright=hex(0xffffffff), accent=hex(0xff58a6ff), accent_dim=hex(0xff1f6feb),
+    green=hex(0xff3fb950), red=hex(0xfff85149), orange=hex(0xffd29922),
+    purple=hex(0xffbc8cff), cyan=hex(0xff79c0ff),
+    mute_on=hex(0xffda3633), solo_on=hex(0xff58a6ff),
+    meter_bg=hex(0xff21262d), meter_fill=hex(0xff3fb950),
+    meter_hot=hex(0xffd29922), meter_clip=hex(0xfff85149),
+    knob_bg=hex(0xff30363d), knob_fg=hex(0xff58a6ff),
+    transport_bg=hex(0xff0d1117), scrollbar=hex(0xff30363d), scrollthumb=hex(0xff484f58),
+    row_even=hex(0xff0d1117), row_odd=hex(0xff161b22),
+    row_active=hex(0xff1f2937),
+}
+
+-- ══════════════════════════════════════════════════════════════
+--  ASDL
+-- ══════════════════════════════════════════════════════════════
+
+T:Define [[
+    module App {
+        Track = (number id,
+                 string name,
+                 number color,
+                 number vol,
+                 number pan,
+                 boolean mute,
+                 boolean solo) unique
+
+        Clip = (number id,
+                number track_id,
+                number beat_q16,
+                number dur_q16,
+                string label,
+                number color) unique
+
+        Project = (App.Track* tracks,
+                   App.Clip* clips,
+                   number bpm) unique
+
+        Selection = NoSelection
+                  | SelectedTrack(number track_id) unique
+                  | SelectedClip(number clip_id) unique
+
+        Session = (App.Selection selection,
+                   number scroll_y,
+                   boolean playing) unique
+
+        State = (App.Project project,
+                 App.Session session) unique
+
+        Viewport = (number window_width,
+                    number window_height) unique
+    }
+
+    module AppView {
+        Node = RootView(AppView.Node track_panel,
+                        AppView.Node arrangement_panel,
+                        AppView.Node inspector_panel,
+                        AppView.Node transport_panel) unique
+
+             | TrackPanelView(number track_count,
+                              AppView.Node* track_row_views,
+                              number scroll_y,
+                              number visible_height) unique
+
+             | TrackRowView(number track_id,
+                            number track_index,
+                            App.Track track,
+                            boolean is_selected) unique
+
+             | ArrangementPanelView(number track_count,
+                                    number visible_width,
+                                    number visible_height,
+                                    number scroll_y,
+                                    AppView.Node* clip_views,
+                                    number playhead_height) unique
+
+             | ClipView(number clip_id,
+                        App.Clip clip,
+                        number track_index,
+                        boolean is_selected,
+                        number scroll_y) unique
+
+             | TrackInspectorView(number track_id,
+                                  App.Track track,
+                                  number track_index,
+                                  number panel_height) unique
+
+             | ClipInspectorView(number clip_id,
+                                 App.Clip clip,
+                                 App.Track track,
+                                 number panel_height) unique
+
+             | TransportPanelView(number bpm,
+                                  boolean is_playing,
+                                  number panel_width) unique
+    }
+
+    module AppPaint {
+        Node = RootOverlayPaint(AppPaint.Node track_panel_overlay,
+                                AppPaint.Node arrangement_overlay,
+                                AppPaint.Node transport_overlay) unique
+
+             | TrackPanelOverlayPaint(AppPaint.Node* meter_paints,
+                                      number scroll_y,
+                                      number visible_height) unique
+
+             | MeterBarPaint(number track_id,
+                             number track_index,
+                             number scroll_y) unique
+
+             | ArrangementOverlayPaint(AppPaint.Node playhead_paint,
+                                       number visible_width,
+                                       number visible_height,
+                                       number playhead_height) unique
+
+             | PlayheadLinePaint(number playhead_height) unique
+
+             | TransportOverlayPaint(AppPaint.Node time_text_paint,
+                                     AppPaint.Node beat_text_paint,
+                                     number panel_width) unique
+
+             | TransportTimeTextPaint unique
+             | TransportBeatTextPaint unique
+    }
+
+    module AppRuntime {
+        MeterLevelValue = (number track_id,
+                           number level) unique
+
+        Payload = (number playhead_x,
+                   string transport_time_text,
+                   string transport_beat_text,
+                   AppRuntime.MeterLevelValue* meter_levels) unique
+    }
+
+    module AppPaintIR {
+        Kind = MeterBar | RuntimeText | PlayheadLine
+             | PushClipRegion | PopClipRegion
+             | PushTranslation | PopTranslation
+
+        PayloadRef = MeterLevelPayload(number track_id) unique
+                   | PlayheadXPayload unique
+                   | TransportTimeTextPayload unique
+                   | TransportBeatTextPayload unique
+
+        Command = (AppPaintIR.Kind kind,
+                   string tag,
+                   number x,
+                   number y,
+                   number w,
+                   number h,
+                   number rgba8,
+                   number rgba8_b,
+                   number rgba8_c,
+                   number font_id,
+                   UI.TextAlign text_align,
+                   AppPaintIR.PayloadRef payload_ref) unique
+
+        Plan = (AppPaintIR.Command* commands) unique
+    }
+]]
+
+local Track = T.App.Track
+local Clip = T.App.Clip
+local Project = T.App.Project
+local NoSelection = T.App.NoSelection
+local SelectedTrack = T.App.SelectedTrack
+local SelectedClip = T.App.SelectedClip
+local Session = T.App.Session
+local State = T.App.State
+local Viewport = T.App.Viewport
+
+local RootView = T.AppView.RootView
+local TrackPanelView = T.AppView.TrackPanelView
+local TrackRowView = T.AppView.TrackRowView
+local ArrangementPanelView = T.AppView.ArrangementPanelView
+local ClipView = T.AppView.ClipView
+local TrackInspectorView = T.AppView.TrackInspectorView
+local ClipInspectorView = T.AppView.ClipInspectorView
+local TransportPanelView = T.AppView.TransportPanelView
+
+local RootOverlayPaint = T.AppPaint.RootOverlayPaint
+local TrackPanelOverlayPaint = T.AppPaint.TrackPanelOverlayPaint
+local MeterBarPaint = T.AppPaint.MeterBarPaint
+local ArrangementOverlayPaint = T.AppPaint.ArrangementOverlayPaint
+local PlayheadLinePaint = T.AppPaint.PlayheadLinePaint
+local TransportOverlayPaint = T.AppPaint.TransportOverlayPaint
+local TransportTimeTextPaint = T.AppPaint.TransportTimeTextPaint
+local TransportBeatTextPaint = T.AppPaint.TransportBeatTextPaint
+
+local MeterLevelValue = T.AppRuntime.MeterLevelValue
+local RuntimePayload = T.AppRuntime.Payload
+
+local PaintCommand = T.AppPaintIR.Command
+local PaintPlan = T.AppPaintIR.Plan
+local K_METER_BAR = T.AppPaintIR.MeterBar
+local K_RUNTIME_TEXT = T.AppPaintIR.RuntimeText
+local K_PLAYHEAD_LINE = T.AppPaintIR.PlayheadLine
+local K_PUSH_CLIP = T.AppPaintIR.PushClipRegion
+local K_POP_CLIP = T.AppPaintIR.PopClipRegion
+local K_PUSH_TX = T.AppPaintIR.PushTranslation
+local K_POP_TX = T.AppPaintIR.PopTranslation
+local REF_PLAYHEAD_X = T.AppPaintIR.PlayheadXPayload
+local REF_TIME_TEXT = T.AppPaintIR.TransportTimeTextPayload
+local REF_BEAT_TEXT = T.AppPaintIR.TransportBeatTextPayload
+local MeterLevelPayload = T.AppPaintIR.MeterLevelPayload
+
+local mtSelectedTrack = getmetatable(SelectedTrack(0))
+local mtSelectedClip = getmetatable(SelectedClip(0))
+
+-- ══════════════════════════════════════════════════════════════
+--  UILIB SHORTHAND
+-- ══════════════════════════════════════════════════════════════
+
+local box, px, insets, text_style = ui.box, ui.px, ui.insets, ui.text_style
+local stack, pad, clip, transform, sized, rect, text, spacer =
+    ui.stack, ui.pad, ui.clip, ui.transform, ui.sized, ui.rect, ui.text, ui.spacer
+
+local FONT_PIXELS = {
+    [1] = 18,
+    [2] = 13,
+    [3] = 15,
+    [4] = 10,
+}
+
+local function style(font_id, rgba8, opts)
+    opts = opts or {}
+    return text_style {
+        font_id = font_id,
+        rgba8 = rgba8,
+        wrap = opts.wrap or ui.TEXT_NOWRAP,
+        align = opts.align or ui.TEXT_START,
+        overflow = opts.overflow or ui.OVERFLOW_VISIBLE,
+        line_height = opts.line_height or ui.LINEHEIGHT_AUTO,
+        line_limit = opts.line_limit or ui.UNLIMITED_LINES,
+    }
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  CONSTANTS
+-- ══════════════════════════════════════════════════════════════
+
+local ROW_HEIGHT = 48
+local HEADER_HEIGHT = 40
+local TRACK_PANEL_WIDTH = 260
+local TRANSPORT_HEIGHT = 52
+local INSPECTOR_WIDTH = 280
+local PIXELS_PER_BEAT = 60
+local METER_WIDTH = 8
+local Q16 = 65536
+
+local TRACK_ROW_PAD_X = 14
+local TRACK_ROW_RIGHT_PAD = 16
+local TRACK_ROW_BUTTON_W = 24
+local TRACK_ROW_BUTTON_H = 20
+local TRACK_ROW_BUTTON_GAP = 6
+local TRACK_ROW_SLIDER_W = 44
+local TRACK_ROW_SLIDER_GAP = 10
+
+local TRANSPORT_PAD_X = 16
+local TRANSPORT_MAIN_BUTTON_W = 48
+local TRANSPORT_SMALL_BUTTON_W = 22
+
+-- ══════════════════════════════════════════════════════════════
+--  HELPERS
+-- ══════════════════════════════════════════════════════════════
+
+local function clamp(x, lo, hi) return math.max(lo, math.min(hi, x)) end
+local function q16(n) return math.floor(n * Q16 + 0.5) end
+local function from_q16(n) return n / Q16 end
+
+local function track_row_layout(panel_width)
+    local slider_w = clamp(math.floor(panel_width * 0.17), 40, 52)
+    local meter_x = panel_width - TRACK_ROW_RIGHT_PAD - METER_WIDTH
+    local slider_x = meter_x - TRACK_ROW_SLIDER_GAP - slider_w
+    local solo_x = slider_x - TRACK_ROW_BUTTON_GAP - TRACK_ROW_BUTTON_W
+    local mute_x = solo_x - TRACK_ROW_BUTTON_GAP - TRACK_ROW_BUTTON_W
+    local name_x = TRACK_ROW_PAD_X
+    local name_w = math.max(48, mute_x - name_x - 10)
+    return {
+        name_x = name_x,
+        name_w = name_w,
+        mute_x = mute_x,
+        solo_x = solo_x,
+        slider_x = slider_x,
+        slider_w = slider_w,
+        meter_x = meter_x,
+    }
+end
+
+local function transport_layout(panel_width)
+    local play_x = TRANSPORT_PAD_X
+    local stop_x = play_x + TRANSPORT_MAIN_BUTTON_W + 32
+    local controls_end = stop_x + TRANSPORT_MAIN_BUTTON_W
+    local content_x = controls_end + 34
+    local right_pad = TRANSPORT_PAD_X
+    local min_content_w = 220
+    local preferred_status_w = clamp(math.floor(panel_width * 0.16), 0, 140)
+    local status_w = math.max(0, math.min(preferred_status_w, panel_width - content_x - right_pad - 24 - min_content_w))
+    local status_x = panel_width - right_pad - status_w
+    local content_w = math.max(0, status_x - 24 - content_x)
+    local gap = math.min(24, math.max(0, math.floor(content_w * 0.05)))
+    local preferred_bpm_w = math.max(72, math.floor(content_w * 0.26))
+    local bpm_w = math.max(0, math.min(92, preferred_bpm_w, math.max(0, content_w - gap * 2)))
+    local info_w = math.max(0, content_w - bpm_w - gap * 2)
+    local time_w = math.floor(info_w * 0.62)
+    local beat_w = math.max(0, info_w - time_w)
+    local time_x = content_x
+    local beat_x = time_x + time_w + gap
+    local bpm_x = beat_x + beat_w + gap
+    return {
+        play_x = play_x,
+        stop_x = stop_x,
+        controls_end = controls_end,
+        time_x = time_x,
+        time_w = time_w,
+        beat_x = beat_x,
+        beat_w = beat_w,
+        bpm_x = bpm_x,
+        bpm_w = bpm_w,
+        status_x = status_x,
+        status_w = status_w,
+    }
+end
+
+local source_state
+local runtime_payload
+local hover_tag = nil
+local dragging = nil
+local window_width, window_height = 1100, 700
+local static_commands = {}
+local overlay_plan = nil
+local undo_stack = {}
+
+local function viewport_value()
+    return Viewport(window_width, window_height)
+end
+
+local function track_index_by_id(project, track_id)
+    for i = 1, #project.tracks do
+        if project.tracks[i].id == track_id then return i end
+    end
+    return 1
+end
+
+local function track_by_id(project, track_id)
+    local i = track_index_by_id(project, track_id)
+    return project.tracks[i], i
+end
+
+local function clip_by_id(project, clip_id)
+    for i = 1, #project.clips do
+        if project.clips[i].id == clip_id then return project.clips[i], i end
+    end
+    return nil, nil
+end
+
+local function selected_track_id(state)
+    local sel = state.session.selection
+    if sel == NoSelection then
+        return state.project.tracks[1] and state.project.tracks[1].id or 1
+    end
+    local mt = getmetatable(sel)
+    if mt == mtSelectedTrack then return sel.track_id end
+    if mt == mtSelectedClip then
+        local c = clip_by_id(state.project, sel.clip_id)
+        return c and c.track_id or (state.project.tracks[1] and state.project.tracks[1].id or 1)
+    end
+    return 1
+end
+
+local function selected_track(state)
+    local t, i = track_by_id(state.project, selected_track_id(state))
+    return t, i
+end
+
+local function selected_clip(state)
+    local sel = state.session.selection
+    if getmetatable(sel) == mtSelectedClip then
+        return clip_by_id(state.project, sel.clip_id)
+    end
+    return nil, nil
+end
+
+local function lookup_meter_level(payload, track_id)
+    for i = 1, #payload.meter_levels do
+        local m = payload.meter_levels[i]
+        if m.track_id == track_id then return m.level end
+    end
+    return 0
+end
+
+local function update_runtime_payload(fields)
+    runtime_payload = pvm.with(runtime_payload, fields)
+end
+
+local function set_session(fields)
+    source_state = pvm.with(source_state, { session = pvm.with(source_state.session, fields) })
+end
+
+local function set_project(fields)
+    source_state = pvm.with(source_state, { project = pvm.with(source_state.project, fields) })
+end
+
+local function set_track_field(track_index, field, value)
+    local tracks = {}
+    for i = 1, #source_state.project.tracks do
+        if i == track_index then
+            tracks[i] = pvm.with(source_state.project.tracks[i], { [field] = value })
+        else
+            tracks[i] = source_state.project.tracks[i]
+        end
+    end
+    set_project({ tracks = tracks })
+end
+
+local function push_undo()
+    undo_stack[#undo_stack + 1] = source_state
+    if #undo_stack > 50 then table.remove(undo_stack, 1) end
+end
+
+local function pop_undo()
+    if #undo_stack > 0 then
+        source_state = undo_stack[#undo_stack]
+        undo_stack[#undo_stack] = nil
+    end
+end
+
+local function runtime_time_strings(project, time_ms)
+    local time_sec = time_ms / 1000
+    local beat_f = time_sec * project.bpm / 60
+    local time_text = string.format("%02d:%02d.%03d",
+        math.floor(time_sec / 60), math.floor(time_sec) % 60,
+        math.floor((time_sec * 1000) % 1000))
+    local beat_text = string.format("%.1f", beat_f + 1)
+    local playhead_x = math.floor(beat_f * PIXELS_PER_BEAT)
+    return time_text, beat_text, playhead_x
+end
+
+local function rebuild_runtime_payload(time_ms, meter_levels)
+    local meter_values = {}
+    for i = 1, #source_state.project.tracks do
+        meter_values[i] = MeterLevelValue(source_state.project.tracks[i].id, meter_levels[i] or 0)
+    end
+    local time_text, beat_text, playhead_x = runtime_time_strings(source_state.project, time_ms)
+    runtime_payload = RuntimePayload(playhead_x, time_text, beat_text, meter_values)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SOURCE → APPVIEW (SHARED PROJECTED SPINE)
+-- ══════════════════════════════════════════════════════════════
+
+local function view_metrics(state, viewport)
+    local visible_height = viewport.window_height - TRANSPORT_HEIGHT - HEADER_HEIGHT
+    local max_scroll = math.max(0, #state.project.tracks * ROW_HEIGHT - visible_height)
+    local scroll_y = clamp(state.session.scroll_y, 0, max_scroll)
+    local selected_track_value, selected_track_index = selected_track(state)
+    local selected_clip_value = selected_clip(state)
+    local arrangement_width = math.max(0, viewport.window_width - TRACK_PANEL_WIDTH - INSPECTOR_WIDTH)
+    return {
+        visible_height = visible_height,
+        scroll_y = scroll_y,
+        selected_track = selected_track_value,
+        selected_track_index = selected_track_index,
+        selected_clip = selected_clip_value,
+        arrangement_width = arrangement_width,
+    }
+end
+
+local function project_track_panel_view(state, viewport)
+    local vm = view_metrics(state, viewport)
+    local row_views = {}
+    for i = 1, #state.project.tracks do
+        local track = state.project.tracks[i]
+        row_views[i] = TrackRowView(track.id, i, track, track.id == vm.selected_track.id)
+    end
+    return TrackPanelView(#state.project.tracks, row_views, vm.scroll_y, vm.visible_height)
+end
+
+local function project_arrangement_panel_view(state, viewport)
+    local vm = view_metrics(state, viewport)
+    local clip_views = {}
+    local selected = state.session.selection
+    local selected_mt = getmetatable(selected)
+    for i = 1, #state.project.clips do
+        local clip_value = state.project.clips[i]
+        clip_views[i] = ClipView(
+            clip_value.id,
+            clip_value,
+            track_index_by_id(state.project, clip_value.track_id),
+            selected_mt == mtSelectedClip and selected.clip_id == clip_value.id,
+            vm.scroll_y)
+    end
+    return ArrangementPanelView(#state.project.tracks, vm.arrangement_width, vm.visible_height, vm.scroll_y, clip_views, viewport.window_height - TRANSPORT_HEIGHT)
+end
+
+local function project_inspector_view(state, viewport)
+    local vm = view_metrics(state, viewport)
+    if vm.selected_clip then
+        local clip_value = vm.selected_clip
+        local track_value = track_by_id(state.project, clip_value.track_id)
+        return ClipInspectorView(clip_value.id, clip_value, track_value, viewport.window_height - TRANSPORT_HEIGHT)
+    end
+    return TrackInspectorView(vm.selected_track.id, vm.selected_track, vm.selected_track_index, viewport.window_height - TRANSPORT_HEIGHT)
+end
+
+local function project_transport_panel_view(state, viewport)
+    return TransportPanelView(state.project.bpm, state.session.playing, viewport.window_width)
+end
+
+local function project_root_view(state, viewport)
+    return RootView(
+        project_track_panel_view(state, viewport),
+        project_arrangement_panel_view(state, viewport),
+        project_inspector_view(state, viewport),
+        project_transport_panel_view(state, viewport))
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SOURCE → APPPAINT (DYNAMIC PAINT FACET)
+-- ══════════════════════════════════════════════════════════════
+
+local function project_track_panel_overlay(state, viewport)
+    local vm = view_metrics(state, viewport)
+    local meter_paints = {}
+    for i = 1, #state.project.tracks do
+        meter_paints[i] = MeterBarPaint(state.project.tracks[i].id, i, vm.scroll_y)
+    end
+    return TrackPanelOverlayPaint(meter_paints, vm.scroll_y, vm.visible_height)
+end
+
+local function project_arrangement_overlay(state, viewport)
+    local vm = view_metrics(state, viewport)
+    return ArrangementOverlayPaint(PlayheadLinePaint(viewport.window_height - TRANSPORT_HEIGHT), vm.arrangement_width, vm.visible_height, viewport.window_height - TRANSPORT_HEIGHT)
+end
+
+local function project_transport_overlay(state, viewport)
+    return TransportOverlayPaint(TransportTimeTextPaint, TransportBeatTextPaint, viewport.window_width)
+end
+
+local function project_root_overlay(state, viewport)
+    return RootOverlayPaint(
+        project_track_panel_overlay(state, viewport),
+        project_arrangement_overlay(state, viewport),
+        project_transport_overlay(state, viewport))
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  STATIC UI HELPERS
+-- ══════════════════════════════════════════════════════════════
+
+local function button_ui(tag, width, height, bg, fg, font_id, label)
+    local label_height = FONT_PIXELS[font_id] or height
+    local label_y = math.max(0, math.floor((height - label_height) / 2))
+    return stack({
+        rect(tag, bg, box { w = px(width), h = px(height) }),
+        transform(0, label_y,
+            text("", label,
+                style(font_id, fg, { align = ui.TEXT_CENTER, overflow = ui.OVERFLOW_CLIP }),
+                box { w = px(width), h = px(label_height) })),
+    })
+end
+
+local function kv_row(label, value, tag)
+    return stack({
+        text("", label, style(4, C.text_dim), box { w = px(84), h = px(18) }),
+        transform(88, 0, text("", value, style(2, C.text), box { w = px(160), h = px(18) })),
+    })
+end
+
+local function volume_slider_background_ui(tag, width, height)
+    return stack({
+        rect(tag, C.knob_bg, box { w = px(width), h = px(height) }),
+        rect("", C.border, box { w = px(width), h = px(1) }),
+    })
+end
+
+local function pan_slider_background_ui(tag, width, height)
+    return stack({
+        rect(tag, C.knob_bg, box { w = px(width), h = px(height) }),
+        transform(math.floor(width / 2), 0, rect("", C.border, box { w = px(1), h = px(height) })),
+    })
+end
+
+local function header_fragment_ui(track_count)
+    return stack({
+        rect("", C.panel, box { w = px(TRACK_PANEL_WIDTH), h = px(HEADER_HEIGHT) }),
+        rect("", C.border, box { w = px(TRACK_PANEL_WIDTH), h = px(1) }),
+        transform(14, 10, text("", "Tracks", style(3, C.text_bright))),
+        transform(92, 12, text("", "(" .. track_count .. ")", style(4, C.text_dim))),
+    })
+end
+
+local function scrollbar_fragment_ui(track_count, visible_height, scroll_y)
+    local total_height = track_count * ROW_HEIGHT
+    if total_height <= visible_height then
+        return spacer(box { w = px(8), h = px(visible_height) })
+    end
+    local ratio = visible_height / total_height
+    local thumb_height = math.max(20, math.floor(visible_height * ratio))
+    local max_scroll = total_height - visible_height
+    local thumb_y = math.floor((scroll_y / math.max(1, max_scroll)) * (visible_height - thumb_height))
+    return stack({
+        rect("", C.scrollbar, box { w = px(8), h = px(visible_height) }),
+        transform(0, thumb_y, rect("", C.scrollthumb, box { w = px(8), h = px(thumb_height) })),
+    })
+end
+
+local function track_row_fragment_ui(self)
+    local track = self.track
+    local tag = "track:" .. self.track_index
+    local bg = self.is_selected and C.row_active or ((self.track_index % 2 == 0) and C.row_even or C.row_odd)
+    local name_fg = self.is_selected and C.text_bright or C.text
+    local layout = track_row_layout(TRACK_PANEL_WIDTH)
+    return stack({
+        rect(tag, bg, box { w = px(TRACK_PANEL_WIDTH), h = px(ROW_HEIGHT) }),
+        rect("", track.color, box { w = px(4), h = px(ROW_HEIGHT) }),
+        transform(layout.name_x, 14,
+            text("", track.name,
+                style(2, name_fg, { overflow = ui.OVERFLOW_ELLIPSIS }),
+                box { w = px(layout.name_w), h = px(18) })),
+        transform(layout.mute_x, 14,
+            button_ui(tag .. ":mute", TRACK_ROW_BUTTON_W, TRACK_ROW_BUTTON_H,
+                track.mute and C.mute_on or C.panel,
+                track.mute and C.text_bright or C.text_dim,
+                4, "M")),
+        transform(layout.solo_x, 14,
+            button_ui(tag .. ":solo", TRACK_ROW_BUTTON_W, TRACK_ROW_BUTTON_H,
+                track.solo and C.solo_on or C.panel,
+                track.solo and C.text_bright or C.text_dim,
+                4, "S")),
+        transform(layout.slider_x, 8, volume_slider_background_ui(tag .. ":vol", layout.slider_w, 10)),
+        transform(layout.slider_x, 30, pan_slider_background_ui(tag .. ":pan", layout.slider_w, 10)),
+        transform(layout.meter_x, 4,
+            rect("", C.meter_bg, box { w = px(METER_WIDTH), h = px(ROW_HEIGHT - 8) })),
+    })
+end
+
+local function clip_fragment_ui(self)
+    local clip_value = self.clip
+    local width = math.floor(from_q16(clip_value.dur_q16) * PIXELS_PER_BEAT)
+    local color = self.is_selected and C.accent or clip_value.color
+    return stack({
+        rect("clip:" .. clip_value.id, color, box { w = px(width), h = px(ROW_HEIGHT - 8) }),
+        transform(6, 2,
+            text("", clip_value.label,
+                style(4, C.text_bright, { overflow = ui.OVERFLOW_ELLIPSIS }),
+                box { w = px(math.max(0, width - 12)), h = px(14) })),
+    })
+end
+
+local function arrangement_background_fragment_ui(self)
+    local grid, ruler, lane_backgrounds = {}, {}, {}
+    local visible_width = self.visible_width
+    local visible_height = self.visible_height
+    local visible_beats = math.floor(visible_width / PIXELS_PER_BEAT) + 4
+    for i = 1, self.track_count do
+        local y = (i - 1) * ROW_HEIGHT - self.scroll_y
+        lane_backgrounds[#lane_backgrounds + 1] = transform(0, y,
+            rect("", (i % 2 == 0) and C.row_even or C.row_odd,
+                box { w = px(visible_width), h = px(ROW_HEIGHT) }))
+    end
+    for beat_index = 0, visible_beats do
+        local x = beat_index * PIXELS_PER_BEAT
+        local grid_color = (beat_index % 4 == 0) and C.border or C.panel
+        grid[#grid + 1] = transform(x, 0,
+            rect("", grid_color,
+                box { w = px(1), h = px(visible_height) }))
+        if beat_index % 4 == 0 then
+            ruler[#ruler + 1] = transform(x + 4, 0,
+                text("", tostring(math.floor(beat_index / 4) + 1), style(4, C.text_dim)))
+        end
+        ruler[#ruler + 1] = transform(x, 0,
+            rect("", C.border,
+                box { w = px(1), h = px((beat_index % 4 == 0) and HEADER_HEIGHT or 10) }))
+    end
+    return stack({
+        rect("", C.bg, box { w = px(visible_width), h = px(self.playhead_height) }),
+        clip(stack(lane_backgrounds)),
+        stack({
+            rect("", C.panel, box { w = px(visible_width), h = px(HEADER_HEIGHT) }),
+            clip(stack(ruler)),
+        }),
+        transform(0, HEADER_HEIGHT, clip(stack(grid))),
+    })
+end
+
+local function track_inspector_fragment_ui(self)
+    local track = self.track
+    local h = self.panel_height
+    return stack({
+        rect("", C.panel, box { w = px(INSPECTOR_WIDTH), h = px(h) }),
+        rect("", C.border, box { w = px(1), h = px(h) }),
+        transform(16, 16, text("", "Track Inspector", style(3, C.text_bright))),
+        transform(16, 40, rect("", C.border, box { w = px(INSPECTOR_WIDTH - 32), h = px(1) })),
+        transform(16, 54, stack({
+            kv_row("Track", track.name, "inspector:name"),
+            transform(0, 24, kv_row("Index", tostring(self.track_index), "inspector:index")),
+            transform(0, 48, kv_row("Volume", string.format("%.0f%%", track.vol * 100), "inspector:volume")),
+            transform(0, 72, kv_row("Pan", string.format("%.0f%%", (track.pan - 0.5) * 200), "inspector:pan")),
+            transform(0, 96, kv_row("Mute", track.mute and "ON" or "off", "inspector:mute")),
+            transform(0, 120, kv_row("Solo", track.solo and "ON" or "off", "inspector:solo")),
+        })),
+        transform(16, 188, rect("", C.border, box { w = px(INSPECTOR_WIDTH - 32), h = px(1) })),
+        transform(16, 202, text("", "Volume", style(4, C.text_dim))),
+        transform(16, 224, volume_slider_background_ui("insp:vol_slider", INSPECTOR_WIDTH - 32, 14)),
+        transform(16, 248, text("", "Pan", style(4, C.text_dim))),
+        transform(16, 270, pan_slider_background_ui("insp:pan_slider", INSPECTOR_WIDTH - 32, 14)),
+        transform(16, 296, rect("", C.border, box { w = px(INSPECTOR_WIDTH - 32), h = px(1) })),
+        transform(16, 314, button_ui("insp:mute_btn", 70, 28,
+            track.mute and C.mute_on or C.panel,
+            track.mute and C.text_bright or C.text,
+            2, track.mute and "MUTED" or "Mute")),
+        transform(94, 314, button_ui("insp:solo_btn", 70, 28,
+            track.solo and C.solo_on or C.panel,
+            track.solo and C.text_bright or C.text,
+            2, track.solo and "SOLO'D" or "Solo")),
+    })
+end
+
+local function clip_inspector_fragment_ui(self)
+    local h = self.panel_height
+    return stack({
+        rect("", C.panel, box { w = px(INSPECTOR_WIDTH), h = px(h) }),
+        rect("", C.border, box { w = px(1), h = px(h) }),
+        transform(16, 16, text("", "Clip Inspector", style(3, C.text_bright))),
+        transform(16, 40, rect("", C.border, box { w = px(INSPECTOR_WIDTH - 32), h = px(1) })),
+        transform(16, 54, stack({
+            kv_row("Clip", self.clip.label, "inspector:clip"),
+            transform(0, 24, kv_row("Track", self.track.name, "inspector:track")),
+            transform(0, 48, kv_row("Start", string.format("%.1f beats", from_q16(self.clip.beat_q16)), "inspector:start")),
+            transform(0, 72, kv_row("Length", string.format("%.1f beats", from_q16(self.clip.dur_q16)), "inspector:length")),
+        })),
+        transform(16, 160, text("",
+            "This clip is projected from the same source object into the arrangement and inspector.",
+            style(4, C.text_dim, { wrap = ui.TEXT_WORDWRAP, overflow = ui.OVERFLOW_CLIP }),
+            box { w = px(INSPECTOR_WIDTH - 32), h = px(90) })),
+    })
+end
+
+local function transport_fragment_ui(self)
+    local play_label = self.is_playing and "||" or ">"
+    local layout = transport_layout(self.panel_width)
+    local bpm_value_w = math.max(24, layout.bpm_w - (TRANSPORT_SMALL_BUTTON_W * 2 + 4))
+    return stack({
+        rect("", C.transport_bg, box { w = px(self.panel_width), h = px(TRANSPORT_HEIGHT) }),
+        rect("", C.border, box { w = px(self.panel_width), h = px(1) }),
+        transform(layout.play_x, 11, button_ui("transport:play", TRANSPORT_MAIN_BUTTON_W, 30,
+            self.is_playing and C.accent_dim or C.panel, C.text_bright, 3, play_label)),
+        transform(layout.stop_x, 11, button_ui("transport:stop", TRANSPORT_MAIN_BUTTON_W, 30, C.panel, C.text, 3, "[]")),
+        transform(layout.controls_end + 18, 8, rect("", C.border, box { w = px(1), h = px(36) })),
+        transform(layout.time_x, 9, text("", "TIME", style(4, C.text_dim))),
+        transform(layout.beat_x, 9, text("", "BEAT", style(4, C.text_dim))),
+        transform(layout.bpm_x, 9, text("", "BPM", style(4, C.text_dim))),
+        transform(layout.bpm_x, 25, button_ui("transport:bpm-", TRANSPORT_SMALL_BUTTON_W, 20, C.panel, C.text, 4, "-")),
+        transform(layout.bpm_x + TRANSPORT_SMALL_BUTTON_W + 2, 25,
+            text("", tostring(self.bpm),
+                style(3, C.accent, { align = ui.TEXT_CENTER, overflow = ui.OVERFLOW_CLIP }),
+                box { w = px(bpm_value_w), h = px(20) })),
+        transform(layout.bpm_x + layout.bpm_w - TRANSPORT_SMALL_BUTTON_W, 25,
+            button_ui("transport:bpm+", TRANSPORT_SMALL_BUTTON_W, 20, C.panel, C.text, 4, "+")),
+        transform(layout.status_x, 18,
+            text("", self.is_playing and "RECORDING" or "STOPPED",
+                style(4, C.text_dim, { align = ui.TEXT_END, overflow = ui.OVERFLOW_CLIP }),
+                box { w = px(layout.status_w), h = px(18) })),
+    })
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  APPVIEW → STATIC FRAGMENTS / STATIC PLAN
+-- ══════════════════════════════════════════════════════════════
+
+local static_fragment = pvm.verb("fragment", {
+    [T.AppView.TrackRowView] = function(self)
+        return ui.fragment(track_row_fragment_ui(self), TRACK_PANEL_WIDTH, ROW_HEIGHT)
+    end,
+    [T.AppView.ClipView] = function(self)
+        local width = math.floor(from_q16(self.clip.dur_q16) * PIXELS_PER_BEAT)
+        return ui.fragment(clip_fragment_ui(self), width, ROW_HEIGHT - 8)
+    end,
+    [T.AppView.TrackInspectorView] = function(self)
+        return ui.fragment(track_inspector_fragment_ui(self), INSPECTOR_WIDTH, self.panel_height)
+    end,
+    [T.AppView.ClipInspectorView] = function(self)
+        return ui.fragment(clip_inspector_fragment_ui(self), INSPECTOR_WIDTH, self.panel_height)
+    end,
+    [T.AppView.TransportPanelView] = function(self)
+        return ui.fragment(transport_fragment_ui(self), self.panel_width, TRANSPORT_HEIGHT)
+    end,
+}, { cache = true, name = "ui7.static.fragment" })
+
+local function append_view_plan_ops(target, plan)
+    local ops = plan.ops
+    for i = 1, #ops do target[#target + 1] = ops[i] end
+end
+
+local static_plan = pvm.verb("plan", {
+    [T.AppView.RootView] = function(self)
+        local ops = {}
+        append_view_plan_ops(ops, self.track_panel:plan())
+        ops[#ops + 1] = ui.push_transform_plan(TRACK_PANEL_WIDTH, 0)
+        append_view_plan_ops(ops, self.arrangement_panel:plan())
+        ops[#ops + 1] = ui.pop_transform_plan(TRACK_PANEL_WIDTH, 0)
+        ops[#ops + 1] = ui.push_transform_plan(TRACK_PANEL_WIDTH + self.arrangement_panel.visible_width, 0)
+        append_view_plan_ops(ops, self.inspector_panel:plan())
+        ops[#ops + 1] = ui.pop_transform_plan(TRACK_PANEL_WIDTH + self.arrangement_panel.visible_width, 0)
+        ops[#ops + 1] = ui.push_transform_plan(0, self.arrangement_panel.playhead_height)
+        append_view_plan_ops(ops, self.transport_panel:plan())
+        ops[#ops + 1] = ui.pop_transform_plan(0, self.arrangement_panel.playhead_height)
+        return ui.plan(ops)
+    end,
+    [T.AppView.TrackPanelView] = function(self)
+        local ops = {
+            ui.place_fragment(0, 0, ui.fragment(header_fragment_ui(self.track_count), TRACK_PANEL_WIDTH, HEADER_HEIGHT)),
+            ui.place_fragment(0, HEADER_HEIGHT,
+                ui.fragment(rect("track_panel:bg", C.bg, box { w = px(TRACK_PANEL_WIDTH), h = px(self.visible_height) }), TRACK_PANEL_WIDTH, self.visible_height)),
+            ui.push_clip_plan(0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height),
+            ui.push_transform_plan(0, -self.scroll_y),
+        }
+        for i = 1, #self.track_row_views do append_view_plan_ops(ops, self.track_row_views[i]:plan()) end
+        ops[#ops + 1] = ui.pop_transform_plan(0, -self.scroll_y)
+        ops[#ops + 1] = ui.pop_clip_plan(0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height)
+        ops[#ops + 1] = ui.push_transform_plan(TRACK_PANEL_WIDTH - 8, HEADER_HEIGHT)
+        ops[#ops + 1] = ui.place_fragment(0, 0, ui.fragment(scrollbar_fragment_ui(self.track_count, self.visible_height, self.scroll_y), 8, self.visible_height))
+        ops[#ops + 1] = ui.pop_transform_plan(TRACK_PANEL_WIDTH - 8, HEADER_HEIGHT)
+        return ui.plan(ops)
+    end,
+    [T.AppView.TrackRowView] = function(self)
+        return ui.plan({ ui.place_fragment(0, (self.track_index - 1) * ROW_HEIGHT, self:fragment()) })
+    end,
+    [T.AppView.ArrangementPanelView] = function(self)
+        local ops = {
+            ui.place_fragment(0, 0, ui.fragment(arrangement_background_fragment_ui(self), self.visible_width, self.playhead_height)),
+            ui.push_clip_plan(0, HEADER_HEIGHT, self.visible_width, self.visible_height),
+        }
+        for i = 1, #self.clip_views do append_view_plan_ops(ops, self.clip_views[i]:plan()) end
+        ops[#ops + 1] = ui.pop_clip_plan(0, HEADER_HEIGHT, self.visible_width, self.visible_height)
+        return ui.plan(ops)
+    end,
+    [T.AppView.ClipView] = function(self)
+        local x = math.floor(from_q16(self.clip.beat_q16) * PIXELS_PER_BEAT)
+        local y = HEADER_HEIGHT + (self.track_index - 1) * ROW_HEIGHT - self.scroll_y + 4
+        return ui.plan({ ui.place_fragment(x, y, self:fragment()) })
+    end,
+    [T.AppView.TrackInspectorView] = function(self)
+        return ui.plan({ ui.place_fragment(0, 0, self:fragment()) })
+    end,
+    [T.AppView.ClipInspectorView] = function(self)
+        return ui.plan({ ui.place_fragment(0, 0, self:fragment()) })
+    end,
+    [T.AppView.TransportPanelView] = function(self)
+        return ui.plan({ ui.place_fragment(0, 0, self:fragment()) })
+    end,
+}, { cache = true, name = "ui7.static.plan" })
+
+-- ══════════════════════════════════════════════════════════════
+--  APPPAINT → APPPAINTIR PLAN
+-- ══════════════════════════════════════════════════════════════
+
+local function paint_command(kind, tag, x, y, w, h, rgba8, rgba8_b, rgba8_c, font_id, text_align, payload_ref)
+    return PaintCommand(kind, tag or "", x or 0, y or 0, w or 0, h or 0,
+        rgba8 or 0, rgba8_b or 0, rgba8_c or 0, font_id or 0,
+        text_align or ui.TEXT_START, payload_ref)
+end
+
+local function append_overlay_commands(out, plan)
+    local commands = plan.commands
+    for i = 1, #commands do out[#out + 1] = commands[i] end
+end
+
+local overlay_plan_builder = pvm.verb("paint_plan", {
+    [T.AppPaint.RootOverlayPaint] = function(self)
+        local commands = {}
+        append_overlay_commands(commands, self.track_panel_overlay:paint_plan())
+        append_overlay_commands(commands, self.arrangement_overlay:paint_plan())
+        append_overlay_commands(commands, self.transport_overlay:paint_plan())
+        return PaintPlan(commands)
+    end,
+    [T.AppPaint.TrackPanelOverlayPaint] = function(self)
+        local commands = {
+            paint_command(K_PUSH_CLIP, "", 0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
+        }
+        for i = 1, #self.meter_paints do append_overlay_commands(commands, self.meter_paints[i]:paint_plan()) end
+        commands[#commands + 1] = paint_command(K_POP_CLIP, "", 0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X)
+        return PaintPlan(commands)
+    end,
+    [T.AppPaint.MeterBarPaint] = function(self)
+        local y = HEADER_HEIGHT + (self.track_index - 1) * ROW_HEIGHT - self.scroll_y + 4
+        local layout = track_row_layout(TRACK_PANEL_WIDTH)
+        return PaintPlan({
+            paint_command(K_METER_BAR, "meter:" .. self.track_id,
+                layout.meter_x, y, METER_WIDTH, ROW_HEIGHT - 8,
+                C.meter_fill, C.meter_hot, C.meter_clip,
+                0, ui.TEXT_START,
+                MeterLevelPayload(self.track_id)),
+        })
+    end,
+    [T.AppPaint.ArrangementOverlayPaint] = function(self)
+        local commands = {
+            paint_command(K_PUSH_TX, "", TRACK_PANEL_WIDTH, 0, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
+        }
+        append_overlay_commands(commands, self.playhead_paint:paint_plan())
+        commands[#commands + 1] = paint_command(K_POP_TX, "", 0, 0, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X)
+        return PaintPlan(commands)
+    end,
+    [T.AppPaint.PlayheadLinePaint] = function(self)
+        return PaintPlan({
+            paint_command(K_PLAYHEAD_LINE, "playhead", 0, 0, 2, self.playhead_height,
+                C.text_bright, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
+        })
+    end,
+    [T.AppPaint.TransportOverlayPaint] = function(self)
+        local y = window_height - TRANSPORT_HEIGHT
+        local commands = {
+            paint_command(K_PUSH_TX, "", 0, y, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
+        }
+        append_overlay_commands(commands, self.time_text_paint:paint_plan())
+        append_overlay_commands(commands, self.beat_text_paint:paint_plan())
+        commands[#commands + 1] = paint_command(K_POP_TX, "", 0, y, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X)
+        return PaintPlan(commands)
+    end,
+    [T.AppPaint.TransportTimeTextPaint] = function(self)
+        local layout = transport_layout(window_width)
+        return PaintPlan({
+            paint_command(K_RUNTIME_TEXT, "transport:time", layout.time_x, 24, layout.time_w, 18,
+                C.text_bright, 0, 0, 3, ui.TEXT_START, REF_TIME_TEXT),
+        })
+    end,
+    [T.AppPaint.TransportBeatTextPaint] = function(self)
+        local layout = transport_layout(window_width)
+        return PaintPlan({
+            paint_command(K_RUNTIME_TEXT, "transport:beat", layout.beat_x, 24, layout.beat_w, 18,
+                C.text_bright, 0, 0, 3, ui.TEXT_START, REF_BEAT_TEXT),
+        })
+    end,
+}, { cache = true, name = "ui7.overlay.plan" })
+
+-- ══════════════════════════════════════════════════════════════
+--  RUNTIME OVERLAY PAINT
+-- ══════════════════════════════════════════════════════════════
+
+local fonts = {}
+
+local function get_font(id)
+    return fonts[id] or (love and love.graphics and love.graphics.getFont())
+end
+
+local function rgba8_to_love(rgba8)
+    local a = (rgba8 % 256) / 255; rgba8 = math.floor(rgba8 / 256)
+    local b = (rgba8 % 256) / 255; rgba8 = math.floor(rgba8 / 256)
+    local g = (rgba8 % 256) / 255; rgba8 = math.floor(rgba8 / 256)
+    local r = (rgba8 % 256) / 255
+    return r, g, b, a
+end
+
+local function payload_text(payload, payload_ref)
+    if payload_ref == REF_TIME_TEXT then return payload.transport_time_text end
+    if payload_ref == REF_BEAT_TEXT then return payload.transport_beat_text end
+    return ""
+end
+
+local function payload_number(payload, payload_ref)
+    if payload_ref == REF_PLAYHEAD_X then return payload.playhead_x end
+    local mt = getmetatable(payload_ref)
+    if mt == getmetatable(MeterLevelPayload(0)) then
+        return lookup_meter_level(payload, payload_ref.track_id)
+    end
+    return 0
+end
+
+local function paint_overlay(plan, payload)
+    if not (love and love.graphics) then return end
+    local tx, ty = 0, 0
+    local tx_stack, clip_stack = {}, {}
+    local mtMeterPayload = getmetatable(MeterLevelPayload(0))
+
+    for i = 1, #plan.commands do
+        local command = plan.commands[i]
+        local kind = command.kind
+
+        if kind == K_PUSH_CLIP then
+            local ax, ay, nw, nh = command.x + tx, command.y + ty, command.w, command.h
+            local top = clip_stack[#clip_stack]
+            if top then
+                local x2 = math.max(ax, top[1])
+                local y2 = math.max(ay, top[2])
+                nw = math.max(0, math.min(ax + command.w, top[1] + top[3]) - x2)
+                nh = math.max(0, math.min(ay + command.h, top[2] + top[4]) - y2)
+                ax, ay = x2, y2
+            end
+            clip_stack[#clip_stack + 1] = { ax, ay, nw, nh }
+            love.graphics.setScissor(ax, ay, nw, nh)
+
+        elseif kind == K_POP_CLIP then
+            clip_stack[#clip_stack] = nil
+            local top = clip_stack[#clip_stack]
+            if top then love.graphics.setScissor(top[1], top[2], top[3], top[4])
+            else love.graphics.setScissor() end
+
+        elseif kind == K_PUSH_TX then
+            tx_stack[#tx_stack + 1] = { tx, ty }
+            tx, ty = tx + command.x, ty + command.y
+            love.graphics.push("transform")
+            love.graphics.translate(command.x, command.y)
+
+        elseif kind == K_POP_TX then
+            love.graphics.pop()
+            local top = tx_stack[#tx_stack]
+            tx_stack[#tx_stack] = nil
+            tx, ty = top[1], top[2]
+
+        elseif kind == K_PLAYHEAD_LINE then
+            local x = payload.playhead_x
+            love.graphics.setColor(rgba8_to_love(command.rgba8))
+            love.graphics.rectangle("fill", x, command.y, command.w, command.h)
+
+        elseif kind == K_METER_BAR then
+            local level = 0
+            local payload_mt = getmetatable(command.payload_ref)
+            if payload_mt == mtMeterPayload then
+                level = lookup_meter_level(payload, command.payload_ref.track_id)
+            end
+            local fill = math.floor(command.h * math.max(0, math.min(1, level)))
+            local color = level > 0.9 and command.rgba8_c or (level > 0.7 and command.rgba8_b or command.rgba8)
+            love.graphics.setColor(rgba8_to_love(color))
+            love.graphics.rectangle("fill", command.x, command.y + (command.h - fill), command.w, fill)
+
+        elseif kind == K_RUNTIME_TEXT then
+            local font = get_font(command.font_id)
+            if font then love.graphics.setFont(font) end
+            love.graphics.setColor(rgba8_to_love(command.rgba8))
+            love.graphics.printf(payload_text(payload, command.payload_ref), command.x, command.y, math.max(1, command.w), "left")
+        end
+    end
+
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.setScissor()
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  LIVE STATE + RECOMPILE
+-- ══════════════════════════════════════════════════════════════
+
+local NAMES = {"Kick","Snare","Hi-Hat","Bass","Lead Synth","Pad",
+               "FX Rise","Vocal Chop","Perc","Sub Bass","Strings","Piano"}
+local COLORS = {C.green,C.red,C.orange,C.purple,C.cyan,C.accent,
+                C.orange,C.green,C.red,C.purple,C.cyan,C.accent}
+
+local function recompile_static()
+    local current_viewport = viewport_value()
+    local root_view = project_root_view(source_state, current_viewport)
+    static_commands = root_view:plan():cmds()
+    overlay_plan = project_root_overlay(source_state, current_viewport):paint_plan()
+end
+
+local function active_track_index()
+    local _, index = selected_track(source_state)
+    return index
+end
+
+local function dispatch(track_index, field, value)
+    push_undo()
+    if field == "selection" then
+        set_session({ selection = value })
+    elseif field == "scroll_y" then
+        set_session({ scroll_y = value })
+    elseif field == "bpm" then
+        set_project({ bpm = value })
+        local time_text, beat_text, playhead_x = runtime_time_strings(source_state.project, 0)
+        update_runtime_payload({ transport_time_text = time_text, transport_beat_text = beat_text, playhead_x = playhead_x })
+    else
+        set_track_field(track_index, field, value)
+    end
+end
+
+local function handle_click(tag)
+    if not tag then return end
+
+    local clip_id = tonumber(tag:match("^clip:(%d+)"))
+    if clip_id then
+        dispatch(0, "selection", SelectedClip(clip_id))
+        return
+    end
+
+    local track_index = tonumber(tag:match("^track:(%d+)"))
+    if track_index then
+        dispatch(0, "selection", SelectedTrack(source_state.project.tracks[track_index].id))
+        if tag:find(":mute", 1, true) then
+            dispatch(track_index, "mute", not source_state.project.tracks[track_index].mute)
+        elseif tag:find(":solo", 1, true) then
+            dispatch(track_index, "solo", not source_state.project.tracks[track_index].solo)
+        elseif tag:find(":vol", 1, true) then
+            dragging = { track_index = track_index, field = "vol", x0 = love.mouse.getX(), value0 = source_state.project.tracks[track_index].vol, width = track_row_layout(TRACK_PANEL_WIDTH).slider_w }
+        elseif tag:find(":pan", 1, true) then
+            dragging = { track_index = track_index, field = "pan", x0 = love.mouse.getX(), value0 = source_state.project.tracks[track_index].pan, width = track_row_layout(TRACK_PANEL_WIDTH).slider_w }
+        end
+        return
+    end
+
+    local current_track_index = active_track_index()
+    if tag:find("^insp:vol_slider") then
+        dragging = { track_index = current_track_index, field = "vol", x0 = love.mouse.getX(), value0 = source_state.project.tracks[current_track_index].vol, width = INSPECTOR_WIDTH - 32 }
+        return
+    end
+    if tag:find("^insp:pan_slider") then
+        dragging = { track_index = current_track_index, field = "pan", x0 = love.mouse.getX(), value0 = source_state.project.tracks[current_track_index].pan, width = INSPECTOR_WIDTH - 32 }
+        return
+    end
+    if tag:find("^insp:mute_btn") then dispatch(current_track_index, "mute", not source_state.project.tracks[current_track_index].mute); return end
+    if tag:find("^insp:solo_btn") then dispatch(current_track_index, "solo", not source_state.project.tracks[current_track_index].solo); return end
+    if tag:find("^transport:play") then set_session({ playing = not source_state.session.playing }); return end
+    if tag:find("^transport:stop") then set_session({ playing = false }); rebuild_runtime_payload(0, (function() local z = {}; for i = 1, #source_state.project.tracks do z[i] = 0 end; return z end)()); return end
+    if tag:find("^transport:bpm%-") then dispatch(0, "bpm", math.max(40, source_state.project.bpm - 5)); return end
+    if tag:find("^transport:bpm%+") then dispatch(0, "bpm", math.min(300, source_state.project.bpm + 5)); return end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  LOVE CALLBACKS
+-- ══════════════════════════════════════════════════════════════
+
+function love.load()
+    love.graphics.setBackgroundColor(0.054, 0.067, 0.090, 1)
+    fonts[1] = love.graphics.newFont(18)
+    fonts[2] = love.graphics.newFont(13)
+    fonts[3] = love.graphics.newFont(15)
+    fonts[4] = love.graphics.newFont(10)
+    ui.set_font(1, fonts[1])
+    ui.set_font(2, fonts[2])
+    ui.set_font(3, fonts[3])
+    ui.set_font(4, fonts[4])
+    love.graphics.setFont(fonts[2])
+
+    local tracks, clips = {}, {}
+    local initial_meter_levels = {}
+    for i = 1, #NAMES do
+        tracks[i] = Track(i, NAMES[i], COLORS[i], 0.75, 0.5, false, false)
+        clips[i] = Clip(i, i, q16((i * 37) % 8), q16(2 + (i % 3)), NAMES[i], COLORS[i])
+        initial_meter_levels[i] = 0
+    end
+
+    source_state = State(
+        Project(tracks, clips, 120),
+        Session(SelectedTrack(1), 0, false))
+
+    window_width, window_height = love.graphics.getDimensions()
+    rebuild_runtime_payload(0, initial_meter_levels)
+    recompile_static()
+end
+
+function love.resize(w, h)
+    window_width, window_height = w, h
+    recompile_static()
+end
+
+function love.update(dt)
+    local next_meter_levels = {}
+    local current_time_ms = 0
+    if runtime_payload then
+        current_time_ms = math.floor((runtime_payload.playhead_x / PIXELS_PER_BEAT) * (60 / source_state.project.bpm) * 1000 + 0.5)
+    end
+    if source_state.session.playing then
+        current_time_ms = current_time_ms + math.floor(dt * 1000 + 0.5)
+    end
+
+    local time_sec = current_time_ms / 1000
+    for i = 1, #source_state.project.tracks do
+        local track = source_state.project.tracks[i]
+        local target = 0
+        if source_state.session.playing and not track.mute then
+            target = (0.3 + 0.5 * math.abs(math.sin(time_sec * (1.5 + i * 0.3) + i * 0.7))) * track.vol
+        end
+        local current = lookup_meter_level(runtime_payload, track.id)
+        local next_value = current + (target - current) * math.min(1, dt * 12)
+        next_meter_levels[i] = math.floor(next_value * 100) / 100
+    end
+
+    rebuild_runtime_payload(current_time_ms, next_meter_levels)
+end
+
+function love.keypressed(key)
+    if key == "escape" then love.event.quit() end
+    if key == "space" then
+        set_session({ playing = not source_state.session.playing })
+        recompile_static()
+    end
+    if key == "up" then
+        local _, index = selected_track(source_state)
+        index = math.max(1, index - 1)
+        dispatch(0, "selection", SelectedTrack(source_state.project.tracks[index].id))
+        recompile_static()
+    end
+    if key == "down" then
+        local _, index = selected_track(source_state)
+        index = math.min(#source_state.project.tracks, index + 1)
+        dispatch(0, "selection", SelectedTrack(source_state.project.tracks[index].id))
+        recompile_static()
+    end
+    if key == "m" then
+        local index = active_track_index()
+        dispatch(index, "mute", not source_state.project.tracks[index].mute)
+        recompile_static()
+    end
+    if key == "s" then
+        local index = active_track_index()
+        dispatch(index, "solo", not source_state.project.tracks[index].solo)
+        recompile_static()
+    end
+    if key == "r" then
+        set_session({ playing = false })
+        rebuild_runtime_payload(0, (function() local z = {}; for i = 1, #source_state.project.tracks do z[i] = 0 end; return z end)())
+        recompile_static()
+    end
+    if key == "z" and love.keyboard.isDown("lctrl", "rctrl") then
+        pop_undo()
+        recompile_static()
+    end
+end
+
+function love.mousepressed(mx, my, button)
+    if button == 1 then
+        handle_click(ui.hit(static_commands, mx, my))
+        recompile_static()
+    end
+end
+
+function love.mousereleased()
+    if dragging then dragging = nil end
+end
+
+function love.mousemoved(mx, my)
+    if dragging then
+        local next_value = clamp(dragging.value0 + (mx - dragging.x0) / dragging.width, 0, 1)
+        dispatch(dragging.track_index, dragging.field, next_value)
+        recompile_static()
+    end
+    local tag = ui.hit(static_commands, mx, my)
+    if tag ~= hover_tag then hover_tag = tag end
+end
+
+function love.wheelmoved(_, wy)
+    local visible_height = window_height - TRANSPORT_HEIGHT - HEADER_HEIGHT
+    local max_scroll = math.max(0, #source_state.project.tracks * ROW_HEIGHT - visible_height)
+    dispatch(0, "scroll_y", clamp(source_state.session.scroll_y - wy * 30, 0, max_scroll))
+    recompile_static()
+end
+
+function love.draw()
+    love.graphics.origin()
+    love.graphics.setScissor()
+    love.graphics.setColor(1, 1, 1, 1)
+    ui.paint(static_commands, { hover_tag = hover_tag })
+    paint_overlay(overlay_plan, runtime_payload)
+end

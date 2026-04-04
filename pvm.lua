@@ -18,23 +18,7 @@
 
 local pvm = {}
 local unpack = table.unpack or unpack
-
--- ══════════════════════════════════════════════════════════════
---  CODEGEN HELPER
--- ══════════════════════════════════════════════════════════════
-
-local function compile_chunk(src, env, chunkname)
-    local fn, err
-    if loadstring then
-        fn, err = loadstring(src, chunkname)
-        if not fn then error(err, 2) end
-        if setfenv then setfenv(fn, env) end
-    else
-        fn, err = load(src, chunkname, "t", env)
-        if not fn then error(err, 2) end
-    end
-    return fn()
-end
+local Quote = require("quote")
 
 -- ══════════════════════════════════════════════════════════════
 --  ASDL
@@ -90,59 +74,65 @@ function pvm.lower(name, fn, opts)
     local cache = setmetatable({}, { __mode = "k" })
     local str_cache = {}
     local stats = { name = name, calls = 0, hits = 0 }
+    local source
 
-    local src = {}
-    src[#src+1] = "return function(input)"
-    src[#src+1] = "  stats.calls = stats.calls + 1"
+    local function build_call_fn()
+        local q = Quote()
+        local _stats = q:val(stats, "stats")
+        local _cache = q:val(cache, "cache")
+        local _str_cache = q:val(str_cache, "str_cache")
+        local _fn = q:val(fn, "fn")
+        local _type = q:val(type, "type")
 
-    if input_type == "table" then
-        -- Specialized: input is always an ASDL node (table)
-        src[#src+1] = "  local hit = cache[input]"
-        src[#src+1] = "  if hit ~= nil then stats.hits = stats.hits + 1; return hit end"
-        src[#src+1] = "  local result = fn(input)"
-        src[#src+1] = "  cache[input] = result"
-        src[#src+1] = "  return result"
-    elseif input_type == "string" then
-        -- Specialized: input is always a string
-        src[#src+1] = "  local hit = str_cache[input]"
-        src[#src+1] = "  if hit ~= nil then stats.hits = stats.hits + 1; return hit end"
-        src[#src+1] = "  local result = fn(input)"
-        src[#src+1] = "  str_cache[input] = result"
-        src[#src+1] = "  return result"
-    else
-        -- Generic: handle both table and string
-        src[#src+1] = "  local tp = type(input)"
-        src[#src+1] = '  if tp == "table" then'
-        src[#src+1] = "    local hit = cache[input]"
-        src[#src+1] = "    if hit ~= nil then stats.hits = stats.hits + 1; return hit end"
-        src[#src+1] = '  elseif tp == "string" then'
-        src[#src+1] = "    local hit = str_cache[input]"
-        src[#src+1] = "    if hit ~= nil then stats.hits = stats.hits + 1; return hit end"
-        src[#src+1] = "  end"
-        src[#src+1] = "  local result = fn(input)"
-        src[#src+1] = '  if tp == "table" then cache[input] = result'
-        src[#src+1] = '  elseif tp == "string" then str_cache[input] = result end'
-        src[#src+1] = "  return result"
+        q("return function(input)")
+        q("  %s.calls = %s.calls + 1", _stats, _stats)
+
+        if input_type == "table" then
+            q("  local hit = %s[input]", _cache)
+            q("  if hit ~= nil then %s.hits = %s.hits + 1; return hit end", _stats, _stats)
+            q("  local result = %s(input)", _fn)
+            q("  %s[input] = result", _cache)
+            q("  return result")
+        elseif input_type == "string" then
+            q("  local hit = %s[input]", _str_cache)
+            q("  if hit ~= nil then %s.hits = %s.hits + 1; return hit end", _stats, _stats)
+            q("  local result = %s(input)", _fn)
+            q("  %s[input] = result", _str_cache)
+            q("  return result")
+        else
+            q("  local tp = %s(input)", _type)
+            q("  if tp == \"table\" then")
+            q("    local hit = %s[input]", _cache)
+            q("    if hit ~= nil then %s.hits = %s.hits + 1; return hit end", _stats, _stats)
+            q("  elseif tp == \"string\" then")
+            q("    local hit = %s[input]", _str_cache)
+            q("    if hit ~= nil then %s.hits = %s.hits + 1; return hit end", _stats, _stats)
+            q("  end")
+            q("  local result = %s(input)", _fn)
+            q("  if tp == \"table\" then %s[input] = result", _cache)
+            q("  elseif tp == \"string\" then %s[input] = result end", _str_cache)
+            q("  return result")
+        end
+
+        q("end")
+        local compiled, src = q:compile("=(pvm.lower." .. name .. ")")
+        source = src
+        return compiled
     end
 
-    src[#src+1] = "end"
-
-    local call_fn = compile_chunk(
-        table.concat(src, "\n"),
-        { fn = fn, cache = cache, str_cache = str_cache, stats = stats, type = type },
-        "=(pvm.lower." .. name .. ")"
-    )
+    local call_fn = build_call_fn()
 
     local self = {}
     self.__call = function(_, input) return call_fn(input) end
+    self.source = source
     function self:stats() return stats end
     function self:reset()
-        cache = setmetatable({}, { __mode = "k" }); str_cache = {}
+        cache = setmetatable({}, { __mode = "k" })
+        str_cache = {}
         stats.calls = 0; stats.hits = 0
-        -- regenerate with fresh caches
-        local env = { fn = fn, cache = cache, str_cache = str_cache, stats = stats, type = type }
-        call_fn = compile_chunk(table.concat(src, "\n"), env, "=(pvm.lower." .. name .. ")")
+        call_fn = build_call_fn()
         self.__call = function(_, input) return call_fn(input) end
+        self.source = source
     end
 
     return setmetatable(self, self)
@@ -174,8 +164,8 @@ function pvm.verb(name, handlers, opts)
     local cache_enabled = not not opts.cache
     local node_cache = cache_enabled and setmetatable({}, { __mode = "k" }) or nil
     local stats = { name = opts.name or ("verb:" .. tostring(name)), calls = 0, hits = 0 }
+    local source
 
-    -- Collect handler classes and assign indices
     local classes = {}
     local handler_fns = {}
     for class, fn in pairs(handlers) do
@@ -183,60 +173,56 @@ function pvm.verb(name, handlers, opts)
         handler_fns[#handler_fns+1] = fn
     end
 
-    -- Generate dispatch function
-    local src = {}
+    local function build_dispatch()
+        local q = Quote()
+        local _stats = q:val(stats, "stats")
+        local _node_cache = q:val(node_cache, "node_cache")
+        local _getmetatable = q:val(getmetatable, "getmetatable")
+        local _tostring = q:val(tostring, "tostring")
+        local _type = q:val(type, "type")
+        local _error = q:val(error, "error")
+        local class_names, handler_names = {}, {}
+        for i = 1, #classes do
+            class_names[i] = q:val(classes[i], "class_" .. i)
+            handler_names[i] = q:val(handler_fns[i], "handler_" .. i)
+        end
 
-    if cache_enabled then
-        -- Cached verb, 0 extra args (most common case)
-        src[#src+1] = "return function(node)"
-        src[#src+1] = "  stats.calls = stats.calls + 1"
-        src[#src+1] = "  local hit = node_cache[node]"
-        src[#src+1] = "  if hit ~= nil then stats.hits = stats.hits + 1; return hit end"
-        src[#src+1] = "  local mt = getmetatable(node)"
-        src[#src+1] = "  local result"
-        for i = 1, #classes do
-            local kw = (i == 1) and "if" or "elseif"
-            src[#src+1] = string.format("  %s mt == C_%d then result = H_%d(node)", kw, i, i)
+        if cache_enabled then
+            q("return function(node)")
+            q("  %s.calls = %s.calls + 1", _stats, _stats)
+            q("  local hit = %s[node]", _node_cache)
+            q("  if hit ~= nil then %s.hits = %s.hits + 1; return hit end", _stats, _stats)
+            q("  local mt = %s(node)", _getmetatable)
+            q("  local result")
+            for i = 1, #classes do
+                local kw = (i == 1) and "if" or "elseif"
+                q("  %s mt == %s then result = %s(node)", kw, class_names[i], handler_names[i])
+            end
+            q("  else %s('pvm.verb %q: no handler for ' .. %s(mt and mt.kind or %s(node)), 2)", _error, name, _tostring, _type)
+            q("  end")
+            q("  %s[node] = result", _node_cache)
+            q("  return result")
+            q("end")
+        else
+            q("return function(node, ...)")
+            q("  %s.calls = %s.calls + 1", _stats, _stats)
+            q("  local mt = %s(node)", _getmetatable)
+            for i = 1, #classes do
+                local kw = (i == 1) and "if" or "elseif"
+                q("  %s mt == %s then return %s(node, ...)", kw, class_names[i], handler_names[i])
+            end
+            q("  else %s('pvm.verb %q: no handler for ' .. %s(mt and mt.kind or %s(node)), 2)", _error, name, _tostring, _type)
+            q("  end")
+            q("end")
         end
-        src[#src+1] = "  else error('pvm.verb \"" .. name .. "\": no handler for ' .. tostring(mt and mt.kind or type(node)), 2)"
-        src[#src+1] = "  end"
-        src[#src+1] = "  node_cache[node] = result"
-        src[#src+1] = "  return result"
-        src[#src+1] = "end"
-    else
-        -- Uncached verb with varargs
-        src[#src+1] = "return function(node, ...)"
-        src[#src+1] = "  stats.calls = stats.calls + 1"
-        src[#src+1] = "  local mt = getmetatable(node)"
-        for i = 1, #classes do
-            local kw = (i == 1) and "if" or "elseif"
-            src[#src+1] = string.format("  %s mt == C_%d then return H_%d(node, ...)", kw, i, i)
-        end
-        src[#src+1] = "  else error('pvm.verb \"" .. name .. "\": no handler for ' .. tostring(mt and mt.kind or type(node)), 2)"
-        src[#src+1] = "  end"
-        src[#src+1] = "end"
+
+        local compiled, src = q:compile("=(pvm.verb." .. name .. ")")
+        source = src
+        return compiled
     end
 
-    local env = {
-        getmetatable = getmetatable,
-        tostring = tostring,
-        type = type,
-        error = error,
-        stats = stats,
-        node_cache = node_cache,
-    }
-    for i = 1, #classes do
-        env["C_" .. i] = classes[i]
-        env["H_" .. i] = handler_fns[i]
-    end
+    local dispatch = build_dispatch()
 
-    local dispatch = compile_chunk(
-        table.concat(src, "\n"),
-        env,
-        "=(pvm.verb." .. name .. ")"
-    )
-
-    -- Install :name() method on each type class
     for i = 1, #classes do
         rawset(classes[i], name, function(self, ...)
             return dispatch(self, ...)
@@ -245,21 +231,18 @@ function pvm.verb(name, handlers, opts)
 
     local boundary = {}
     boundary.__call = function(_, node, ...) return dispatch(node, ...) end
+    boundary.source = source
     function boundary:stats() return stats end
     function boundary:reset()
         node_cache = cache_enabled and setmetatable({}, { __mode = "k" }) or nil
         stats.calls = 0; stats.hits = 0
-        env.node_cache = node_cache
-        env.stats = stats
-        dispatch = compile_chunk(table.concat(src, "\n"), env, "=(pvm.verb." .. name .. ")")
+        dispatch = build_dispatch()
         boundary.__call = function(_, node, ...) return dispatch(node, ...) end
+        boundary.source = source
         for i = 1, #classes do
             rawset(classes[i], name, function(self, ...) return dispatch(self, ...) end)
         end
     end
-
-    -- Store generated source for inspection
-    boundary.source = table.concat(src, "\n")
 
     return setmetatable(boundary, boundary)
 end

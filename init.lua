@@ -54,6 +54,7 @@ if not package.preload["gps.asdl_context"] then
 end
 
 local asdl_context = require("gps.asdl_context")
+local Quote = require("quote")
 local unpack = table.unpack or unpack
 
 local M = {}
@@ -150,18 +151,6 @@ end
 
 local registered_backends = {}
 
-local function compile_chunk(src, env, chunkname)
-    if loadstring then
-        local f, err = loadstring(src, chunkname)
-        if not f then error(err, 2) end
-        if setfenv then setfenv(f, env) end
-        return f()
-    end
-    local f, err = load(src, chunkname, "t", env)
-    if not f then error(err, 2) end
-    return f()
-end
-
 local function shallow_copy_command(cmd)
     local out = {}
     for k, v in pairs(cmd) do out[k] = v end
@@ -169,229 +158,207 @@ local function shallow_copy_command(cmd)
 end
 
 local function make_ctx_builder(stack_names)
-    local src = {}
-    src[#src + 1] = "return function()\n"
-    src[#src + 1] = "  local ctx = { stacks = {}, _stack_ids = {}, _extra_stacks = {}, _extra_tops = {} }\n"
-    src[#src + 1] = "  local stacks = ctx.stacks\n"
+    local q = Quote()
+    local _pairs = q:val(pairs, "pairs")
+
+    q("return function()")
+    q("  local ctx = { stacks = {}, _stack_ids = {}, _extra_stacks = {}, _extra_tops = {} }")
+    q("  local stacks = ctx.stacks")
 
     for i = 1, #stack_names do
         local name = stack_names[i]
         local stack_field = string.format("_stack_%d", i)
         local top_field = string.format("_top_%d", i)
-        src[#src + 1] = string.format("  ctx.%s = {}\n", stack_field)
-        src[#src + 1] = string.format("  ctx.%s = 0\n", top_field)
-        src[#src + 1] = string.format("  ctx._stack_ids[%q] = %d\n", name, i)
-        src[#src + 1] = string.format("  stacks[%q] = ctx.%s\n", name, stack_field)
-        src[#src + 1] = string.format("  ctx[%q] = ctx.%s\n", name .. "_stack", stack_field)
+        q("  ctx.%s = {}", stack_field)
+        q("  ctx.%s = 0", top_field)
+        q("  ctx._stack_ids[%q] = %d", name, i)
+        q("  stacks[%q] = ctx.%s", name, stack_field)
+        q("  ctx[%q] = ctx.%s", name .. "_stack", stack_field)
 
         if name:match("^[_%a][_%w]*$") then
-            src[#src + 1] = string.format("  function ctx:push_%s(frame)\n", name)
-            src[#src + 1] = string.format("    local n = self.%s + 1\n", top_field)
-            src[#src + 1] = string.format("    self.%s = n\n", top_field)
-            src[#src + 1] = string.format("    self.%s[n] = frame\n", stack_field)
-            src[#src + 1] = "    return frame\n"
-            src[#src + 1] = "  end\n"
+            q("  function ctx:push_%s(frame)", name)
+            q("    local n = self.%s + 1", top_field)
+            q("    self.%s = n", top_field)
+            q("    self.%s[n] = frame", stack_field)
+            q("    return frame")
+            q("  end")
 
-            src[#src + 1] = string.format("  function ctx:pop_%s()\n", name)
-            src[#src + 1] = string.format("    local n = self.%s\n", top_field)
-            src[#src + 1] = "    if n > 0 then\n"
-            src[#src + 1] = string.format("      local s = self.%s\n", stack_field)
-            src[#src + 1] = "      local v = s[n]\n"
-            src[#src + 1] = "      s[n] = nil\n"
-            src[#src + 1] = string.format("      self.%s = n - 1\n", top_field)
-            src[#src + 1] = "      return v\n"
-            src[#src + 1] = "    end\n"
-            src[#src + 1] = "    return nil\n"
-            src[#src + 1] = "  end\n"
+            q("  function ctx:pop_%s()", name)
+            q("    local n = self.%s", top_field)
+            q("    if n > 0 then")
+            q("      local s = self.%s", stack_field)
+            q("      local v = s[n]")
+            q("      s[n] = nil")
+            q("      self.%s = n - 1", top_field)
+            q("      return v")
+            q("    end")
+            q("    return nil")
+            q("  end")
 
-            src[#src + 1] = string.format("  function ctx:peek_%s()\n", name)
-            src[#src + 1] = string.format("    local n = self.%s\n", top_field)
-            src[#src + 1] = string.format("    return n > 0 and self.%s[n] or nil\n", stack_field)
-            src[#src + 1] = "  end\n"
+            q("  function ctx:peek_%s()", name)
+            q("    local n = self.%s", top_field)
+            q("    return n > 0 and self.%s[n] or nil", stack_field)
+            q("  end")
 
-            src[#src + 1] = string.format("  function ctx:depth_%s()\n", name)
-            src[#src + 1] = string.format("    return self.%s\n", top_field)
-            src[#src + 1] = "  end\n"
+            q("  function ctx:depth_%s()", name)
+            q("    return self.%s", top_field)
+            q("  end")
         end
     end
 
-    src[#src + 1] = "  function ctx:push(name, frame)\n"
+    q("  function ctx:push(name, frame)")
     for i = 1, #stack_names do
         local name = stack_names[i]
         local stack_field = string.format("_stack_%d", i)
         local top_field = string.format("_top_%d", i)
-        if i == 1 then
-            src[#src + 1] = string.format("    if name == %q then\n", name)
-        else
-            src[#src + 1] = string.format("    elseif name == %q then\n", name)
-        end
-        src[#src + 1] = string.format("      local n = self.%s + 1\n", top_field)
-        src[#src + 1] = string.format("      self.%s = n\n", top_field)
-        src[#src + 1] = string.format("      self.%s[n] = frame\n", stack_field)
-        src[#src + 1] = "      return frame\n"
+        q("    %s name == %q then", i == 1 and "if" or "elseif", name)
+        q("      local n = self.%s + 1", top_field)
+        q("      self.%s = n", top_field)
+        q("      self.%s[n] = frame", stack_field)
+        q("      return frame")
     end
-    if #stack_names > 0 then src[#src + 1] = "    else\n" else src[#src + 1] = "    do\n" end
-    src[#src + 1] = "      local extra_stacks = self._extra_stacks\n"
-    src[#src + 1] = "      local extra_tops = self._extra_tops\n"
-    src[#src + 1] = "      local s = extra_stacks[name]\n"
-    src[#src + 1] = "      if not s then\n"
-    src[#src + 1] = "        s = {}\n"
-    src[#src + 1] = "        extra_stacks[name] = s\n"
-    src[#src + 1] = "        extra_tops[name] = 0\n"
-    src[#src + 1] = "        self.stacks[name] = s\n"
-    src[#src + 1] = "      end\n"
-    src[#src + 1] = "      local n = extra_tops[name] + 1\n"
-    src[#src + 1] = "      extra_tops[name] = n\n"
-    src[#src + 1] = "      s[n] = frame\n"
-    src[#src + 1] = "      return frame\n"
-    src[#src + 1] = "    end\n"
-    if #stack_names > 0 then src[#src + 1] = "  end\n" else src[#src + 1] = "  end\n" end
+    q(#stack_names > 0 and "    else" or "    do")
+    q("      local extra_stacks = self._extra_stacks")
+    q("      local extra_tops = self._extra_tops")
+    q("      local s = extra_stacks[name]")
+    q("      if not s then")
+    q("        s = {}")
+    q("        extra_stacks[name] = s")
+    q("        extra_tops[name] = 0")
+    q("        self.stacks[name] = s")
+    q("      end")
+    q("      local n = extra_tops[name] + 1")
+    q("      extra_tops[name] = n")
+    q("      s[n] = frame")
+    q("      return frame")
+    q("    end")
+    q("  end")
 
-    src[#src + 1] = "  function ctx:pop(name)\n"
+    q("  function ctx:pop(name)")
     for i = 1, #stack_names do
         local name = stack_names[i]
         local stack_field = string.format("_stack_%d", i)
         local top_field = string.format("_top_%d", i)
-        if i == 1 then
-            src[#src + 1] = string.format("    if name == %q then\n", name)
-        else
-            src[#src + 1] = string.format("    elseif name == %q then\n", name)
-        end
-        src[#src + 1] = string.format("      local n = self.%s\n", top_field)
-        src[#src + 1] = "      if n > 0 then\n"
-        src[#src + 1] = string.format("        local s = self.%s\n", stack_field)
-        src[#src + 1] = "        local v = s[n]\n"
-        src[#src + 1] = "        s[n] = nil\n"
-        src[#src + 1] = string.format("        self.%s = n - 1\n", top_field)
-        src[#src + 1] = "        return v\n"
-        src[#src + 1] = "      end\n"
-        src[#src + 1] = "      return nil\n"
+        q("    %s name == %q then", i == 1 and "if" or "elseif", name)
+        q("      local n = self.%s", top_field)
+        q("      if n > 0 then")
+        q("        local s = self.%s", stack_field)
+        q("        local v = s[n]")
+        q("        s[n] = nil")
+        q("        self.%s = n - 1", top_field)
+        q("        return v")
+        q("      end")
+        q("      return nil")
     end
-    if #stack_names > 0 then src[#src + 1] = "    else\n" else src[#src + 1] = "    do\n" end
-    src[#src + 1] = "      local extra_tops = self._extra_tops\n"
-    src[#src + 1] = "      local n = extra_tops[name] or 0\n"
-    src[#src + 1] = "      if n > 0 then\n"
-    src[#src + 1] = "        local s = self._extra_stacks[name]\n"
-    src[#src + 1] = "        local v = s[n]\n"
-    src[#src + 1] = "        s[n] = nil\n"
-    src[#src + 1] = "        extra_tops[name] = n - 1\n"
-    src[#src + 1] = "        return v\n"
-    src[#src + 1] = "      end\n"
-    src[#src + 1] = "      return nil\n"
-    src[#src + 1] = "    end\n"
-    if #stack_names > 0 then src[#src + 1] = "  end\n" else src[#src + 1] = "  end\n" end
+    q(#stack_names > 0 and "    else" or "    do")
+    q("      local extra_tops = self._extra_tops")
+    q("      local n = extra_tops[name] or 0")
+    q("      if n > 0 then")
+    q("        local s = self._extra_stacks[name]")
+    q("        local v = s[n]")
+    q("        s[n] = nil")
+    q("        extra_tops[name] = n - 1")
+    q("        return v")
+    q("      end")
+    q("      return nil")
+    q("    end")
+    q("  end")
 
-    src[#src + 1] = "  function ctx:peek(name)\n"
+    q("  function ctx:peek(name)")
     for i = 1, #stack_names do
         local name = stack_names[i]
         local stack_field = string.format("_stack_%d", i)
         local top_field = string.format("_top_%d", i)
-        if i == 1 then
-            src[#src + 1] = string.format("    if name == %q then\n", name)
-        else
-            src[#src + 1] = string.format("    elseif name == %q then\n", name)
-        end
-        src[#src + 1] = string.format("      local n = self.%s\n", top_field)
-        src[#src + 1] = string.format("      return n > 0 and self.%s[n] or nil\n", stack_field)
+        q("    %s name == %q then", i == 1 and "if" or "elseif", name)
+        q("      local n = self.%s", top_field)
+        q("      return n > 0 and self.%s[n] or nil", stack_field)
     end
-    if #stack_names > 0 then src[#src + 1] = "    else\n" else src[#src + 1] = "    do\n" end
-    src[#src + 1] = "      local n = self._extra_tops[name] or 0\n"
-    src[#src + 1] = "      return n > 0 and self._extra_stacks[name][n] or nil\n"
-    src[#src + 1] = "    end\n"
-    if #stack_names > 0 then src[#src + 1] = "  end\n" else src[#src + 1] = "  end\n" end
+    q(#stack_names > 0 and "    else" or "    do")
+    q("      local n = self._extra_tops[name] or 0")
+    q("      return n > 0 and self._extra_stacks[name][n] or nil")
+    q("    end")
+    q("  end")
 
-    src[#src + 1] = "  function ctx:depth(name)\n"
+    q("  function ctx:depth(name)")
     for i = 1, #stack_names do
         local name = stack_names[i]
         local top_field = string.format("_top_%d", i)
-        if i == 1 then
-            src[#src + 1] = string.format("    if name == %q then\n", name)
-        else
-            src[#src + 1] = string.format("    elseif name == %q then\n", name)
-        end
-        src[#src + 1] = string.format("      return self.%s\n", top_field)
+        q("    %s name == %q then", i == 1 and "if" or "elseif", name)
+        q("      return self.%s", top_field)
     end
-    if #stack_names > 0 then src[#src + 1] = "    else\n" else src[#src + 1] = "    do\n" end
-    src[#src + 1] = "      return self._extra_tops[name] or 0\n"
-    src[#src + 1] = "    end\n"
-    if #stack_names > 0 then src[#src + 1] = "  end\n" else src[#src + 1] = "  end\n" end
+    q(#stack_names > 0 and "    else" or "    do")
+    q("      return self._extra_tops[name] or 0")
+    q("    end")
+    q("  end")
 
-    src[#src + 1] = "  local function reset_stacks()\n"
+    q("  local function reset_stacks()")
     for i = 1, #stack_names do
         local stack_field = string.format("_stack_%d", i)
         local top_field = string.format("_top_%d", i)
-        src[#src + 1] = string.format("    local top = ctx.%s\n", top_field)
-        src[#src + 1] = "    if top > 0 then\n"
-        src[#src + 1] = string.format("      local s = ctx.%s\n", stack_field)
-        src[#src + 1] = "      for j = top, 1, -1 do s[j] = nil end\n"
-        src[#src + 1] = string.format("      ctx.%s = 0\n", top_field)
-        src[#src + 1] = "    end\n"
+        q("    local top = ctx.%s", top_field)
+        q("    if top > 0 then")
+        q("      local s = ctx.%s", stack_field)
+        q("      for j = top, 1, -1 do s[j] = nil end")
+        q("      ctx.%s = 0", top_field)
+        q("    end")
     end
-    src[#src + 1] = "    for name, top in pairs(ctx._extra_tops) do\n"
-    src[#src + 1] = "      if top > 0 then\n"
-    src[#src + 1] = "        local s = ctx._extra_stacks[name]\n"
-    src[#src + 1] = "        for j = top, 1, -1 do s[j] = nil end\n"
-    src[#src + 1] = "        ctx._extra_tops[name] = 0\n"
-    src[#src + 1] = "      end\n"
-    src[#src + 1] = "    end\n"
-    src[#src + 1] = "  end\n"
+    q("    for name, top in %s(ctx._extra_tops) do", _pairs)
+    q("      if top > 0 then")
+    q("        local s = ctx._extra_stacks[name]")
+    q("        for j = top, 1, -1 do s[j] = nil end")
+    q("        ctx._extra_tops[name] = 0")
+    q("      end")
+    q("    end")
+    q("  end")
 
-    src[#src + 1] = "  return ctx, reset_stacks\n"
-    src[#src + 1] = "end\n"
+    q("  return ctx, reset_stacks")
+    q("end")
 
-    return compile_chunk(table.concat(src), {
-        pairs = pairs,
-    }, "=(gps.ctx_builder." .. table.concat(stack_names, ",") .. ")")
+    return q:compile("=(gps.ctx_builder." .. table.concat(stack_names, ",") .. ")")
 end
 
 local function make_specialized_runner(backend, arity)
-    local src = {}
-    src[#src + 1] = "return function(slot"
-    if arity >= 1 then src[#src + 1] = ", a" end
-    if arity >= 2 then src[#src + 1] = ", b" end
-    src[#src + 1] = ")\n"
-    src[#src + 1] = "  local cmds = slot._cmds\n"
-    src[#src + 1] = "  if not cmds then return nil end\n"
-    src[#src + 1] = "  local stats = slot._stats\n"
-    src[#src + 1] = "  stats.runs = stats.runs + 1\n"
-    src[#src + 1] = "  slot._reset_stacks()\n"
-    src[#src + 1] = "  local ctx = slot._ctx\n"
-    src[#src + 1] = "  local n = slot._cmd_count\n"
-    src[#src + 1] = "  for i = 1, n do\n"
-    src[#src + 1] = "    local cmd = cmds[i]\n"
-    src[#src + 1] = "    local op = cmd.op\n"
-    src[#src + 1] = "    local result\n"
+    local q = Quote()
+    local run_refs = {}
+    for i = 1, #backend.ops do
+        run_refs[i] = q:val(backend.ops[i].run, "run_" .. i)
+    end
+
+    q("return function(slot%s%s)", arity >= 1 and ", a" or "", arity >= 2 and ", b" or "")
+    q("  local cmds = slot._cmds")
+    q("  if not cmds then return nil end")
+    q("  local stats = slot._stats")
+    q("  stats.runs = stats.runs + 1")
+    q("  slot._reset_stacks()")
+    q("  local ctx = slot._ctx")
+    q("  local n = slot._cmd_count")
+    q("  for i = 1, n do")
+    q("    local cmd = cmds[i]")
+    q("    local op = cmd.op")
+    q("    local result")
 
     if #backend.ops == 0 then
-        src[#src + 1] = "    result = nil\n"
+        q("    result = nil")
     else
         for i = 1, #backend.ops do
-            if i == 1 then
-                src[#src + 1] = string.format("    if op == %d then\n", i)
-            else
-                src[#src + 1] = string.format("    elseif op == %d then\n", i)
-            end
+            q("    %s op == %d then", i == 1 and "if" or "elseif", i)
             if arity == 0 then
-                src[#src + 1] = string.format("      result = run_%d(cmd, ctx, cmd.res)\n", i)
+                q("      result = %s(cmd, ctx, cmd.res)", run_refs[i])
             elseif arity == 1 then
-                src[#src + 1] = string.format("      result = run_%d(cmd, ctx, cmd.res, a)\n", i)
+                q("      result = %s(cmd, ctx, cmd.res, a)", run_refs[i])
             else
-                src[#src + 1] = string.format("      result = run_%d(cmd, ctx, cmd.res, a, b)\n", i)
+                q("      result = %s(cmd, ctx, cmd.res, a, b)", run_refs[i])
             end
         end
-        src[#src + 1] = "    end\n"
+        q("    end")
     end
 
-    src[#src + 1] = "    if result ~= nil then return result end\n"
-    src[#src + 1] = "  end\n"
-    src[#src + 1] = "  return nil\n"
-    src[#src + 1] = "end\n"
+    q("    if result ~= nil then return result end")
+    q("  end")
+    q("  return nil")
+    q("end")
 
-    local env = {}
-    for i = 1, #backend.ops do
-        env["run_" .. i] = backend.ops[i].run
-    end
-    return compile_chunk(table.concat(src), env, "=(gps.runner." .. backend.name .. "." .. arity .. ")")
+    return q:compile("=(gps.runner." .. backend.name .. "." .. arity .. ")")
 end
 
 local function normalize_backend(name, spec)

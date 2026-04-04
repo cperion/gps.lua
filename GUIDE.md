@@ -131,6 +131,7 @@ and returns results. It must be a stable function reference — ideally
 defined once at module load time, never re-created per node.
 
 Good:
+
 ```lua
 local function rect_fill_gen(param, state, g)
     g:fill_rect(param.x, param.y, param.w, param.h, param.rgba8)
@@ -139,6 +140,7 @@ end
 ```
 
 Bad:
+
 ```lua
 function T.View.Rect:paint()
     -- Creating a NEW function every call. Defeats caching.
@@ -203,6 +205,7 @@ Two declarations with the same shape string are considered identical.
 This is how the framework knows whether to preserve or reallocate state.
 
 For example:
+
 ```lua
 M.state.resource("TextBlob", { cap = 16, font_id = 1 })
 -- shape = 'resource(TextBlob|{["cap"]=16,["font_id"]=1})'
@@ -358,11 +361,13 @@ If a backend IR node requires complex conditional logic to decide what
 to emit, the node is too coarse. Split it.
 
 Bad:
+
 ```
 DrawCommand = (string type, any data) unique
 ```
 
 Good:
+
 ```
 Node = RectFill(number x, number y, number w, number h, number rgba8) unique
      | Text(number x, number y, number font_id, number rgba8, string text) unique
@@ -380,6 +385,7 @@ state-shaping. Nothing is code-shaping.**
 
 All code-shaping choices have been resolved by the time you reach the
 backend IR. What remains are values that either:
+
 - go into param (payload)
 - go into state_decl (state-shaping)
 
@@ -420,6 +426,7 @@ T:Define [[
 ```
 
 Notice:
+
 - `Node` is a sum type. Each variant is a clear code-shaping choice.
 - `RectFill` and `Text` are leaf nodes → single `emit()` calls.
 - `Group`, `Clip`, `Transform` are container nodes → `compose()` calls.
@@ -483,6 +490,7 @@ end
 ```
 
 Classification:
+
 - **code shape**: `RectFill` (the sum variant)
 - **state shape**: none
 - **payload**: all fields
@@ -523,11 +531,13 @@ end
 ```
 
 Classification:
+
 - **code shape**: `Text` (the sum variant)
 - **state shape**: `resource(TextBlob|{cap=..., font_id=...})`
 - **payload**: position, color, text content
 
 Notice the design:
+
 - `cap` is **state-shaping** because changing it means reallocating the
   TextBlob (different buffer size).
 - `font_id` is **state-shaping** because changing it means a different
@@ -539,6 +549,7 @@ Notice the design:
 
 This is the central classification exercise. Getting it right means
 the framework can:
+
 - Preserve the TextBlob when only text content changes
 - Reallocate when the text grows past the current bucket
 - Reuse the code family always (gen never changes for Text nodes)
@@ -571,6 +582,7 @@ end
 ```
 
 The pattern:
+
 1. Compile all children recursively
 2. Compose them with a body function that wraps execution
 3. Attach container-level payload (clip rect coordinates) to the
@@ -619,6 +631,7 @@ Children execute in order. Each receives its own param and state
 slice. The result of one is passed as input to the next.
 
 Internally:
+
 ```lua
 gen = function(parent_param, parent_state, ...)
     local result = ...
@@ -649,6 +662,7 @@ offsets coordinates, how hit-test probes children back-to-front.
 ### Composition Shapes
 
 The composed code_shape is derived from:
+
 1. The composition tag (sequential or body function identity)
 2. All child code_shapes
 
@@ -691,6 +705,7 @@ The ASDL is not just a type definition. It is the architecture:
 The top-level ASDL should reflect the user's mental model:
 
 Good (models what the user builds):
+
 ```
 Node = Column(number spacing, Node* children) unique
      | Row(number spacing, Node* children) unique
@@ -699,6 +714,7 @@ Node = Column(number spacing, Node* children) unique
 ```
 
 Bad (models what the renderer needs):
+
 ```
 DrawOp = FillRect(number x, number y, number w, number h, number rgba8)
        | DrawText(number x, number y, number font_id, number rgba8, string text, number cap)
@@ -787,6 +803,7 @@ T:Define [[
 ```
 
 Notice:
+
 - All positions are absolute (layout resolved)
 - `tag` is present for hit-testing (carried through to hit backend)
 - `font_id` is present (needed by both paint and hit-test sizing)
@@ -842,6 +859,7 @@ user *thinks* about, not what the machine *does*.
 ### Widget-Level Thinking
 
 For a UI:
+
 ```
 Node = Column(number spacing, Node* children) unique
      | Row(number spacing, Node* children) unique
@@ -852,6 +870,7 @@ Node = Column(number spacing, Node* children) unique
 ```
 
 For audio:
+
 ```
 Device = Osc(number hz) unique
        | Filter(FilterMode mode, number freq, number q) unique
@@ -861,6 +880,7 @@ Device = Osc(number hz) unique
 ```
 
 For a language:
+
 ```
 Expr = Literal(number value) unique
      | Var(string name) unique
@@ -872,6 +892,7 @@ Expr = Literal(number value) unique
 ### Design Principle: The User ASDL Has No Backend Knowledge
 
 The user ASDL must not contain:
+
 - Absolute positions (those are layout artifacts)
 - Capacity buckets (those are backend allocation artifacts)
 - Resource handles (those are runtime state)
@@ -1066,6 +1087,7 @@ a too-small buffer. Canvas has the wrong resolution.
 TextBlob. When text grows, the blob is too small.
 
 **Fix**: Move the state-shaping fact into the state declaration:
+
 ```lua
 M.state.resource("TextBlob", { cap = next_power_of_two(#text) })
 ```
@@ -1090,6 +1112,7 @@ like a highpass by setting a param field.
 that switches on it at runtime.
 
 **Fix**: Model filter type as a sum type. Each variant gets its own gen.
+
 ```
 Filter = LowPass(number freq, number q) unique
        | HighPass(number freq, number q) unique
@@ -1105,6 +1128,7 @@ nodes, defeating structural sharing.
 
 **Fix**: Strip dead fields at the lowering boundary. The paint
 projection of a Box does not include `tag`:
+
 ```lua
 function V.View.Box:paint_ast()
     return Paint.LovePaint.RectFill(self.x, self.y, self.w, self.h, self.rgba8)
@@ -1138,6 +1162,7 @@ Run this for every field at every boundary. The first YES wins.
 ### Worked Example: Audio Filter Node
 
 Source ASDL:
+
 ```
 Filter(FilterMode mode, number freq, number q, number gain_db)
 ```
@@ -1152,6 +1177,7 @@ At the `compile` boundary:
 | `gain_db` | payload           | same                                     |
 
 Terminal:
+
 ```lua
 -- For LowPass variant:
 M.emit(
@@ -1164,6 +1190,7 @@ M.emit(
 ### Worked Example: Canvas Render Target
 
 Source ASDL:
+
 ```
 Canvas(number w, number h, number msaa, number clear_r, number clear_g, number clear_b)
 ```
@@ -1180,6 +1207,7 @@ At the `compile_render_pass` boundary:
 | `clear_b` | payload           | same                                     |
 
 Terminal:
+
 ```lua
 M.emit(
     render_pass_gen,
@@ -1399,11 +1427,13 @@ You do not write this boilerplate. The schema implies it.
 ### What You DO Write
 
 You write:
+
 - **Leaf variant methods**: `function T.View.Rect:paint() ... end`
 - **Custom container methods** (if the default compose is wrong)
 - **Cross-module lowerings**: explicit `M.lower()` calls
 
 You do NOT write:
+
 - Sum type dispatchers
 - Default compose over child lists
 - Cache key logic
@@ -1646,49 +1676,61 @@ widget — through all layers. This illustrates the bridge in
 concrete detail.
 
 ### Layer 0: User Event
+
 ```
 SetText(string tag, string new_text)
 ```
+
 `new_text` enters the system.
 
 ### Layer 1: User ASDL (Source)
+
 ```lua
 local label = U.UI.Text("greeting", 1, 0xffffffff, "hello world")
 --                                                  ^^^^^^^^^^^^^
 -- text = "hello world"
 ```
+
 Classification: **undifferentiated**. The ASDL does not know yet what
 "hello world" means to any backend.
 
 ### Layer 2: View ASDL (After Layout)
+
 ```lua
 local vlabel = V.View.Label("greeting", 100, 50, 120, 20, 1, 0xffffffff, "hello world")
 --                                                                        ^^^^^^^^^^^^^
 -- text = "hello world" (passed through, now with resolved position)
 ```
+
 Classification: still **undifferentiated** at the view level. The view
 is backend-agnostic.
 
 ### Layer 3a: Paint Backend IR
+
 ```lua
 local ptext = Paint.Node.Text(100, 50, 1, 0xffffffff, "hello world")
 --                                                     ^^^^^^^^^^^^^
 -- text = "hello world"
 ```
+
 Classification: **splits into two roles**:
+
 - `#text` → contributes to cap = `next_power_of_two(11)` = 16 → **state-shaping**
 - `text` content → **payload** (read by gen to draw the actual glyphs)
 
 ### Layer 3b: Hit Backend IR
+
 ```lua
 local htext = Hit.Node.Text(100, 50, 120, 20, "greeting")
 --                                              ^^^^^^^^
 -- tag = "greeting" (the text CONTENT is dead here)
 ```
+
 Classification: `text` is **dead** for the hit backend. It is not
 present in the hit IR at all. Only `tag` survives.
 
 ### Layer 4: Terminal Emission (Paint)
+
 ```lua
 M.emit(
     text_gen,
@@ -1703,12 +1745,14 @@ The field has been fully classified.
 ### What Happens on Update
 
 User types "hello world!" (12 chars):
+
 - cap = `next_power_of_two(12)` = 16 → **same** bucket
 - state_shape unchanged → state preserved
 - param changes → gen gets new text
 - **Result**: payload-only update. TextBlob reused. Instant.
 
 User pastes a 20-char string:
+
 - cap = `next_power_of_two(20)` = 32 → **different** bucket
 - state_shape changed → state reallocated (new, larger TextBlob)
 - gen unchanged (still `text_gen`)
@@ -1724,6 +1768,7 @@ Now let us trace how a **container** (like Column or Clip) transforms
 across layers.
 
 ### User ASDL
+
 ```lua
 local col = U.UI.Column(10, {
     U.UI.Rect("header", 200, 40, 0xff3366ff),
@@ -1735,6 +1780,7 @@ At this level, Column is a **layout concept**. It knows spacing but
 not positions.
 
 ### View ASDL (After Layout)
+
 ```lua
 -- Column is GONE. Its layout effect has been applied.
 -- What remains is positioned leaves:
@@ -1801,12 +1847,14 @@ is crucial for good ASDL design.
 ### Layer Behavior of Sum Types
 
 **User ASDL**: Sum types represent user-facing choices.
+
 ```
 Node = Column(...) | Row(...) | Rect(...) | Text(...)
 ```
 
 **View ASDL**: Some user variants collapse. Column and Row both produce
 positioned children — the View does not distinguish them.
+
 ```
 VNode = Box(...) | Label(...) | Clip(...) | Transform(...) | Group(...)
 ```
@@ -1817,6 +1865,7 @@ Rect → produces Box
 Text → produces Label
 
 **Backend IR**: View variants may split or merge for backend needs.
+
 ```
 -- Paint backend
 Node = RectFill(...) | Text(...) | Clip(...) | Transform(...) | Group(...)
@@ -1881,12 +1930,14 @@ end
 ```
 
 Two compile pipelines:
+
 ```lua
 local compile_paint = M.lower("paint", function(root) ... end)
 local compile_hit = M.lower("hit", function(root) ... end)
 ```
 
 Two slots:
+
 ```lua
 paint_slot:update(compile_paint(source.root))
 hit_slot:update(compile_hit(source.root))
@@ -1909,6 +1960,7 @@ M.state.resource("TextBlob", { cap = cap, font_id = self.font_id })
 ```
 
 This means:
+
 - Text of length 1–16 → cap=16 → same state shape
 - Text of length 17–32 → cap=32 → different state shape (realloc)
 - Text of length 33–64 → cap=64 → different state shape (realloc)
@@ -1947,6 +1999,7 @@ that existing node — further collapsing redundant updates.
 ### Propagation
 
 In a functional update pattern:
+
 ```lua
 local new_root = M.with(root, {
     nodes = map(root.nodes, function(n)
@@ -2007,6 +2060,7 @@ want to pollute the paint pipeline.
 own leaf compilers, its own slot.
 
 Hit-test gens return hit records instead of drawing:
+
 ```lua
 local function rect_probe_gen(param, state, query)
     if inside(query.x, query.y, param.x, param.y, param.w, param.h) then
@@ -2017,6 +2071,7 @@ end
 ```
 
 Hit-test containers probe children back-to-front (top element wins):
+
 ```lua
 function(child_gens, param, state, query)
     for i = #child_gens, 1, -1 do
@@ -2029,6 +2084,7 @@ end
 
 Hit-test Clip validates the query is inside the clip rect before
 probing children:
+
 ```lua
 function(child_gens, param, state, query)
     if not inside(query.x, query.y, param.x, param.y, param.w, param.h) then
@@ -2039,6 +2095,7 @@ end
 ```
 
 Hit-test Transform adjusts query coordinates:
+
 ```lua
 function(child_gens, param, state, query)
     local local_query = { x = query.x - param.tx, y = query.y - param.ty }
@@ -2091,6 +2148,7 @@ print(report)
 ```
 
 Output:
+
 ```
 ui_to_paint    calls=850 node_hits=847 code_hits=100 code_misses=3 code_reuse=97% state_hits=95 state_misses=5 state_reuse=95%
 ui_to_hit      calls=850 node_hits=849 code_hits=100 code_misses=1 code_reuse=99% state_hits=100 state_misses=0 state_reuse=100%
@@ -2143,6 +2201,7 @@ new_root = UI.Root(UI.Column(10, { rect_a, rect_b, text_c_modified }))
 ```
 
 Because all types are `unique`:
+
 - `rect_a` is the same object (identity preserved)
 - `rect_b` is the same object (identity preserved)
 - `text_c_modified` is a new object (different text)
@@ -2151,6 +2210,7 @@ Because all types are `unique`:
 - The Root is new (contains a new Column)
 
 But when the lowering boundary processes the Root:
+
 1. Root is new → L1 miss → recompile
 2. Column is new → L1 miss → recompile children
 3. `rect_a` is unchanged → L1 hit! Skip.
@@ -2320,6 +2380,7 @@ end
 ```
 
 The state declaration carries the alloc function:
+
 ```lua
 M.state.resource("TextBlob", { cap = cap, font_id = fid }, {
     alloc = alloc_text_blob,  -- or alloc_text_blob_sdl, etc.
@@ -2670,6 +2731,7 @@ One tree walk, two flat outputs. No intermediate View tree needed.
 ### How This Changes the Layer Stack
 
 Before (current mgps demo):
+
 ```
 UI ASDL (tree, user-authored)
   → View ASDL (tree, positioned)       ← unnecessary intermediate tree
@@ -2679,6 +2741,7 @@ UI ASDL (tree, user-authored)
 ```
 
 After (flattened):
+
 ```
 UI ASDL (tree, user-authored)
   │
@@ -3021,6 +3084,7 @@ child natural_w → parent leftover → parent distribution
 ```
 
 Is there a cycle? Let’s check:
+
 - Parent needs child natural widths to compute distribution. ✔
 - Child needs distribution result to know assigned width. ✔
 - But child natural width does NOT depend on the distribution.
@@ -3319,6 +3383,7 @@ are separate:
    be preserved if code_shape is unchanged.
 
 This means:
+
 - Tweaking visual parameters (colors, positions) → instant (payload)
 - Tweaking buffer sizes → state realloc (state-shaping) but gen reuse
 - Changing widget types → full recompile of that subtree
@@ -3334,6 +3399,7 @@ The `grammar.lua` module demonstrates the full GPS philosophy applied
 to parsing:
 
 1. **The grammar itself is ASDL**:
+
    ```
    module Grammar {
        Spec = (Lex lex, Parse parse) unique
@@ -3364,10 +3430,12 @@ hard cases and how to resolve them.
 ### Case: A Value That Is Both State-Shaping and Payload
 
 `font_id` in a Text node:
+
 - State-shaping: different font → different TextBlob resource
 - Payload: gen needs it to select the font at draw time
 
 **Resolution**: Include it in BOTH state_decl and param:
+
 ```lua
 M.emit(
     text_gen,
@@ -3384,6 +3452,7 @@ They serve different purposes.
 ### Case: A Value Whose Classification Depends on Magnitude
 
 Text length:
+
 - Length 1–16: cap=16 (state shape A)
 - Length 17–32: cap=32 (state shape B)
 - Length 1‒16 changing to length 13: same cap, payload-only
@@ -3391,6 +3460,7 @@ Text length:
 
 **Resolution**: Bucket and split. The bucketed value is state-shaping.
 The raw value is payload:
+
 ```lua
 local cap = next_power_of_two(#self.text)  -- state-shaping
 local text = self.text                     -- payload
@@ -3399,6 +3469,7 @@ local text = self.text                     -- payload
 ### Case: A Value That Is Code-Shaping at One Level but Payload at Another
 
 `filter_mode` in audio:
+
 - At the device level: code-shaping (LowPass vs HighPass → different gen)
 - At the graph level: payload (the graph just calls whatever device is there)
 
@@ -3411,6 +3482,7 @@ device level (code-shaping) but an opaque value at the graph level
 ### Case: A Field That Might Be Dead or Might Be Needed
 
 `tag` in a View node:
+
 - Dead for paint backend
 - Alive for hit backend
 - Alive for accessibility backend
@@ -3428,11 +3500,13 @@ Deep composition trees can become expensive if not designed carefully.
 ### The Cost Model
 
 Each composition level adds:
+
 - One composed gen function call
 - One level of param array indexing
 - One level of state array indexing
 
 For 100 children in a Group, the composed gen is:
+
 ```lua
 for i = 1, 100 do
     child_gens[i](param[i], state[i], g)
@@ -3496,6 +3570,7 @@ module Anim {
 ```
 
 The lowering resolves the current value:
+
 ```lua
 function Anim.Value.Linear:resolve()
     return self.from + (self.to - self.from) * self.t
@@ -3520,6 +3595,7 @@ M.state.ffi("struct { double pos, vel; }")
 ```
 
 The gen function steps the simulation:
+
 ```lua
 local function spring_gen(param, state, dt)
     local force = (param.target - state[0].pos) * param.stiffness
@@ -3553,6 +3629,7 @@ The GPS architecture makes testing unusually clean.
 ### Level 1: Test the ASDL
 
 Construct nodes and verify structural properties:
+
 ```lua
 local a = T.View.Box("test", 0, 0, 100, 30, 0xff0000ff)
 local b = T.View.Box("test", 0, 0, 100, 30, 0xff0000ff)
@@ -3565,6 +3642,7 @@ assert(a ~= c, "different color should give different object")
 ### Level 2: Test Individual Lowerings
 
 Call a lowering function and inspect the output ASDL:
+
 ```lua
 local ui_node = U.UI.Rect("btn", 100, 30, 0xff0000ff)
 local view_nodes = ui_node:place(50, 75)
@@ -3576,6 +3654,7 @@ assert(view_nodes[1].y == 75)
 ### Level 3: Test Terminal Emission
 
 Call the terminal method and inspect the emitted triple:
+
 ```lua
 local paint_node = P.Paint.RectFill(10, 20, 100, 30, 0xff0000ff)
 local result = paint_node:draw()
@@ -3590,6 +3669,7 @@ assert(result.param.y == 20)
 ### Level 4: Test Running Machines
 
 Use a fake/mock backend:
+
 ```lua
 local gfx = FakeGraphics:new()
 slot.callback(gfx)
@@ -3604,6 +3684,7 @@ a mock backend that records operations for verification.
 ### Level 5: Test Cache Behavior
 
 Use `M.report()` to verify caching expectations:
+
 ```lua
 slot:update(compile(source))
 slot:update(compile(source))  -- same source
@@ -3997,6 +4078,7 @@ module Sheet {
 ### Layer Design
 
 The spreadsheet has only two layers:
+
 1. **Source**: The cell grid with formulas
 2. **Terminal**: Evaluation machines
 
@@ -4084,6 +4166,7 @@ stateless at the machine level (all mutable data is in the ASDL
 source, not in machine state). The source IS the state.
 
 This is a valid and common pattern for ECS-style games:
+
 - Source = entity data (functional, immutable per frame)
 - Gen = update/render logic per entity kind
 - Param = entity data
@@ -4215,6 +4298,7 @@ The deepest thing GPS teaches is that virtually all interactive
 programs are compilers in disguise.
 
 Consider what a UI framework does:
+
 1. Takes a description of widgets (source)
 2. Resolves layout (analysis pass)
 3. Produces draw commands (code generation)
@@ -4225,6 +4309,7 @@ That is a compiler. The source is the widget tree. The target is GPU
 commands. The "runtime" is the graphics backend.
 
 Consider what an audio engine does:
+
 1. Takes a description of the signal graph (source)
 2. Resolves routing and buffer allocation (analysis pass)
 3. Produces a processing schedule (code generation)
@@ -4276,6 +4361,7 @@ It does not need to be a runtime role because it does not exist at
 runtime.
 
 Three roles is the minimal complete decomposition:
+
 - **gen**: what to do (code)
 - **param**: what to do it with (data the code reads)
 - **state**: what persists across invocations (data the code owns)
@@ -4846,6 +4932,7 @@ Lowering N→N+1:
 ## Quick Reference: Common Layer Stacks by Domain
 
 ### UI Rendering (canonical flattened form)
+
 ```
 UI ASDL          (widgets, layout spec — TREE)
   ↓ layout walk: measure + place (the ONE recursive pass)
@@ -4856,6 +4943,7 @@ emit(gen, state, param)              linear iteration
 ```
 
 ### Audio DSP
+
 ```
 Device ASDL      (signal graph)
   ↓ compile (resolve routing, compute coefficients)
@@ -4865,6 +4953,7 @@ emit(gen, state, param)
 ```
 
 ### Language Compiler
+
 ```
 AST ASDL         (parsed source)
   ↓ analysis (type check, name resolution)
@@ -4876,6 +4965,7 @@ emit(gen, state, param)
 ```
 
 ### Game Entity System
+
 ```
 World ASDL       (entities with components)
   ↓ compile (per entity type)
@@ -4885,6 +4975,7 @@ emit(gen, state, param)
 ```
 
 ### Document Editor
+
 ```
 Doc ASDL         (paragraphs, spans, styles)
   ↓ layout (line breaking, pagination)

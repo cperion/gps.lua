@@ -1,9 +1,15 @@
--- bench_json.lua — JSON decoding: raw recursive vs uvm family
+-- bench_json.lua — JSON decoding: raw recursive vs uvm family vs library decoders
 --
--- Tests whether uvm adds overhead to a real parsing workload.
+-- Methodology notes:
+--   * compare complete decode calls, not token-level internals
+--   * keep UVM coarse-grained: one semantic step per document
+--   * consume each result in the bench loop so calls are not dead work
+--   * benchmark pvm.lower both hot (cache hit) and cold-miss variants
+--
 -- The JSON decoder uses FFI byte scanning (same technique as asdl_lexer).
 
-package.path = "./?.lua;./?/init.lua;" .. package.path
+package.path = "./.luarocks/share/lua/5.1/?.lua;./.luarocks/share/lua/5.1/?/init.lua;./?.lua;./?/init.lua;" .. package.path
+package.cpath = "./.luarocks/lib/lua/5.1/?.so;./.luarocks/lib64/lua/5.1/?.so;" .. package.cpath
 
 if not package.preload["gps.asdl_lexer"] then
     package.preload["gps.asdl_lexer"]   = function() return require("asdl_lexer") end
@@ -153,39 +159,29 @@ function decode_value(buf, pos, len, src)
 end
 
 local function json_decode_raw(src)
-    local len = #src
-    local buf = ffi.new("uint8_t[?]", len)
-    ffi.copy(buf, src, len)
-    local _, val = decode_value(buf, 0, len, src)
-    return val
+    return uvm.json.raw_decode(src)
 end
 
 -- ══════════════════════════════════════════════════════════════
 --  UVM JSON DECODER (same code, wrapped as a family)
 -- ══════════════════════════════════════════════════════════════
 
-local json_family = uvm.family({
-    name = "json.decoder",
-
-    init = function(param, _seed)
-        local src = param.source
-        local len = #src
-        local buf = ffi.new("uint8_t[?]", len)
-        ffi.copy(buf, src, len)
-        return { buf = buf, len = len, src = src, pos = 0, done = false }
-    end,
-
-    step = function(param, state)
-        if state.done then return nil, S.HALT end
-        local pos, val = decode_value(state.buf, state.pos, state.len, state.src)
-        state.pos = pos
-        state.done = true
-        return state, S.YIELD, val
-    end,
-})
+local json_family = uvm.json.decoder({ name = "json.decoder" })
+local json_generated = uvm.json.generated({ spec = uvm.json.spec_table() })
+local json_generated_family = uvm.json.generated_decoder({ name = "json.generated" })
 
 local function json_decode_uvm(src)
     local m = json_family:spawn({ source = src })
+    local status, val = m:step()
+    return val
+end
+
+local function json_decode_generated(src)
+    return json_generated.decode(src)
+end
+
+local function json_decode_uvm_generated(src)
+    local m = json_generated_family:spawn({ source = src })
     local status, val = m:step()
     return val
 end
@@ -231,11 +227,19 @@ end
 
 local r1 = json_decode_raw(SMALL)
 local r2 = json_decode_uvm(SMALL)
+local r2g = json_decode_generated(SMALL)
+local r2ug = json_decode_uvm_generated(SMALL)
 assert(deep_eq(r1, r2), "small mismatch")
+assert(deep_eq(r1, r2g), "small generated mismatch")
+assert(deep_eq(r1, r2ug), "small uvm generated mismatch")
 
 local r3 = json_decode_raw(MEDIUM)
 local r4 = json_decode_uvm(MEDIUM)
+local r4g = json_decode_generated(MEDIUM)
+local r4ug = json_decode_uvm_generated(MEDIUM)
 assert(deep_eq(r3, r4), "medium mismatch")
+assert(deep_eq(r3, r4g), "medium generated mismatch")
+assert(deep_eq(r3, r4ug), "medium uvm generated mismatch")
 
 print("Correctness: OK\n")
 
@@ -244,48 +248,81 @@ print("Correctness: OK\n")
 -- ══════════════════════════════════════════════════════════════
 
 local has_cjson, cjson = pcall(require, "cjson")
+local has_dkjson, dkjson = pcall(require, "dkjson")
 
-local function bench(name, fn, input, N)
-    -- warmup
-    for i = 1, math.min(N, 100) do fn(input) end
+local function bench_same(fn, input, N)
+    local sink = 0
+    for i = 1, math.min(N, 100) do sink = sink + (fn(input) and 1 or 0) end
     collectgarbage("collect"); collectgarbage("collect")
     local t0 = os.clock()
-    for i = 1, N do fn(input) end
+    for i = 1, N do sink = sink + (fn(input) and 1 or 0) end
     local elapsed = (os.clock() - t0) / N
+    if sink == 0 then error("unreachable sink") end
     return elapsed
 end
 
-local function run(label, input, N)
+local function bench_miss_once(fn, inputs)
+    local sink = 0
+    collectgarbage("collect"); collectgarbage("collect")
+    local t0 = os.clock()
+    for i = 1, #inputs do sink = sink + (fn(inputs[i]) and 1 or 0) end
+    local elapsed = (os.clock() - t0) / #inputs
+    if sink == 0 then error("unreachable sink") end
+    return elapsed
+end
+
+local function make_lower_miss_variants(input, count)
+    local vars = {}
+    for i = 1, count do vars[i] = input .. string.rep(" ", i) end
+    return vars
+end
+
+local function run(label, input, N, cold_N)
     print(string.format("── %s (%d bytes) ──", label, #input))
 
-    local t_raw = bench("raw", json_decode_raw, input, N)
-    local t_uvm = bench("uvm", json_decode_uvm, input, N)
-    local t_lower = bench("lower(cold)", json_decode_raw, input, N)
+    local t_raw = bench_same(json_decode_raw, input, N)
+    local t_gen = bench_same(json_decode_generated, input, N)
+    local t_uvm = bench_same(json_decode_uvm, input, N)
+    local t_uvm_gen = bench_same(json_decode_uvm_generated, input, N)
 
-    -- lower hot (same string, cache hit)
-    json_lower:reset(); json_lower(input)
-    local t_lower_hot = bench("lower(hot)", function(s) return json_lower(s) end, input, N)
+    json_lower:reset()
+    json_lower(input)
+    local t_lower_hot = bench_same(function(s) return json_lower(s) end, input, N)
+
+    json_lower:reset()
+    local miss_variants = make_lower_miss_variants(input, cold_N)
+    local t_lower_cold = bench_miss_once(function(s) return json_lower(s) end, miss_variants)
 
     print(string.format("  raw recursive:    %8.1fus", t_raw * 1e6))
+    print(string.format("  generated raw:    %8.1fus  (%.2fx)", t_gen * 1e6, t_gen / t_raw))
     print(string.format("  uvm family:       %8.1fus  (%.2fx)", t_uvm * 1e6, t_uvm / t_raw))
-    print(string.format("  pvm.lower (cold): %8.1fus  (%.2fx)", t_lower * 1e6, t_lower / t_raw))
+    print(string.format("  uvm generated:    %8.1fus  (%.2fx)", t_uvm_gen * 1e6, t_uvm_gen / t_raw))
+    print(string.format("  pvm.lower (miss): %8.1fus  (%.2fx)", t_lower_cold * 1e6, t_lower_cold / t_raw))
     print(string.format("  pvm.lower (hot):  %8.1fus  (%.0fx faster)", t_lower_hot * 1e6, t_raw / t_lower_hot))
 
     if has_cjson then
-        local t_c = bench("cjson", cjson.decode, input, N)
+        local t_c = bench_same(cjson.decode, input, N)
         print(string.format("  cjson (C):        %8.1fus  (%.2fx)", t_c * 1e6, t_c / t_raw))
+    end
+    if has_dkjson then
+        local t_dk = bench_same(dkjson.decode, input, N)
+        print(string.format("  dkjson:           %8.1fus  (%.2fx)", t_dk * 1e6, t_dk / t_raw))
     end
     print()
 end
 
 print("JSON Decode Benchmark")
 print(string.rep("═", 60))
-run("small",  SMALL,  100000)
-run("medium", MEDIUM, 10000)
-run("large",  LARGE,  1000)
+run("small",  SMALL,  100000, 2000)
+run("medium", MEDIUM, 10000, 500)
+run("large",  LARGE,  1000, 100)
 
 print("Summary:")
-print("  raw = pure recursive Lua + FFI byte scanning")
-print("  uvm = same code wrapped in uvm.family (coarse: 1 step per document)")
-print("  lower(hot) = pvm.lower string cache (parse once, return cached)")
-if has_cjson then print("  cjson = lua-cjson C library") end
+print("  raw = handwritten recursive Lua + FFI byte scanning")
+print("  generated raw = Quote-generated JSON parser cached by JSON compile-spec / plan identity")
+print("  uvm = same handwritten decoder wrapped in uvm.family (coarse: 1 step per document)")
+print("  uvm generated = generated decoder wrapped in uvm.family")
+print("  lower(miss) = pvm.lower on distinct-but-equivalent strings")
+print("  lower(hot)  = pvm.lower cache hit on the same string")
+if has_cjson then print("  cjson = lua-cjson C library") else print("  cjson = not installed") end
+if has_dkjson then print("  dkjson = pure Lua JSON library") else print("  dkjson = not installed") end

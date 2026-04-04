@@ -1,6 +1,12 @@
 -- bench_json3.lua — JSON decode into ASDL types via uvm
 --
--- The REAL test: ASDL defines the JSON IR, uvm family decodes,
+-- Methodology notes:
+--   * compare whole-document decode calls
+--   * include result construction cost (tables or ASDL nodes)
+--   * consume each result in the benchmark loop via a sink
+--   * treat pvm.lower(cached) as a memoization benchmark, not parser throughput
+--
+-- ASDL defines the JSON IR, uvm decodes into it,
 -- interning deduplicates identical subtrees, pvm.lower caches.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
@@ -115,38 +121,30 @@ function decode_value(b, p, n, s)
 end
 
 -- Raw entry point
-local shared_buf, shared_cap = nil, 0
 local function json_decode_asdl(src)
-    local n = #src
-    if n > shared_cap then shared_buf = ffi.new("uint8_t[?]", n); shared_cap = n end
-    ffi.copy(shared_buf, src, n)
-    local _, val = decode_value(shared_buf, 0, n, src)
-    return val
+    return uvm.json.raw_decode_asdl(src, { types = T })
 end
 
 -- ══════════════════════════════════════════════════════════════
 --  UVM FAMILY: JSON decoder as a machine
 -- ══════════════════════════════════════════════════════════════
 
-local json_family = uvm.family({
-    name = "json.asdl",
-    init = function(param, _)
-        local src = param.source
-        local n = #src
-        local buf = ffi.new("uint8_t[?]", n)
-        ffi.copy(buf, src, n)
-        return { buf = buf, n = n, src = src, done = false }
-    end,
-    step = function(param, state)
-        if state.done then return nil, S.HALT end
-        local _, val = decode_value(state.buf, 0, state.n, state.src)
-        state.done = true
-        return state, S.YIELD, val
-    end,
-})
+local json_family = uvm.json.asdl_decoder({ name = "json.asdl", types = T })
+local json_generated = uvm.json.generated({ spec = uvm.json.spec_asdl({ types = T }) })
+local json_generated_family = uvm.json.generated_asdl_decoder({ name = "json.asdl.generated", types = T })
 
 local function json_decode_uvm(src)
     local m = json_family:spawn({ source = src })
+    local _, val = m:step()
+    return val
+end
+
+local function json_decode_generated(src)
+    return json_generated.decode(src)
+end
+
+local function json_decode_uvm_generated(src)
+    local m = json_generated_family:spawn({ source = src })
     local _, val = m:step()
     return val
 end
@@ -190,6 +188,7 @@ function decode_plain(b, p, n, s)
     else return decode_number_raw(b, p, n, s) end
 end
 
+local shared_buf, shared_cap = nil, 0
 local function json_decode_plain(src)
     local n = #src
     if n > shared_cap then shared_buf = ffi.new("uint8_t[?]", n); shared_cap = n end
@@ -266,6 +265,10 @@ assert(r == r2, "ASDL interning: same input should give same pointer")
 -- Verify uvm gives same result
 local r3 = json_decode_uvm(SMALL)
 assert(r == r3, "uvm should give same interned result")
+local r3g = json_decode_generated(SMALL)
+assert(r == r3g, "generated decoder should give same interned result")
+local r3ug = json_decode_uvm_generated(SMALL)
+assert(r == r3ug, "uvm generated decoder should give same interned result")
 
 -- Verify lower cache
 json_lower:reset()
@@ -291,18 +294,23 @@ print()
 -- ══════════════════════════════════════════════════════════════
 
 local function bench(fn, input, N)
-    for i=1,math.min(N,200) do fn(input) end
+    local sink = 0
+    for i=1,math.min(N,200) do sink = sink + (fn(input) and 1 or 0) end
     collectgarbage("collect"); collectgarbage("collect")
     local t0=os.clock()
-    for i=1,N do fn(input) end
-    return (os.clock()-t0)/N
+    for i=1,N do sink = sink + (fn(input) and 1 or 0) end
+    local elapsed = (os.clock()-t0)/N
+    if sink == 0 then error("unreachable sink") end
+    return elapsed
 end
 
 local function run(label, input, N)
-    local t_lpeg  = bench(json_decode_lpeg,  input, N)
-    local t_plain = bench(json_decode_plain, input, N)
-    local t_asdl  = bench(json_decode_asdl,  input, N)
-    local t_uvm   = bench(json_decode_uvm,   input, N)
+    local t_lpeg   = bench(json_decode_lpeg,          input, N)
+    local t_plain  = bench(json_decode_plain,         input, N)
+    local t_asdl   = bench(json_decode_asdl,          input, N)
+    local t_gen    = bench(json_decode_generated,     input, N)
+    local t_uvm    = bench(json_decode_uvm,           input, N)
+    local t_uvm_g  = bench(json_decode_uvm_generated, input, N)
 
     json_lower:reset(); json_lower(input) -- prime
     local t_lower = bench(function(s) return json_lower(s) end, input, N)
@@ -311,7 +319,9 @@ local function run(label, input, N)
     print(string.format("  lpeg → tables:       %8.1fus  (%5.1f MB/s)", t_lpeg*1e6, #input/t_lpeg/1e6))
     print(string.format("  ffi → tables:        %8.1fus  (%5.1f MB/s)  %.1fx vs lpeg", t_plain*1e6, #input/t_plain/1e6, t_lpeg/t_plain))
     print(string.format("  ffi → ASDL:          %8.1fus  (%5.1f MB/s)  %.1fx vs lpeg", t_asdl*1e6, #input/t_asdl/1e6, t_lpeg/t_asdl))
+    print(string.format("  generated → ASDL:    %8.1fus  (%5.1f MB/s)  %.1fx vs lpeg", t_gen*1e6, #input/t_gen/1e6, t_lpeg/t_gen))
     print(string.format("  uvm → ASDL:          %8.1fus  (%5.1f MB/s)  %.1fx vs lpeg", t_uvm*1e6, #input/t_uvm/1e6, t_lpeg/t_uvm))
+    print(string.format("  uvm gen → ASDL:      %8.1fus  (%5.1f MB/s)  %.1fx vs lpeg", t_uvm_g*1e6, #input/t_uvm_g/1e6, t_lpeg/t_uvm_g))
     print(string.format("  pvm.lower (cached):  %8.1fus  (%.0fx vs raw)", t_lower*1e6, t_asdl/t_lower))
     print()
 end
@@ -321,3 +331,7 @@ print(string.rep("═", 70))
 run("small",  SMALL,  200000)
 run("medium", MEDIUM, 10000)
 run("large",  LARGE,  1000)
+print("Notes:")
+print("  ffi / generated / uvm paths are decode-throughput comparisons")
+print("  generated paths are Quote-generated parsers cached by JSON compile-spec / plan identity")
+print("  pvm.lower (cached) is a same-input cache-hit comparison, not parse throughput")

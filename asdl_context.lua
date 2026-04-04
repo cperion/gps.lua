@@ -12,219 +12,196 @@
 --   Device* devices = { osc, filter, gain }
 
 local M = {}
-
--- ── Code generation helper ───────────────────────────────────
-
-local function compile_chunk(src, env, chunkname)
-    local fn, err
-    if loadstring then
-        fn, err = loadstring(src, chunkname)
-        if not fn then error(err, 2) end
-        if setfenv then setfenv(fn, env) end
-    else
-        fn, err = load(src, chunkname, "t", env)
-        if not fn then error(err, 2) end
-    end
-    return fn()
-end
+local Quote = require("quote")
 
 local function gen_unique_ctor(n, names, cache, nilkey)
     -- Generate a specialized unique constructor for checked values.
     -- Values are already normalized into v1..vn before the trie walk.
-    local src = {}
+    local q = Quote()
     local args = {}
-    for i = 1, n do args[i] = "a" .. i end
+    local _cache = q:val(cache, "cache")
+    local _nilkey = q:val(nilkey, "nilkey")
+    local _setmetatable = q:val(setmetatable, "setmetatable")
+    local name_refs = {}
+    for i = 1, n do
+        args[i] = "a" .. i
+        name_refs[i] = q:val(names[i], "N" .. i)
+    end
     local arglist = table.concat(args, ", ")
 
-    src[#src+1] = "return function(self, " .. arglist .. ")"
+    q("return function(self, %s)", arglist)
     for i = 1, n do
-        src[#src+1] = string.format("  local k%d = a%d; if k%d == nil then k%d = nilkey end", i, i, i, i)
+        q("  local k%d = a%d; if k%d == nil then k%d = %s end", i, i, i, i, _nilkey)
     end
 
     if n == 0 then
-        src[#src+1] = "  local hit = cache[nilkey]"
-        src[#src+1] = "  if hit then return hit end"
-        src[#src+1] = "  local obj = setmetatable({}, self)"
-        src[#src+1] = "  cache[nilkey] = obj; return obj"
+        q("  local hit = %s[%s]", _cache, _nilkey)
+        q("  if hit then return hit end")
+        q("  local obj = %s({}, self)", _setmetatable)
+        q("  %s[%s] = obj; return obj", _cache, _nilkey)
     elseif n == 1 then
-        src[#src+1] = "  local hit = cache[k1]"
-        src[#src+1] = "  if hit then return hit end"
-        src[#src+1] = "  local obj = setmetatable({[N1]=a1}, self)"
-        src[#src+1] = "  cache[k1] = obj; return obj"
+        q("  local hit = %s[k1]", _cache)
+        q("  if hit then return hit end")
+        q("  local obj = %s({[%s]=a1}, self)", _setmetatable, name_refs[1])
+        q("  %s[k1] = obj; return obj", _cache)
     else
-        src[#src+1] = "  local n1 = cache[k1]"
-        src[#src+1] = "  if not n1 then n1 = {}; cache[k1] = n1 end"
+        q("  local n1 = %s[k1]", _cache)
+        q("  if not n1 then n1 = {}; %s[k1] = n1 end", _cache)
         for i = 2, n - 1 do
             local prev = "n" .. (i - 1)
             local cur = "n" .. i
-            src[#src+1] = string.format("  local %s = %s[k%d]", cur, prev, i)
-            src[#src+1] = string.format("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
+            q("  local %s = %s[k%d]", cur, prev, i)
+            q("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
         end
         local last_parent = "n" .. (n - 1)
-        src[#src+1] = string.format("  local hit = %s[k%d]", last_parent, n)
-        src[#src+1] = "  if hit then return hit end"
+        q("  local hit = %s[k%d]", last_parent, n)
+        q("  if hit then return hit end")
         local field_init = {}
-        for i = 1, n do field_init[i] = string.format("[N%d]=a%d", i, i) end
-        src[#src+1] = "  local obj = setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
-        src[#src+1] = string.format("  %s[k%d] = obj; return obj", last_parent, n)
+        for i = 1, n do field_init[i] = string.format("[%s]=a%d", name_refs[i], i) end
+        q("  local obj = %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
+        q("  %s[k%d] = obj; return obj", last_parent, n)
     end
 
-    src[#src+1] = "end"
-
-    local env = { cache = cache, nilkey = nilkey, setmetatable = setmetatable }
-    for i = 1, n do env["N" .. i] = names[i] end
-
-    return compile_chunk(
-        table.concat(src, "\n"),
-        env,
-        "=(asdl.ctor." .. table.concat(names, ".") .. ")"
-    )
+    q("end")
+    local compiled = q:compile("=(asdl.ctor." .. table.concat(names, ".") .. ")")
+    return compiled
 end
 
 -- Optimized: all-builtin, no nil possible (number, string, boolean)
 local function gen_unique_ctor_fast(n, names, cache)
     -- Even faster: skip nilkey checks entirely.
     -- Valid when all fields are non-nil builtins.
-    local src = {}
+    local q = Quote()
     local args = {}
-    for i = 1, n do args[i] = "a" .. i end
+    local _cache = q:val(cache, "cache")
+    local _setmetatable = q:val(setmetatable, "setmetatable")
+    local name_refs = {}
+    for i = 1, n do
+        args[i] = "a" .. i
+        name_refs[i] = q:val(names[i], "N" .. i)
+    end
     local arglist = table.concat(args, ", ")
 
-    src[#src+1] = "return function(self, " .. arglist .. ")"
+    q("return function(self, %s)", arglist)
 
     if n == 0 then
-        src[#src+1] = "  local hit = cache[0]"
-        src[#src+1] = "  if hit then return hit end"
-        src[#src+1] = "  local obj = setmetatable({}, self)"
-        src[#src+1] = "  cache[0] = obj; return obj"
+        q("  local hit = %s[0]", _cache)
+        q("  if hit then return hit end")
+        q("  local obj = %s({}, self)", _setmetatable)
+        q("  %s[0] = obj; return obj", _cache)
     else
-        -- Unrolled trie: each level is a direct table lookup, no nil check
         for i = 1, n - 1 do
-            local prev = (i == 1) and "cache" or ("n" .. (i-1))
+            local prev = (i == 1) and _cache or ("n" .. (i-1))
             local cur = "n" .. i
-            src[#src+1] = string.format("  local %s = %s[a%d]; if not %s then %s = {}; %s[a%d] = %s end",
+            q("  local %s = %s[a%d]; if not %s then %s = {}; %s[a%d] = %s end",
                 cur, prev, i, cur, cur, prev, i, cur)
         end
-        local last_parent = (n == 1) and "cache" or ("n" .. (n-1))
-        src[#src+1] = string.format("  local hit = %s[a%d]; if hit then return hit end", last_parent, n)
-        -- Create
+        local last_parent = (n == 1) and _cache or ("n" .. (n-1))
+        q("  local hit = %s[a%d]; if hit then return hit end", last_parent, n)
         local fi = {}
-        for i = 1, n do fi[i] = string.format("[N%d]=a%d", i, i) end
-        src[#src+1] = "  local obj = setmetatable({" .. table.concat(fi, ",") .. "}, self)"
-        src[#src+1] = string.format("  %s[a%d] = obj; return obj", last_parent, n)
+        for i = 1, n do fi[i] = string.format("[%s]=a%d", name_refs[i], i) end
+        q("  local obj = %s({%s}, self)", _setmetatable, table.concat(fi, ","))
+        q("  %s[a%d] = obj; return obj", last_parent, n)
     end
 
-    src[#src+1] = "end"
-
-    local env = { cache = cache, setmetatable = setmetatable }
-    for i = 1, n do env["N" .. i] = names[i] end
-
-    return compile_chunk(
-        table.concat(src, "\n"),
-        env,
-        "=(asdl.ctor_fast." .. table.concat(names, ".") .. ")"
-    )
+    q("end")
+    local compiled = q:compile("=(asdl.ctor_fast." .. table.concat(names, ".") .. ")")
+    return compiled
 end
 
 local function gen_plain_ctor_fast(n, names)
-    local src = {}
+    local q = Quote()
     local args = {}
-    for i = 1, n do args[i] = "a" .. i end
-    local arglist = table.concat(args, ", ")
+    local _setmetatable = q:val(setmetatable, "setmetatable")
     local field_init = {}
-    for i = 1, n do field_init[i] = string.format("[N%d]=a%d", i, i) end
+    local name_refs = {}
+    for i = 1, n do
+        args[i] = "a" .. i
+        name_refs[i] = q:val(names[i], "N" .. i)
+        field_init[i] = string.format("[%s]=a%d", name_refs[i], i)
+    end
+    local arglist = table.concat(args, ", ")
 
-    src[#src+1] = "return function(self, " .. arglist .. ")"
-    src[#src+1] = "  return setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
-    src[#src+1] = "end"
-
-    local env = { setmetatable = setmetatable }
-    for i = 1, n do env["N" .. i] = names[i] end
-
-    return compile_chunk(
-        table.concat(src, "\n"),
-        env,
-        "=(asdl.plain_fast." .. table.concat(names, ".") .. ")"
-    )
+    q("return function(self, %s)", arglist)
+    q("  return %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
+    q("end")
+    local compiled = q:compile("=(asdl.plain_fast." .. table.concat(names, ".") .. ")")
+    return compiled
 end
 
 local function gen_checked_ctor(name, names, checks, type_names, unique, cache, nilkey)
     local n = #names
-    local src = {}
+    local q = Quote()
     local args = {}
-    for i = 1, n do args[i] = "a" .. i end
+    local _setmetatable = q:val(setmetatable, "setmetatable")
+    local _error = q:val(error, "error")
+    local _type = q:val(type, "type")
+    local _fmt = q:val(string.format, "fmt")
+    local _name = q:val(name, "name")
+    local _cache = cache and q:val(cache, "cache") or nil
+    local _nilkey = q:val(nilkey, "nilkey")
+    local check_refs, type_refs, name_refs = {}, {}, {}
+
+    for i = 1, n do
+        args[i] = "a" .. i
+        check_refs[i] = q:val(checks[i], "C" .. i)
+        type_refs[i] = q:val(type_names[i], "T" .. i)
+        name_refs[i] = q:val(names[i], "N" .. i)
+    end
     local arglist = table.concat(args, ", ")
 
-    src[#src+1] = "return function(self, " .. arglist .. ")"
+    q("return function(self, %s)", arglist)
     for i = 1, n do
-        src[#src+1] = string.format("  local v%d = a%d", i, i)
-        src[#src+1] = string.format("  local ok%d, aux%d = C%d(v%d)", i, i, i, i)
-        src[#src+1] = string.format("  if not ok%d then", i)
-        src[#src+1] = string.format([[    error(fmt("bad arg #%d to '%%s': expected '%%s' got '%%s'%%s", NAME, T%d, type(a%d), aux%d and (" at index " .. aux%d) or ""), 2)]], i, i, i, i, i)
-        src[#src+1] = "  end"
-        src[#src+1] = string.format("  if aux%d ~= nil then v%d = aux%d end", i, i, i)
+        q("  local v%d = a%d", i, i)
+        q("  local ok%d, aux%d = %s(v%d)", i, i, check_refs[i], i)
+        q("  if not ok%d then", i)
+        q("    %s(%s(\"bad arg #%d to '%%s': expected '%%s' got '%%s'%%s\", %s, %s, %s(a%d), aux%d and (\" at index \" .. aux%d) or \"\"), 2)",
+            _error, _fmt, i, _name, type_refs[i], _type, i, i, i)
+        q("  end")
+        q("  if aux%d ~= nil then v%d = aux%d end", i, i, i)
     end
 
     if unique then
         if n == 0 then
-            src[#src+1] = "  local hit = cache[nilkey]"
-            src[#src+1] = "  if hit then return hit end"
-            src[#src+1] = "  local obj = setmetatable({}, self)"
-            src[#src+1] = "  cache[nilkey] = obj; return obj"
+            q("  local hit = %s[%s]", _cache, _nilkey)
+            q("  if hit then return hit end")
+            q("  local obj = %s({}, self)", _setmetatable)
+            q("  %s[%s] = obj; return obj", _cache, _nilkey)
         elseif n == 1 then
-            src[#src+1] = "  local k1 = v1; if k1 == nil then k1 = nilkey end"
-            src[#src+1] = "  local hit = cache[k1]"
-            src[#src+1] = "  if hit then return hit end"
-            src[#src+1] = "  local obj = setmetatable({[N1]=v1}, self)"
-            src[#src+1] = "  cache[k1] = obj; return obj"
+            q("  local k1 = v1; if k1 == nil then k1 = %s end", _nilkey)
+            q("  local hit = %s[k1]", _cache)
+            q("  if hit then return hit end")
+            q("  local obj = %s({[%s]=v1}, self)", _setmetatable, name_refs[1])
+            q("  %s[k1] = obj; return obj", _cache)
         else
-            src[#src+1] = "  local k1 = v1; if k1 == nil then k1 = nilkey end"
-            src[#src+1] = "  local n1 = cache[k1]"
-            src[#src+1] = "  if not n1 then n1 = {}; cache[k1] = n1 end"
+            q("  local k1 = v1; if k1 == nil then k1 = %s end", _nilkey)
+            q("  local n1 = %s[k1]", _cache)
+            q("  if not n1 then n1 = {}; %s[k1] = n1 end", _cache)
             for i = 2, n - 1 do
                 local prev = "n" .. (i - 1)
                 local cur = "n" .. i
-                src[#src+1] = string.format("  local k%d = v%d; if k%d == nil then k%d = nilkey end", i, i, i, i)
-                src[#src+1] = string.format("  local %s = %s[k%d]", cur, prev, i)
-                src[#src+1] = string.format("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
+                q("  local k%d = v%d; if k%d == nil then k%d = %s end", i, i, i, i, _nilkey)
+                q("  local %s = %s[k%d]", cur, prev, i)
+                q("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
             end
-            src[#src+1] = string.format("  local k%d = v%d; if k%d == nil then k%d = nilkey end", n, n, n, n)
+            q("  local k%d = v%d; if k%d == nil then k%d = %s end", n, n, n, n, _nilkey)
             local last_parent = "n" .. (n - 1)
-            src[#src+1] = string.format("  local hit = %s[k%d]", last_parent, n)
-            src[#src+1] = "  if hit then return hit end"
+            q("  local hit = %s[k%d]", last_parent, n)
+            q("  if hit then return hit end")
             local field_init = {}
-            for i = 1, n do field_init[i] = string.format("[N%d]=v%d", i, i) end
-            src[#src+1] = "  local obj = setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
-            src[#src+1] = string.format("  %s[k%d] = obj; return obj", last_parent, n)
+            for i = 1, n do field_init[i] = string.format("[%s]=v%d", name_refs[i], i) end
+            q("  local obj = %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
+            q("  %s[k%d] = obj; return obj", last_parent, n)
         end
     else
         local field_init = {}
-        for i = 1, n do field_init[i] = string.format("[N%d]=v%d", i, i) end
-        src[#src+1] = "  return setmetatable({" .. table.concat(field_init, ",") .. "}, self)"
+        for i = 1, n do field_init[i] = string.format("[%s]=v%d", name_refs[i], i) end
+        q("  return %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
     end
 
-    src[#src+1] = "end"
-
-    local env = {
-        setmetatable = setmetatable,
-        error = error,
-        type = type,
-        fmt = string.format,
-        NAME = name,
-        cache = cache,
-        nilkey = nilkey,
-    }
-    for i = 1, n do
-        env["C" .. i] = checks[i]
-        env["T" .. i] = type_names[i]
-        env["N" .. i] = names[i]
-    end
-
-    return compile_chunk(
-        table.concat(src, "\n"),
-        env,
-        "=(asdl.checked_ctor." .. name .. ")"
-    )
+    q("end")
+    local compiled = q:compile("=(asdl.checked_ctor." .. name .. ")")
+    return compiled
 end
 
 -- ── Builtin type checks ─────────────────────────────────────
