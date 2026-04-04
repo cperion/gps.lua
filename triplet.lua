@@ -449,13 +449,14 @@ end
 
 --- collect into array table
 function T.collect(g, p, c)
-  local t = {}
+  local t, n = {}, 0
   local ctrl = c
   while true do
     local nc, v = g(p, ctrl)
     if nc == nil then return t end
     ctrl = nc
-    t[#t + 1] = v
+    n = n + 1
+    t[n] = v
   end
 end
 

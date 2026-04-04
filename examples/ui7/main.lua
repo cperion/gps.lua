@@ -1,37 +1,42 @@
 -- examples/ui7/main.lua — full app with explicit source / view / paint / runtime split
+-- Canonical launcher: examples/ui7/main.t (SDL3 + OpenGL + SDL_ttf via Terra)
 --
 -- Architecture:
 --   App.State + App.Viewport
 --     ↓ project_view
 --   AppView.Node                 -- shared projected spine
---     ↓ static_frag / static_plan
---   UI fragments / plans         -- static compiled image
---     ↓ ui.compile / ui.assemble
---   View.Cmd[]                   -- static executable image
+--     ↓ static_fragment / static_commands
+--   UI fragments / View.Cmd[]    -- static compiled image
 --
 --   App.State + App.Viewport
---     ↓ project_overlay
---   AppPaint.Node                -- app-specific dynamic paint facet
---     ↓ overlay_plan
---   AppPaintIR.Plan              -- flat dynamic paint image with payload refs
+--     ↓ project_root_overlay
+--   ui.Paint.Node                -- generic custom-drawing tree
+--     ↓ ui.compile_paint
+--   Paint.Cmd[]                  -- flat generic runtime paint commands
 --
---   AppRuntime.Payload           -- live runtime state (changes every frame)
+--   AppRuntime.Payload           -- live app runtime state (changes every frame)
+--     ↓ build_overlay_runtime
+--   { numbers, texts, colors }   -- generic paint runtime environment
 --
 --   Draw:
 --     ui.paint(static_cmds)
---     paint_overlay(overlay_plan, runtime_payload)
+--     ui.paint_custom(overlay_commands, overlay_runtime)
 --
 -- Time stepping updates AppRuntime.Payload only.
 -- Slider edits update App.State and trigger recompilation.
 
+local THIS_SOURCE = debug.getinfo(1, "S").source
+local THIS_DIR = THIS_SOURCE:sub(1, 1) == "@" and THIS_SOURCE:match("^@(.+)/[^/]+$") or "."
+local ROOT_DIR = THIS_DIR .. "/../.."
 package.path = table.concat({
-    "../../?.lua", "../../?/init.lua", package.path
+    ROOT_DIR .. "/?.lua", ROOT_DIR .. "/?/init.lua", package.path
 }, ";")
 
-local pvm = require("pvm")
-local ui  = require("uilib")
+local pvm2 = require("pvm2")
+local ui   = require("uilib")
 
 local T = ui.T
+local ds = ui.ds
 
 -- ══════════════════════════════════════════════════════════════
 --  COLOURS
@@ -144,34 +149,6 @@ T:Define [[
                                   number panel_width) unique
     }
 
-    module AppPaint {
-        Node = RootOverlayPaint(AppPaint.Node track_panel_overlay,
-                                AppPaint.Node arrangement_overlay,
-                                AppPaint.Node transport_overlay) unique
-
-             | TrackPanelOverlayPaint(AppPaint.Node* meter_paints,
-                                      number scroll_y,
-                                      number visible_height) unique
-
-             | MeterBarPaint(number track_id,
-                             number track_index,
-                             number scroll_y) unique
-
-             | ArrangementOverlayPaint(AppPaint.Node playhead_paint,
-                                       number visible_width,
-                                       number visible_height,
-                                       number playhead_height) unique
-
-             | PlayheadLinePaint(number playhead_height) unique
-
-             | TransportOverlayPaint(AppPaint.Node time_text_paint,
-                                     AppPaint.Node beat_text_paint,
-                                     number panel_width) unique
-
-             | TransportTimeTextPaint unique
-             | TransportBeatTextPaint unique
-    }
-
     module AppRuntime {
         MeterLevelValue = (number track_id,
                            number level) unique
@@ -180,32 +157,6 @@ T:Define [[
                    string transport_time_text,
                    string transport_beat_text,
                    AppRuntime.MeterLevelValue* meter_levels) unique
-    }
-
-    module AppPaintIR {
-        Kind = MeterBar | RuntimeText | PlayheadLine
-             | PushClipRegion | PopClipRegion
-             | PushTranslation | PopTranslation
-
-        PayloadRef = MeterLevelPayload(number track_id) unique
-                   | PlayheadXPayload unique
-                   | TransportTimeTextPayload unique
-                   | TransportBeatTextPayload unique
-
-        Command = (AppPaintIR.Kind kind,
-                   string tag,
-                   number x,
-                   number y,
-                   number w,
-                   number h,
-                   number rgba8,
-                   number rgba8_b,
-                   number rgba8_c,
-                   number font_id,
-                   UI.TextAlign text_align,
-                   AppPaintIR.PayloadRef payload_ref) unique
-
-        Plan = (AppPaintIR.Command* commands) unique
     }
 ]]
 
@@ -228,31 +179,8 @@ local TrackInspectorView = T.AppView.TrackInspectorView
 local ClipInspectorView = T.AppView.ClipInspectorView
 local TransportPanelView = T.AppView.TransportPanelView
 
-local RootOverlayPaint = T.AppPaint.RootOverlayPaint
-local TrackPanelOverlayPaint = T.AppPaint.TrackPanelOverlayPaint
-local MeterBarPaint = T.AppPaint.MeterBarPaint
-local ArrangementOverlayPaint = T.AppPaint.ArrangementOverlayPaint
-local PlayheadLinePaint = T.AppPaint.PlayheadLinePaint
-local TransportOverlayPaint = T.AppPaint.TransportOverlayPaint
-local TransportTimeTextPaint = T.AppPaint.TransportTimeTextPaint
-local TransportBeatTextPaint = T.AppPaint.TransportBeatTextPaint
-
 local MeterLevelValue = T.AppRuntime.MeterLevelValue
 local RuntimePayload = T.AppRuntime.Payload
-
-local PaintCommand = T.AppPaintIR.Command
-local PaintPlan = T.AppPaintIR.Plan
-local K_METER_BAR = T.AppPaintIR.MeterBar
-local K_RUNTIME_TEXT = T.AppPaintIR.RuntimeText
-local K_PLAYHEAD_LINE = T.AppPaintIR.PlayheadLine
-local K_PUSH_CLIP = T.AppPaintIR.PushClipRegion
-local K_POP_CLIP = T.AppPaintIR.PopClipRegion
-local K_PUSH_TX = T.AppPaintIR.PushTranslation
-local K_POP_TX = T.AppPaintIR.PopTranslation
-local REF_PLAYHEAD_X = T.AppPaintIR.PlayheadXPayload
-local REF_TIME_TEXT = T.AppPaintIR.TransportTimeTextPayload
-local REF_BEAT_TEXT = T.AppPaintIR.TransportBeatTextPayload
-local MeterLevelPayload = T.AppPaintIR.MeterLevelPayload
 
 local mtSelectedTrack = getmetatable(SelectedTrack(0))
 local mtSelectedClip = getmetatable(SelectedClip(0))
@@ -262,8 +190,17 @@ local mtSelectedClip = getmetatable(SelectedClip(0))
 -- ══════════════════════════════════════════════════════════════
 
 local box, px, insets, text_style = ui.box, ui.px, ui.insets, ui.text_style
-local stack, pad, clip, transform, sized, rect, text, spacer =
-    ui.stack, ui.pad, ui.clip, ui.transform, ui.sized, ui.rect, ui.text, ui.spacer
+local stack, pad, clip, transform, sized, text, spacer =
+    ui.stack, ui.pad, ui.clip, ui.transform, ui.sized, ui.text, ui.spacer
+
+local function as_pack(color)
+    if type(color) == "number" then return ui.solid(color) end
+    return color
+end
+
+local function rect(tag, color, b)
+    return ui.rect(tag, as_pack(color), b)
+end
 
 local FONT_PIXELS = {
     [1] = 18,
@@ -272,11 +209,11 @@ local FONT_PIXELS = {
     [4] = 10,
 }
 
-local function style(font_id, rgba8, opts)
+local function style(font_id, color, opts)
     opts = opts or {}
     return text_style {
         font_id = font_id,
-        rgba8 = rgba8,
+        color = as_pack(color),
         wrap = opts.wrap or ui.TEXT_NOWRAP,
         align = opts.align or ui.TEXT_START,
         overflow = opts.overflow or ui.OVERFLOW_VISIBLE,
@@ -309,6 +246,73 @@ local TRACK_ROW_SLIDER_GAP = 10
 local TRANSPORT_PAD_X = 16
 local TRANSPORT_MAIN_BUTTON_W = 48
 local TRANSPORT_SMALL_BUTTON_W = 22
+
+-- ══════════════════════════════════════════════════════════════
+--  DESIGN SYSTEM SURFACES
+-- ══════════════════════════════════════════════════════════════
+
+local UI_THEME = ds.theme("ui7", {
+    surfaces = {
+        ds.surface("track_row_even", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.row_even)), ds.fg(ds.clit(C.text)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.panel)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+        ds.surface("track_row_odd", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.row_odd)), ds.fg(ds.clit(C.text)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.panel)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+        ds.surface("track_row_selected", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.row_active)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.accent_dim)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+        ds.surface("button", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.panel)), ds.fg(ds.clit(C.text)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+        ds.surface("mute_button", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.panel)), ds.fg(ds.clit(C.text_dim)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { flags = { "active" } }, { ds.bg(ds.clit(C.mute_on)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered", flags = { "active" } }, { ds.bg(ds.clit(C.red)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed", flags = { "active" } }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+        ds.surface("solo_button", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.panel)), ds.fg(ds.clit(C.text_dim)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { flags = { "active" } }, { ds.bg(ds.clit(C.solo_on)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered", flags = { "active" } }, { ds.bg(ds.clit(C.accent)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed", flags = { "active" } }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+        ds.surface("transport_play", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.panel)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { flags = { "active" } }, { ds.bg(ds.clit(C.accent_dim)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered", flags = { "active" } }, { ds.bg(ds.clit(C.accent)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed", flags = { "active" } }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+        ds.surface("transport_button", {
+            ds.paint_rule(ds.sel(), { ds.bg(ds.clit(C.panel)), ds.fg(ds.clit(C.text)) }),
+            ds.paint_rule(ds.sel { pointer = "hovered" }, { ds.bg(ds.clit(C.panel_hi)), ds.fg(ds.clit(C.text_bright)) }),
+            ds.paint_rule(ds.sel { pointer = "pressed" }, { ds.bg(ds.clit(C.transport_bg)), ds.fg(ds.clit(C.text_bright)) }),
+        }),
+    },
+})
+
+local function surface_style(name, flags)
+    return ds.resolve(ds.query(UI_THEME, name, ds.BLURRED, flags or {}))
+end
+
+local function active_flags(on)
+    if on then return { ds.ACTIVE } end
+    return {}
+end
 
 -- ══════════════════════════════════════════════════════════════
 --  HELPERS
@@ -374,12 +378,49 @@ end
 
 local source_state
 local runtime_payload
-local hover_tag = nil
+local pointer_hot = { hovered = nil, pressed = nil, dragging = nil }
 local dragging = nil
 local window_width, window_height = 1100, 700
 local static_commands = {}
-local overlay_plan = nil
+local overlay_commands = {}
 local undo_stack = {}
+local fonts = {}
+
+local app = {}
+local app_host = {}
+
+local function host_renderer()
+    return assert(app_host.renderer, "ui7: renderer not installed")
+end
+
+local function host_new_font(size)
+    if app_host.new_font then return app_host.new_font(size) end
+    local renderer = app_host.renderer
+    if renderer and renderer.new_font then return renderer:new_font(size) end
+    error("ui7: host renderer does not provide new_font(size)", 2)
+end
+
+local function host_dimensions()
+    if app_host.get_dimensions then return app_host.get_dimensions() end
+    local renderer = app_host.renderer
+    if renderer and renderer.get_dimensions then return renderer:get_dimensions() end
+    return window_width, window_height
+end
+
+local function host_set_background_color(r, g, b, a)
+    if app_host.set_background_color then return app_host.set_background_color(r, g, b, a) end
+    local renderer = app_host.renderer
+    if renderer and renderer.set_background_color then return renderer:set_background_color(r, g, b, a) end
+end
+
+local function host_quit()
+    if app_host.quit then app_host.quit() end
+end
+
+local function host_is_key_down(...)
+    if app_host.is_key_down then return app_host.is_key_down(...) end
+    return false
+end
 
 local function viewport_value()
     return Viewport(window_width, window_height)
@@ -440,22 +481,22 @@ local function lookup_meter_level(payload, track_id)
 end
 
 local function update_runtime_payload(fields)
-    runtime_payload = pvm.with(runtime_payload, fields)
+    runtime_payload = pvm2.with(runtime_payload, fields)
 end
 
 local function set_session(fields)
-    source_state = pvm.with(source_state, { session = pvm.with(source_state.session, fields) })
+    source_state = pvm2.with(source_state, { session = pvm2.with(source_state.session, fields) })
 end
 
 local function set_project(fields)
-    source_state = pvm.with(source_state, { project = pvm.with(source_state.project, fields) })
+    source_state = pvm2.with(source_state, { project = pvm2.with(source_state.project, fields) })
 end
 
 local function set_track_field(track_index, field, value)
     local tracks = {}
     for i = 1, #source_state.project.tracks do
         if i == track_index then
-            tracks[i] = pvm.with(source_state.project.tracks[i], { [field] = value })
+            tracks[i] = pvm2.with(source_state.project.tracks[i], { [field] = value })
         else
             tracks[i] = source_state.project.tracks[i]
         end
@@ -566,33 +607,8 @@ local function project_root_view(state, viewport)
 end
 
 -- ══════════════════════════════════════════════════════════════
---  SOURCE → APPPAINT (DYNAMIC PAINT FACET)
+--  SOURCE → ui.Paint (GENERIC CUSTOM DRAWING)
 -- ══════════════════════════════════════════════════════════════
-
-local function project_track_panel_overlay(state, viewport)
-    local vm = view_metrics(state, viewport)
-    local meter_paints = {}
-    for i = 1, #state.project.tracks do
-        meter_paints[i] = MeterBarPaint(state.project.tracks[i].id, i, vm.scroll_y)
-    end
-    return TrackPanelOverlayPaint(meter_paints, vm.scroll_y, vm.visible_height)
-end
-
-local function project_arrangement_overlay(state, viewport)
-    local vm = view_metrics(state, viewport)
-    return ArrangementOverlayPaint(PlayheadLinePaint(viewport.window_height - TRANSPORT_HEIGHT), vm.arrangement_width, vm.visible_height, viewport.window_height - TRANSPORT_HEIGHT)
-end
-
-local function project_transport_overlay(state, viewport)
-    return TransportOverlayPaint(TransportTimeTextPaint, TransportBeatTextPaint, viewport.window_width)
-end
-
-local function project_root_overlay(state, viewport)
-    return RootOverlayPaint(
-        project_track_panel_overlay(state, viewport),
-        project_arrangement_overlay(state, viewport),
-        project_transport_overlay(state, viewport))
-end
 
 -- ══════════════════════════════════════════════════════════════
 --  STATIC UI HELPERS
@@ -604,7 +620,7 @@ local function button_ui(tag, width, height, bg, fg, font_id, label)
     return stack({
         rect(tag, bg, box { w = px(width), h = px(height) }),
         transform(0, label_y,
-            text("", label,
+            text(tag, label,
                 style(font_id, fg, { align = ui.TEXT_CENTER, overflow = ui.OVERFLOW_CLIP }),
                 box { w = px(width), h = px(label_height) })),
     })
@@ -658,25 +674,25 @@ end
 local function track_row_fragment_ui(self)
     local track = self.track
     local tag = "track:" .. self.track_index
-    local bg = self.is_selected and C.row_active or ((self.track_index % 2 == 0) and C.row_even or C.row_odd)
-    local name_fg = self.is_selected and C.text_bright or C.text
+    local row_style = surface_style(
+        self.is_selected and "track_row_selected" or ((self.track_index % 2 == 0) and "track_row_even" or "track_row_odd"))
+    local mute_style = surface_style("mute_button", active_flags(track.mute))
+    local solo_style = surface_style("solo_button", active_flags(track.solo))
     local layout = track_row_layout(TRACK_PANEL_WIDTH)
     return stack({
-        rect(tag, bg, box { w = px(TRACK_PANEL_WIDTH), h = px(ROW_HEIGHT) }),
+        rect(tag, row_style.bg, box { w = px(TRACK_PANEL_WIDTH), h = px(ROW_HEIGHT) }),
         rect("", track.color, box { w = px(4), h = px(ROW_HEIGHT) }),
         transform(layout.name_x, 14,
-            text("", track.name,
-                style(2, name_fg, { overflow = ui.OVERFLOW_ELLIPSIS }),
+            text(tag, track.name,
+                style(2, row_style.fg, { overflow = ui.OVERFLOW_ELLIPSIS }),
                 box { w = px(layout.name_w), h = px(18) })),
         transform(layout.mute_x, 14,
             button_ui(tag .. ":mute", TRACK_ROW_BUTTON_W, TRACK_ROW_BUTTON_H,
-                track.mute and C.mute_on or C.panel,
-                track.mute and C.text_bright or C.text_dim,
+                mute_style.bg, mute_style.fg,
                 4, "M")),
         transform(layout.solo_x, 14,
             button_ui(tag .. ":solo", TRACK_ROW_BUTTON_W, TRACK_ROW_BUTTON_H,
-                track.solo and C.solo_on or C.panel,
-                track.solo and C.text_bright or C.text_dim,
+                solo_style.bg, solo_style.fg,
                 4, "S")),
         transform(layout.slider_x, 8, volume_slider_background_ui(tag .. ":vol", layout.slider_w, 10)),
         transform(layout.slider_x, 30, pan_slider_background_ui(tag .. ":pan", layout.slider_w, 10)),
@@ -737,6 +753,8 @@ end
 local function track_inspector_fragment_ui(self)
     local track = self.track
     local h = self.panel_height
+    local mute_style = surface_style("mute_button", active_flags(track.mute))
+    local solo_style = surface_style("solo_button", active_flags(track.solo))
     return stack({
         rect("", C.panel, box { w = px(INSPECTOR_WIDTH), h = px(h) }),
         rect("", C.border, box { w = px(1), h = px(h) }),
@@ -757,12 +775,10 @@ local function track_inspector_fragment_ui(self)
         transform(16, 270, pan_slider_background_ui("insp:pan_slider", INSPECTOR_WIDTH - 32, 14)),
         transform(16, 296, rect("", C.border, box { w = px(INSPECTOR_WIDTH - 32), h = px(1) })),
         transform(16, 314, button_ui("insp:mute_btn", 70, 28,
-            track.mute and C.mute_on or C.panel,
-            track.mute and C.text_bright or C.text,
+            mute_style.bg, mute_style.fg,
             2, track.mute and "MUTED" or "Mute")),
         transform(94, 314, button_ui("insp:solo_btn", 70, 28,
-            track.solo and C.solo_on or C.panel,
-            track.solo and C.text_bright or C.text,
+            solo_style.bg, solo_style.fg,
             2, track.solo and "SOLO'D" or "Solo")),
     })
 end
@@ -791,23 +807,29 @@ local function transport_fragment_ui(self)
     local play_label = self.is_playing and "||" or ">"
     local layout = transport_layout(self.panel_width)
     local bpm_value_w = math.max(24, layout.bpm_w - (TRANSPORT_SMALL_BUTTON_W * 2 + 4))
+    local play_style = surface_style("transport_play", active_flags(self.is_playing))
+    local transport_button = surface_style("transport_button")
+    local small_button = surface_style("button")
     return stack({
         rect("", C.transport_bg, box { w = px(self.panel_width), h = px(TRANSPORT_HEIGHT) }),
         rect("", C.border, box { w = px(self.panel_width), h = px(1) }),
         transform(layout.play_x, 11, button_ui("transport:play", TRANSPORT_MAIN_BUTTON_W, 30,
-            self.is_playing and C.accent_dim or C.panel, C.text_bright, 3, play_label)),
-        transform(layout.stop_x, 11, button_ui("transport:stop", TRANSPORT_MAIN_BUTTON_W, 30, C.panel, C.text, 3, "[]")),
+            play_style.bg, play_style.fg, 3, play_label)),
+        transform(layout.stop_x, 11, button_ui("transport:stop", TRANSPORT_MAIN_BUTTON_W, 30,
+            transport_button.bg, transport_button.fg, 3, "[]")),
         transform(layout.controls_end + 18, 8, rect("", C.border, box { w = px(1), h = px(36) })),
         transform(layout.time_x, 9, text("", "TIME", style(4, C.text_dim))),
         transform(layout.beat_x, 9, text("", "BEAT", style(4, C.text_dim))),
         transform(layout.bpm_x, 9, text("", "BPM", style(4, C.text_dim))),
-        transform(layout.bpm_x, 25, button_ui("transport:bpm-", TRANSPORT_SMALL_BUTTON_W, 20, C.panel, C.text, 4, "-")),
+        transform(layout.bpm_x, 25, button_ui("transport:bpm-", TRANSPORT_SMALL_BUTTON_W, 20,
+            small_button.bg, small_button.fg, 4, "-")),
         transform(layout.bpm_x + TRANSPORT_SMALL_BUTTON_W + 2, 25,
             text("", tostring(self.bpm),
                 style(3, C.accent, { align = ui.TEXT_CENTER, overflow = ui.OVERFLOW_CLIP }),
                 box { w = px(bpm_value_w), h = px(20) })),
         transform(layout.bpm_x + layout.bpm_w - TRANSPORT_SMALL_BUTTON_W, 25,
-            button_ui("transport:bpm+", TRANSPORT_SMALL_BUTTON_W, 20, C.panel, C.text, 4, "+")),
+            button_ui("transport:bpm+", TRANSPORT_SMALL_BUTTON_W, 20,
+                small_button.bg, small_button.fg, 4, "+")),
         transform(layout.status_x, 18,
             text("", self.is_playing and "RECORDING" or "STOPPED",
                 style(4, C.text_dim, { align = ui.TEXT_END, overflow = ui.OVERFLOW_CLIP }),
@@ -819,271 +841,173 @@ end
 --  APPVIEW → STATIC FRAGMENTS / STATIC PLAN
 -- ══════════════════════════════════════════════════════════════
 
-local static_fragment = pvm.verb("fragment", {
-    [T.AppView.TrackRowView] = function(self)
+local static_fragment = pvm2.lower("ui7.static.fragment", function(self)
+    local mt = getmetatable(self)
+    if mt == TrackRowView then
         return ui.fragment(track_row_fragment_ui(self), TRACK_PANEL_WIDTH, ROW_HEIGHT)
-    end,
-    [T.AppView.ClipView] = function(self)
+    elseif mt == ClipView then
         local width = math.floor(from_q16(self.clip.dur_q16) * PIXELS_PER_BEAT)
         return ui.fragment(clip_fragment_ui(self), width, ROW_HEIGHT - 8)
-    end,
-    [T.AppView.TrackInspectorView] = function(self)
+    elseif mt == TrackInspectorView then
         return ui.fragment(track_inspector_fragment_ui(self), INSPECTOR_WIDTH, self.panel_height)
-    end,
-    [T.AppView.ClipInspectorView] = function(self)
+    elseif mt == ClipInspectorView then
         return ui.fragment(clip_inspector_fragment_ui(self), INSPECTOR_WIDTH, self.panel_height)
-    end,
-    [T.AppView.TransportPanelView] = function(self)
+    elseif mt == TransportPanelView then
         return ui.fragment(transport_fragment_ui(self), self.panel_width, TRANSPORT_HEIGHT)
-    end,
-}, { cache = true, name = "ui7.static.fragment" })
+    end
+    error("ui7.static.fragment: no handler for " .. tostring(mt and mt.kind or type(self)), 2)
+end, { input = "table" })
 
-local function append_view_plan_ops(target, plan)
-    local ops = plan.ops
-    for i = 1, #ops do target[#target + 1] = ops[i] end
-end
+function TrackRowView:fragment() return static_fragment(self) end
+function ClipView:fragment() return static_fragment(self) end
+function TrackInspectorView:fragment() return static_fragment(self) end
+function ClipInspectorView:fragment() return static_fragment(self) end
+function TransportPanelView:fragment() return static_fragment(self) end
 
-local static_plan = pvm.verb("plan", {
-    [T.AppView.RootView] = function(self)
-        local ops = {}
-        append_view_plan_ops(ops, self.track_panel:plan())
-        ops[#ops + 1] = ui.push_transform_plan(TRACK_PANEL_WIDTH, 0)
-        append_view_plan_ops(ops, self.arrangement_panel:plan())
-        ops[#ops + 1] = ui.pop_transform_plan(TRACK_PANEL_WIDTH, 0)
-        ops[#ops + 1] = ui.push_transform_plan(TRACK_PANEL_WIDTH + self.arrangement_panel.visible_width, 0)
-        append_view_plan_ops(ops, self.inspector_panel:plan())
-        ops[#ops + 1] = ui.pop_transform_plan(TRACK_PANEL_WIDTH + self.arrangement_panel.visible_width, 0)
-        ops[#ops + 1] = ui.push_transform_plan(0, self.arrangement_panel.playhead_height)
-        append_view_plan_ops(ops, self.transport_panel:plan())
-        ops[#ops + 1] = ui.pop_transform_plan(0, self.arrangement_panel.playhead_height)
-        return ui.plan(ops)
+local static_commands_builder = pvm2.verb_memo("static_commands", {
+    [T.AppView.RootView] = function(self, out)
+        self.track_panel:static_commands(out)
+        out[#out + 1] = ui.push_transform_cmd(TRACK_PANEL_WIDTH, 0)
+        self.arrangement_panel:static_commands(out)
+        out[#out + 1] = ui.pop_transform_cmd(TRACK_PANEL_WIDTH, 0)
+        out[#out + 1] = ui.push_transform_cmd(TRACK_PANEL_WIDTH + self.arrangement_panel.visible_width, 0)
+        self.inspector_panel:static_commands(out)
+        out[#out + 1] = ui.pop_transform_cmd(TRACK_PANEL_WIDTH + self.arrangement_panel.visible_width, 0)
+        out[#out + 1] = ui.push_transform_cmd(0, self.arrangement_panel.playhead_height)
+        self.transport_panel:static_commands(out)
+        out[#out + 1] = ui.pop_transform_cmd(0, self.arrangement_panel.playhead_height)
     end,
-    [T.AppView.TrackPanelView] = function(self)
-        local ops = {
-            ui.place_fragment(0, 0, ui.fragment(header_fragment_ui(self.track_count), TRACK_PANEL_WIDTH, HEADER_HEIGHT)),
-            ui.place_fragment(0, HEADER_HEIGHT,
-                ui.fragment(rect("track_panel:bg", C.bg, box { w = px(TRACK_PANEL_WIDTH), h = px(self.visible_height) }), TRACK_PANEL_WIDTH, self.visible_height)),
-            ui.push_clip_plan(0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height),
-            ui.push_transform_plan(0, -self.scroll_y),
-        }
-        for i = 1, #self.track_row_views do append_view_plan_ops(ops, self.track_row_views[i]:plan()) end
-        ops[#ops + 1] = ui.pop_transform_plan(0, -self.scroll_y)
-        ops[#ops + 1] = ui.pop_clip_plan(0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height)
-        ops[#ops + 1] = ui.push_transform_plan(TRACK_PANEL_WIDTH - 8, HEADER_HEIGHT)
-        ops[#ops + 1] = ui.place_fragment(0, 0, ui.fragment(scrollbar_fragment_ui(self.track_count, self.visible_height, self.scroll_y), 8, self.visible_height))
-        ops[#ops + 1] = ui.pop_transform_plan(TRACK_PANEL_WIDTH - 8, HEADER_HEIGHT)
-        return ui.plan(ops)
+    [T.AppView.TrackPanelView] = function(self, out)
+        ui.append_fragment_cmds(out, 0, 0,
+            ui.fragment(header_fragment_ui(self.track_count), TRACK_PANEL_WIDTH, HEADER_HEIGHT))
+        ui.append_fragment_cmds(out, 0, HEADER_HEIGHT,
+            ui.fragment(rect("track_panel:bg", C.bg,
+                box { w = px(TRACK_PANEL_WIDTH), h = px(self.visible_height) }),
+                TRACK_PANEL_WIDTH, self.visible_height))
+        out[#out + 1] = ui.push_clip_cmd(0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height)
+        out[#out + 1] = ui.push_transform_cmd(0, -self.scroll_y)
+        for i = 1, #self.track_row_views do self.track_row_views[i]:static_commands(out) end
+        out[#out + 1] = ui.pop_transform_cmd(0, -self.scroll_y)
+        out[#out + 1] = ui.pop_clip_cmd(0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height)
+        out[#out + 1] = ui.push_transform_cmd(TRACK_PANEL_WIDTH - 8, HEADER_HEIGHT)
+        ui.append_fragment_cmds(out, 0, 0,
+            ui.fragment(scrollbar_fragment_ui(self.track_count, self.visible_height, self.scroll_y), 8, self.visible_height))
+        out[#out + 1] = ui.pop_transform_cmd(TRACK_PANEL_WIDTH - 8, HEADER_HEIGHT)
     end,
-    [T.AppView.TrackRowView] = function(self)
-        return ui.plan({ ui.place_fragment(0, (self.track_index - 1) * ROW_HEIGHT, self:fragment()) })
+    [T.AppView.TrackRowView] = function(self, out)
+        ui.append_fragment_cmds(out, 0, (self.track_index - 1) * ROW_HEIGHT, self:fragment())
     end,
-    [T.AppView.ArrangementPanelView] = function(self)
-        local ops = {
-            ui.place_fragment(0, 0, ui.fragment(arrangement_background_fragment_ui(self), self.visible_width, self.playhead_height)),
-            ui.push_clip_plan(0, HEADER_HEIGHT, self.visible_width, self.visible_height),
-        }
-        for i = 1, #self.clip_views do append_view_plan_ops(ops, self.clip_views[i]:plan()) end
-        ops[#ops + 1] = ui.pop_clip_plan(0, HEADER_HEIGHT, self.visible_width, self.visible_height)
-        return ui.plan(ops)
+    [T.AppView.ArrangementPanelView] = function(self, out)
+        ui.append_fragment_cmds(out, 0, 0,
+            ui.fragment(arrangement_background_fragment_ui(self), self.visible_width, self.playhead_height))
+        out[#out + 1] = ui.push_clip_cmd(0, HEADER_HEIGHT, self.visible_width, self.visible_height)
+        for i = 1, #self.clip_views do self.clip_views[i]:static_commands(out) end
+        out[#out + 1] = ui.pop_clip_cmd(0, HEADER_HEIGHT, self.visible_width, self.visible_height)
     end,
-    [T.AppView.ClipView] = function(self)
+    [T.AppView.ClipView] = function(self, out)
         local x = math.floor(from_q16(self.clip.beat_q16) * PIXELS_PER_BEAT)
         local y = HEADER_HEIGHT + (self.track_index - 1) * ROW_HEIGHT - self.scroll_y + 4
-        return ui.plan({ ui.place_fragment(x, y, self:fragment()) })
+        ui.append_fragment_cmds(out, x, y, self:fragment())
     end,
-    [T.AppView.TrackInspectorView] = function(self)
-        return ui.plan({ ui.place_fragment(0, 0, self:fragment()) })
+    [T.AppView.TrackInspectorView] = function(self, out)
+        ui.append_fragment_cmds(out, 0, 0, self:fragment())
     end,
-    [T.AppView.ClipInspectorView] = function(self)
-        return ui.plan({ ui.place_fragment(0, 0, self:fragment()) })
+    [T.AppView.ClipInspectorView] = function(self, out)
+        ui.append_fragment_cmds(out, 0, 0, self:fragment())
     end,
-    [T.AppView.TransportPanelView] = function(self)
-        return ui.plan({ ui.place_fragment(0, 0, self:fragment()) })
+    [T.AppView.TransportPanelView] = function(self, out)
+        ui.append_fragment_cmds(out, 0, 0, self:fragment())
     end,
-}, { cache = true, name = "ui7.static.plan" })
+}, { flat = true, name = "ui7.static.commands" })
 
 -- ══════════════════════════════════════════════════════════════
---  APPPAINT → APPPAINTIR PLAN
+--  GENERIC ui.Paint / Paint.Cmd[] + RUNTIME ENV
 -- ══════════════════════════════════════════════════════════════
 
-local function paint_command(kind, tag, x, y, w, h, rgba8, rgba8_b, rgba8_c, font_id, text_align, payload_ref)
-    return PaintCommand(kind, tag or "", x or 0, y or 0, w or 0, h or 0,
-        rgba8 or 0, rgba8_b or 0, rgba8_c or 0, font_id or 0,
-        text_align or ui.TEXT_START, payload_ref)
+local PLAYHEAD_X_REF = ui.num_ref("playhead_x")
+local TIME_TEXT_REF = ui.text_ref("transport_time")
+local BEAT_TEXT_REF = ui.text_ref("transport_beat")
+
+local function meter_y_ref(track_id)
+    return ui.num_ref("meter:" .. track_id .. ":y")
 end
 
-local function append_overlay_commands(out, plan)
-    local commands = plan.commands
-    for i = 1, #commands do out[#out + 1] = commands[i] end
+local function meter_h_ref(track_id)
+    return ui.num_ref("meter:" .. track_id .. ":h")
 end
 
-local overlay_plan_builder = pvm.verb("paint_plan", {
-    [T.AppPaint.RootOverlayPaint] = function(self)
-        local commands = {}
-        append_overlay_commands(commands, self.track_panel_overlay:paint_plan())
-        append_overlay_commands(commands, self.arrangement_overlay:paint_plan())
-        append_overlay_commands(commands, self.transport_overlay:paint_plan())
-        return PaintPlan(commands)
-    end,
-    [T.AppPaint.TrackPanelOverlayPaint] = function(self)
-        local commands = {
-            paint_command(K_PUSH_CLIP, "", 0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
-        }
-        for i = 1, #self.meter_paints do append_overlay_commands(commands, self.meter_paints[i]:paint_plan()) end
-        commands[#commands + 1] = paint_command(K_POP_CLIP, "", 0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, self.visible_height, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X)
-        return PaintPlan(commands)
-    end,
-    [T.AppPaint.MeterBarPaint] = function(self)
-        local y = HEADER_HEIGHT + (self.track_index - 1) * ROW_HEIGHT - self.scroll_y + 4
-        local layout = track_row_layout(TRACK_PANEL_WIDTH)
-        return PaintPlan({
-            paint_command(K_METER_BAR, "meter:" .. self.track_id,
-                layout.meter_x, y, METER_WIDTH, ROW_HEIGHT - 8,
-                C.meter_fill, C.meter_hot, C.meter_clip,
-                0, ui.TEXT_START,
-                MeterLevelPayload(self.track_id)),
-        })
-    end,
-    [T.AppPaint.ArrangementOverlayPaint] = function(self)
-        local commands = {
-            paint_command(K_PUSH_TX, "", TRACK_PANEL_WIDTH, 0, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
-        }
-        append_overlay_commands(commands, self.playhead_paint:paint_plan())
-        commands[#commands + 1] = paint_command(K_POP_TX, "", 0, 0, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X)
-        return PaintPlan(commands)
-    end,
-    [T.AppPaint.PlayheadLinePaint] = function(self)
-        return PaintPlan({
-            paint_command(K_PLAYHEAD_LINE, "playhead", 0, 0, 2, self.playhead_height,
-                C.text_bright, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
-        })
-    end,
-    [T.AppPaint.TransportOverlayPaint] = function(self)
-        local y = window_height - TRANSPORT_HEIGHT
-        local commands = {
-            paint_command(K_PUSH_TX, "", 0, y, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X),
-        }
-        append_overlay_commands(commands, self.time_text_paint:paint_plan())
-        append_overlay_commands(commands, self.beat_text_paint:paint_plan())
-        commands[#commands + 1] = paint_command(K_POP_TX, "", 0, y, 0, 0, 0, 0, 0, 0, ui.TEXT_START, REF_PLAYHEAD_X)
-        return PaintPlan(commands)
-    end,
-    [T.AppPaint.TransportTimeTextPaint] = function(self)
-        local layout = transport_layout(window_width)
-        return PaintPlan({
-            paint_command(K_RUNTIME_TEXT, "transport:time", layout.time_x, 24, layout.time_w, 18,
-                C.text_bright, 0, 0, 3, ui.TEXT_START, REF_TIME_TEXT),
-        })
-    end,
-    [T.AppPaint.TransportBeatTextPaint] = function(self)
-        local layout = transport_layout(window_width)
-        return PaintPlan({
-            paint_command(K_RUNTIME_TEXT, "transport:beat", layout.beat_x, 24, layout.beat_w, 18,
-                C.text_bright, 0, 0, 3, ui.TEXT_START, REF_BEAT_TEXT),
-        })
-    end,
-}, { cache = true, name = "ui7.overlay.plan" })
-
--- ══════════════════════════════════════════════════════════════
---  RUNTIME OVERLAY PAINT
--- ══════════════════════════════════════════════════════════════
-
-local fonts = {}
-
-local function get_font(id)
-    return fonts[id] or (love and love.graphics and love.graphics.getFont())
+local function meter_color_ref(track_id)
+    return ui.color_ref("meter:" .. track_id .. ":color")
 end
 
-local function rgba8_to_love(rgba8)
-    local a = (rgba8 % 256) / 255; rgba8 = math.floor(rgba8 / 256)
-    local b = (rgba8 % 256) / 255; rgba8 = math.floor(rgba8 / 256)
-    local g = (rgba8 % 256) / 255; rgba8 = math.floor(rgba8 / 256)
-    local r = (rgba8 % 256) / 255
-    return r, g, b, a
-end
-
-local function payload_text(payload, payload_ref)
-    if payload_ref == REF_TIME_TEXT then return payload.transport_time_text end
-    if payload_ref == REF_BEAT_TEXT then return payload.transport_beat_text end
-    return ""
-end
-
-local function payload_number(payload, payload_ref)
-    if payload_ref == REF_PLAYHEAD_X then return payload.playhead_x end
-    local mt = getmetatable(payload_ref)
-    if mt == getmetatable(MeterLevelPayload(0)) then
-        return lookup_meter_level(payload, payload_ref.track_id)
-    end
-    return 0
-end
-
-local function paint_overlay(plan, payload)
-    if not (love and love.graphics) then return end
-    local tx, ty = 0, 0
-    local tx_stack, clip_stack = {}, {}
-    local mtMeterPayload = getmetatable(MeterLevelPayload(0))
-
-    for i = 1, #plan.commands do
-        local command = plan.commands[i]
-        local kind = command.kind
-
-        if kind == K_PUSH_CLIP then
-            local ax, ay, nw, nh = command.x + tx, command.y + ty, command.w, command.h
-            local top = clip_stack[#clip_stack]
-            if top then
-                local x2 = math.max(ax, top[1])
-                local y2 = math.max(ay, top[2])
-                nw = math.max(0, math.min(ax + command.w, top[1] + top[3]) - x2)
-                nh = math.max(0, math.min(ay + command.h, top[2] + top[4]) - y2)
-                ax, ay = x2, y2
-            end
-            clip_stack[#clip_stack + 1] = { ax, ay, nw, nh }
-            love.graphics.setScissor(ax, ay, nw, nh)
-
-        elseif kind == K_POP_CLIP then
-            clip_stack[#clip_stack] = nil
-            local top = clip_stack[#clip_stack]
-            if top then love.graphics.setScissor(top[1], top[2], top[3], top[4])
-            else love.graphics.setScissor() end
-
-        elseif kind == K_PUSH_TX then
-            tx_stack[#tx_stack + 1] = { tx, ty }
-            tx, ty = tx + command.x, ty + command.y
-            love.graphics.push("transform")
-            love.graphics.translate(command.x, command.y)
-
-        elseif kind == K_POP_TX then
-            love.graphics.pop()
-            local top = tx_stack[#tx_stack]
-            tx_stack[#tx_stack] = nil
-            tx, ty = top[1], top[2]
-
-        elseif kind == K_PLAYHEAD_LINE then
-            local x = payload.playhead_x
-            love.graphics.setColor(rgba8_to_love(command.rgba8))
-            love.graphics.rectangle("fill", x, command.y, command.w, command.h)
-
-        elseif kind == K_METER_BAR then
-            local level = 0
-            local payload_mt = getmetatable(command.payload_ref)
-            if payload_mt == mtMeterPayload then
-                level = lookup_meter_level(payload, command.payload_ref.track_id)
-            end
-            local fill = math.floor(command.h * math.max(0, math.min(1, level)))
-            local color = level > 0.9 and command.rgba8_c or (level > 0.7 and command.rgba8_b or command.rgba8)
-            love.graphics.setColor(rgba8_to_love(color))
-            love.graphics.rectangle("fill", command.x, command.y + (command.h - fill), command.w, fill)
-
-        elseif kind == K_RUNTIME_TEXT then
-            local font = get_font(command.font_id)
-            if font then love.graphics.setFont(font) end
-            love.graphics.setColor(rgba8_to_love(command.rgba8))
-            love.graphics.printf(payload_text(payload, command.payload_ref), command.x, command.y, math.max(1, command.w), "left")
-        end
+local function project_root_overlay(state, viewport)
+    local vm = view_metrics(state, viewport)
+    local meter_children = {}
+    local meter_layout = track_row_layout(TRACK_PANEL_WIDTH)
+    for i = 1, #state.project.tracks do
+        local track = state.project.tracks[i]
+        meter_children[i] = ui.paint_rect("meter:" .. track.id,
+            meter_layout.meter_x,
+            meter_y_ref(track.id),
+            METER_WIDTH,
+            meter_h_ref(track.id),
+            meter_color_ref(track.id))
     end
 
-    love.graphics.setColor(1, 1, 1, 1)
-    love.graphics.setScissor()
+    local transport = transport_layout(viewport.window_width)
+
+    return ui.paint_group({
+        ui.paint_clip(0, HEADER_HEIGHT, TRACK_PANEL_WIDTH, vm.visible_height,
+            ui.paint_group(meter_children)),
+        ui.paint_transform(TRACK_PANEL_WIDTH, 0,
+            ui.paint_line("playhead",
+                PLAYHEAD_X_REF, 0,
+                PLAYHEAD_X_REF, viewport.window_height - TRANSPORT_HEIGHT,
+                2, C.text_bright)),
+        ui.paint_transform(0, viewport.window_height - TRANSPORT_HEIGHT,
+            ui.paint_group({
+                ui.paint_text("transport:time",
+                    transport.time_x, 24, transport.time_w, 18,
+                    style(3, C.text_bright, { overflow = ui.OVERFLOW_CLIP }),
+                    TIME_TEXT_REF),
+                ui.paint_text("transport:beat",
+                    transport.beat_x, 24, transport.beat_w, 18,
+                    style(3, C.text_bright, { overflow = ui.OVERFLOW_CLIP }),
+                    BEAT_TEXT_REF),
+            })),
+    })
+end
+
+local function meter_fill_color(level)
+    return level > 0.9 and C.meter_clip or (level > 0.7 and C.meter_hot or C.meter_fill)
+end
+
+local function build_overlay_runtime(payload)
+    local numbers = {
+        playhead_x = payload.playhead_x,
+    }
+    local texts = {
+        transport_time = payload.transport_time_text,
+        transport_beat = payload.transport_beat_text,
+    }
+    local colors = {}
+    local vm = view_metrics(source_state, viewport_value())
+    local meter_h = ROW_HEIGHT - 8
+
+    for i = 1, #source_state.project.tracks do
+        local track = source_state.project.tracks[i]
+        local level = clamp(lookup_meter_level(payload, track.id), 0, 1)
+        local fill = math.floor(meter_h * level)
+        numbers["meter:" .. track.id .. ":h"] = fill
+        numbers["meter:" .. track.id .. ":y"] = HEADER_HEIGHT + (i - 1) * ROW_HEIGHT - vm.scroll_y + 4 + (meter_h - fill)
+        colors["meter:" .. track.id .. ":color"] = meter_fill_color(level)
+    end
+
+    return {
+        numbers = numbers,
+        texts = texts,
+        colors = colors,
+    }
 end
 
 -- ══════════════════════════════════════════════════════════════
@@ -1095,11 +1019,18 @@ local NAMES = {"Kick","Snare","Hi-Hat","Bass","Lead Synth","Pad",
 local COLORS = {C.green,C.red,C.orange,C.purple,C.cyan,C.accent,
                 C.orange,C.green,C.red,C.purple,C.cyan,C.accent}
 
+local function zero_meter_levels()
+    local z = {}
+    for i = 1, #source_state.project.tracks do z[i] = 0 end
+    return z
+end
+
 local function recompile_static()
     local current_viewport = viewport_value()
     local root_view = project_root_view(source_state, current_viewport)
-    static_commands = root_view:plan():cmds()
-    overlay_plan = project_root_overlay(source_state, current_viewport):paint_plan()
+    local _, cmds = root_view:static_commands()
+    static_commands = cmds
+    overlay_commands = ui.compile_paint(project_root_overlay(source_state, current_viewport))
 end
 
 local function active_track_index()
@@ -1122,7 +1053,7 @@ local function dispatch(track_index, field, value)
     end
 end
 
-local function handle_click(tag)
+local function handle_click(tag, mouse_x)
     if not tag then return end
 
     local clip_id = tonumber(tag:match("^clip:(%d+)"))
@@ -1139,45 +1070,48 @@ local function handle_click(tag)
         elseif tag:find(":solo", 1, true) then
             dispatch(track_index, "solo", not source_state.project.tracks[track_index].solo)
         elseif tag:find(":vol", 1, true) then
-            dragging = { track_index = track_index, field = "vol", x0 = love.mouse.getX(), value0 = source_state.project.tracks[track_index].vol, width = track_row_layout(TRACK_PANEL_WIDTH).slider_w }
+            dragging = { tag = tag, track_index = track_index, field = "vol", x0 = mouse_x, value0 = source_state.project.tracks[track_index].vol, width = track_row_layout(TRACK_PANEL_WIDTH).slider_w }
         elseif tag:find(":pan", 1, true) then
-            dragging = { track_index = track_index, field = "pan", x0 = love.mouse.getX(), value0 = source_state.project.tracks[track_index].pan, width = track_row_layout(TRACK_PANEL_WIDTH).slider_w }
+            dragging = { tag = tag, track_index = track_index, field = "pan", x0 = mouse_x, value0 = source_state.project.tracks[track_index].pan, width = track_row_layout(TRACK_PANEL_WIDTH).slider_w }
         end
         return
     end
 
     local current_track_index = active_track_index()
     if tag:find("^insp:vol_slider") then
-        dragging = { track_index = current_track_index, field = "vol", x0 = love.mouse.getX(), value0 = source_state.project.tracks[current_track_index].vol, width = INSPECTOR_WIDTH - 32 }
+        dragging = { tag = tag, track_index = current_track_index, field = "vol", x0 = mouse_x, value0 = source_state.project.tracks[current_track_index].vol, width = INSPECTOR_WIDTH - 32 }
         return
     end
     if tag:find("^insp:pan_slider") then
-        dragging = { track_index = current_track_index, field = "pan", x0 = love.mouse.getX(), value0 = source_state.project.tracks[current_track_index].pan, width = INSPECTOR_WIDTH - 32 }
+        dragging = { tag = tag, track_index = current_track_index, field = "pan", x0 = mouse_x, value0 = source_state.project.tracks[current_track_index].pan, width = INSPECTOR_WIDTH - 32 }
         return
     end
     if tag:find("^insp:mute_btn") then dispatch(current_track_index, "mute", not source_state.project.tracks[current_track_index].mute); return end
     if tag:find("^insp:solo_btn") then dispatch(current_track_index, "solo", not source_state.project.tracks[current_track_index].solo); return end
     if tag:find("^transport:play") then set_session({ playing = not source_state.session.playing }); return end
-    if tag:find("^transport:stop") then set_session({ playing = false }); rebuild_runtime_payload(0, (function() local z = {}; for i = 1, #source_state.project.tracks do z[i] = 0 end; return z end)()); return end
+    if tag:find("^transport:stop") then set_session({ playing = false }); rebuild_runtime_payload(0, zero_meter_levels()); return end
     if tag:find("^transport:bpm%-") then dispatch(0, "bpm", math.max(40, source_state.project.bpm - 5)); return end
     if tag:find("^transport:bpm%+") then dispatch(0, "bpm", math.min(300, source_state.project.bpm + 5)); return end
 end
 
 -- ══════════════════════════════════════════════════════════════
---  LOVE CALLBACKS
+--  APP ENTRYPOINT
 -- ══════════════════════════════════════════════════════════════
 
-function love.load()
-    love.graphics.setBackgroundColor(0.054, 0.067, 0.090, 1)
-    fonts[1] = love.graphics.newFont(18)
-    fonts[2] = love.graphics.newFont(13)
-    fonts[3] = love.graphics.newFont(15)
-    fonts[4] = love.graphics.newFont(10)
+function app.init(host)
+    app_host = host or {}
+    ui.set_backend(app_host.renderer)
+
+    host_set_background_color(0.054, 0.067, 0.090, 1)
+    fonts[1] = host_new_font(18)
+    fonts[2] = host_new_font(13)
+    fonts[3] = host_new_font(15)
+    fonts[4] = host_new_font(10)
     ui.set_font(1, fonts[1])
     ui.set_font(2, fonts[2])
     ui.set_font(3, fonts[3])
     ui.set_font(4, fonts[4])
-    love.graphics.setFont(fonts[2])
+    if host_renderer().set_font then host_renderer():set_font(fonts[2]) end
 
     local tracks, clips = {}, {}
     local initial_meter_levels = {}
@@ -1191,17 +1125,17 @@ function love.load()
         Project(tracks, clips, 120),
         Session(SelectedTrack(1), 0, false))
 
-    window_width, window_height = love.graphics.getDimensions()
+    window_width, window_height = host_dimensions()
     rebuild_runtime_payload(0, initial_meter_levels)
     recompile_static()
 end
 
-function love.resize(w, h)
+function app.resize(w, h)
     window_width, window_height = w, h
     recompile_static()
 end
 
-function love.update(dt)
+function app.update(dt)
     local next_meter_levels = {}
     local current_time_ms = 0
     if runtime_payload then
@@ -1226,8 +1160,8 @@ function love.update(dt)
     rebuild_runtime_payload(current_time_ms, next_meter_levels)
 end
 
-function love.keypressed(key)
-    if key == "escape" then love.event.quit() end
+function app.keypressed(key)
+    if key == "escape" then host_quit() end
     if key == "space" then
         set_session({ playing = not source_state.session.playing })
         recompile_static()
@@ -1256,47 +1190,53 @@ function love.keypressed(key)
     end
     if key == "r" then
         set_session({ playing = false })
-        rebuild_runtime_payload(0, (function() local z = {}; for i = 1, #source_state.project.tracks do z[i] = 0 end; return z end)())
+        rebuild_runtime_payload(0, zero_meter_levels())
         recompile_static()
     end
-    if key == "z" and love.keyboard.isDown("lctrl", "rctrl") then
+    if key == "z" and host_is_key_down("lctrl", "rctrl") then
         pop_undo()
         recompile_static()
     end
 end
 
-function love.mousepressed(mx, my, button)
+function app.mousepressed(mx, my, button)
     if button == 1 then
-        handle_click(ui.hit(static_commands, mx, my))
+        local tag = ui.hit(static_commands, mx, my)
+        pointer_hot.pressed = tag
+        pointer_hot.hovered = tag
+        handle_click(tag, mx)
         recompile_static()
     end
 end
 
-function love.mousereleased()
+function app.mousereleased()
     if dragging then dragging = nil end
+    pointer_hot.pressed = nil
+    pointer_hot.dragging = nil
 end
 
-function love.mousemoved(mx, my)
+function app.mousemoved(mx, my)
     if dragging then
         local next_value = clamp(dragging.value0 + (mx - dragging.x0) / dragging.width, 0, 1)
         dispatch(dragging.track_index, dragging.field, next_value)
+        pointer_hot.dragging = dragging.tag
         recompile_static()
+    else
+        pointer_hot.dragging = nil
     end
-    local tag = ui.hit(static_commands, mx, my)
-    if tag ~= hover_tag then hover_tag = tag end
+    pointer_hot.hovered = ui.hit(static_commands, mx, my)
 end
 
-function love.wheelmoved(_, wy)
+function app.wheelmoved(_, wy)
     local visible_height = window_height - TRANSPORT_HEIGHT - HEADER_HEIGHT
     local max_scroll = math.max(0, #source_state.project.tracks * ROW_HEIGHT - visible_height)
     dispatch(0, "scroll_y", clamp(source_state.session.scroll_y - wy * 30, 0, max_scroll))
     recompile_static()
 end
 
-function love.draw()
-    love.graphics.origin()
-    love.graphics.setScissor()
-    love.graphics.setColor(1, 1, 1, 1)
-    ui.paint(static_commands, { hover_tag = hover_tag })
-    paint_overlay(overlay_plan, runtime_payload)
+function app.draw()
+    ui.paint(static_commands, { hot = pointer_hot, backend = app_host.renderer })
+    ui.paint_custom(overlay_commands, build_overlay_runtime(runtime_payload), { hot = pointer_hot, backend = app_host.renderer })
 end
+
+return app

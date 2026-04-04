@@ -54,18 +54,22 @@ View.Cmd[]             -- static command image
 
 App.State + App.Viewport
   ↓ project
-AppPaint.*             -- dynamic paint facet
+AppPaint.*             -- optional app-specific dynamic paint facet
+  ↓ lower
+ui.Paint.Node          -- generic paint tree
   ↓ compile
-AppPaintIR.*           -- flat dynamic paint plan
+Paint.Cmd[]            -- flat runtime paint plan
 
 AppRuntime.*           -- live payload updated every frame
+  ↓ build runtime env
+{ numbers, texts, colors }
 ```
 
 At draw time:
 
 ```text
 ui.paint(static_cmds)
-paint_overlay(dynamic_plan, runtime_payload)
+ui.paint_custom(paint_cmds, runtime_env)
 ```
 
 This is the main pattern for substantial apps.
@@ -185,7 +189,11 @@ Instead:
 
 - keep static structure in `UI.Node`
 - keep dynamic payload in `AppRuntime.*`
-- keep dynamic drawing in `AppPaint.* -> AppPaintIR.*`
+- keep dynamic drawing in either:
+  - app-specific `AppPaint.*` projected into generic `ui.Paint.Node`, or
+  - generic `ui.Paint.Node` directly if no extra app paint facet is needed
+
+Then compile with `ui.compile_paint(...)` and execute with `ui.paint_custom(...)`.
 
 That is the preferred pattern for nontrivial apps.
 
@@ -208,13 +216,13 @@ local box, px, text_style = ui.box, ui.px, ui.text_style
 local row, stack, rect, text, transform =
     ui.row, ui.stack, ui.rect, ui.text, ui.transform
 
-local function label_style(rgba8)
-    return text_style { font_id = 2, rgba8 = rgba8 }
+local function label_style(color)
+    return text_style { font_id = 2, color = ui.solid(color) }
 end
 
 local function mute_button_ui(is_on)
     return stack({
-        rect("track:mute", is_on and 0xffcc3333 or 0xff30363d,
+        rect("track:mute", ui.solid(is_on and 0xffcc3333 or 0xff30363d),
             box { w = px(24), h = px(20) }),
         text("track:mute:label", "M", label_style(0xffffffff),
             box { w = px(24), h = px(20) }),
@@ -223,7 +231,7 @@ end
 
 local function track_row_ui(view)
     return stack({
-        rect("track:" .. view.track_id, view.is_selected and 0xff1f2937 or 0xff161b22,
+        rect("track:" .. view.track_id, ui.solid(view.is_selected and 0xff1f2937 or 0xff161b22),
             box { w = px(260), h = px(48) }),
         transform(12, 14,
             text("track:" .. view.track_id .. ":name", view.track_name,
@@ -573,7 +581,7 @@ AppRuntime.Payload = (
 )
 ```
 
-Then update that payload during `love.update(dt)`.
+Then update that payload during your app's update step (for example, `app.update(dt)`).
 
 Do not rebuild the structural widget tree just because time advanced.
 
@@ -604,13 +612,13 @@ local function recompile_static()
     static_cmds = ui.compile(build_root_ui(root_view), viewport.w, viewport.h)
 end
 
-function love.update(dt)
+function app.update(dt)
     runtime_payload = step_runtime(runtime_payload, dt)
 end
 
-function love.draw()
-    ui.paint(static_cmds)
-    paint_overlay(runtime_plan, runtime_payload)
+function app.draw(renderer)
+    ui.paint(static_cmds, { backend = renderer })
+    ui.paint_custom(runtime_cmds, runtime_env, { backend = renderer })
 end
 ```
 
@@ -678,7 +686,7 @@ Prefer shared style helpers:
 
 ```lua
 local function label_style(color)
-    return ui.text_style { font_id = 2, rgba8 = color }
+    return ui.text_style { font_id = 2, color = ui.solid(color) }
 end
 ```
 
@@ -711,7 +719,7 @@ local function row_ui(state, project, selection, viewport, transport, cache, ...
 Bad if avoidable:
 
 ```lua
-function love.update(dt)
+function app.update(dt)
     app_state.time = app_state.time + dt
     recompile_static()
 end
@@ -724,7 +732,7 @@ If a layer is not a real semantic layer or a real artifact layer, it is probably
 Typed app view nodes are usually better than unstructured ad-hoc tables for large apps.
 
 ### Do not rely on app-specific dynamic concepts in core `uilib`
-For serious apps, prefer app-level `AppPaint` and `AppRuntime` layers over stuffing dynamic app semantics into core widget kinds.
+For serious apps, prefer app-level `AppPaint` and `AppRuntime` layers, or project directly to generic `ui.Paint`, rather than stuffing dynamic app semantics into core widget kinds.
 
 ---
 
@@ -785,11 +793,13 @@ App.State + Viewport
   -> static View.Cmd[]
 
 App.State + Viewport
-  -> AppPaint
-  -> AppPaintIR
+  -> AppPaint (optional)
+  -> ui.Paint.Node
+  -> Paint.Cmd[]
 
 AppRuntime.Payload
-  -> dynamic paint execution
+  -> runtime env { numbers, texts, colors }
+  -> ui.paint_custom(...)
 ```
 
 That default will take you a long way.

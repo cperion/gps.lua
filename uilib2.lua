@@ -1,2 +1,2 @@
--- uilib2.lua — UI library with design system and pointer-variant paint packs.
-return require("uilib2_impl")
+-- uilib2.lua — compatibility shim; uilib2 has been folded into uilib.
+return require("uilib")

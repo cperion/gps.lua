@@ -1,7 +1,2 @@
-function love.conf(t)
-    t.window.title   = "ui5 — widgets as ASDL types"
-    t.window.width   = 1100
-    t.window.height  = 700
-    t.window.resizable = true
-    t.console = true
-end
+-- Legacy leftover from the old Love2D version.
+-- ui7 now runs via examples/ui7/main.t (SDL3 + OpenGL + SDL_ttf through Terra).
