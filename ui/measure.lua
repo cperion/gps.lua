@@ -7,6 +7,7 @@
 -- measurement hook, but there is no hidden retained layout graph.
 
 local schema = require("ui.asdl")
+local flex = require("ui._flex")
 
 local T = schema.T
 
@@ -34,15 +35,14 @@ local Measure = T.Facts.Measure
 
 local SIZE_AUTO = T.Layout.SizeAuto
 local SIZE_CONTENT = T.Layout.SizeContent
-local BASIS_AUTO = T.Layout.BasisAuto
-local BASIS_CONTENT = T.Layout.BasisContent
 local NO_MIN = T.Layout.NoMin
 local NO_MAX = T.Layout.NoMax
 local WRAP_NO = T.Layout.WrapNoWrap
 local AXIS_ROW = T.Layout.AxisRow
 local AXIS_ROW_REV = T.Layout.AxisRowReverse
-local AXIS_COL = T.Layout.AxisCol
-local AXIS_COL_REV = T.Layout.AxisColReverse
+local SCROLL_X = T.Layout.ScrollX
+local SCROLL_Y = T.Layout.ScrollY
+local SCROLL_BOTH = T.Layout.ScrollBoth
 local LINEHEIGHT_AUTO = T.Layout.LineHeightAuto
 local TEXT_NOWRAP = T.Layout.TextNoWrap
 local TEXT_WORDWRAP = T.Layout.TextWordWrap
@@ -53,10 +53,7 @@ local mtSpanExact = getmetatable(SpanExact(0))
 local mtSpanAtMost = getmetatable(SpanAtMost(0))
 local mtSizePx = getmetatable(T.Layout.SizePx(0))
 local mtSizePercent = getmetatable(T.Layout.SizePercent(0))
-local mtBasisPx = getmetatable(T.Layout.BasisPx(0))
-local mtBasisPercent = getmetatable(T.Layout.BasisPercent(0))
 local mtMinPx = getmetatable(T.Layout.MinPx(0))
-local mtMaxPx = getmetatable(T.Layout.MaxPx(0))
 local mtLineHeightPx = getmetatable(T.Layout.LineHeightPx(0))
 local mtLineHeightScale = getmetatable(T.Layout.LineHeightScale(1))
 local mtMaxLines = getmetatable(T.Layout.MaxLines(1))
@@ -152,22 +149,6 @@ local function resolve_size_value(spec, available, content_value)
     return content_value
 end
 
-local function resolve_basis_value(spec, available, content_value)
-    if spec == BASIS_AUTO or spec == BASIS_CONTENT then
-        return content_value
-    end
-    local mt = getmetatable(spec)
-    if mt == mtBasisPx then
-        return spec.px
-    end
-    if mt == mtBasisPercent then
-        if available ~= INF then
-            return available * spec.ratio
-        end
-        return content_value
-    end
-    return content_value
-end
 
 local function exact_or_atmost(px, exact)
     if px == INF then
@@ -216,10 +197,10 @@ local function apply_box_measure(box, outer, raw)
     local max_w, max_h = box_max_value(box.max_w), box_max_value(box.max_h)
 
     local used_w = outer_exact_w
-        and (box.w == SIZE_AUTO or box.w == SIZE_CONTENT or getmetatable(box.w) == mtSizePercent)
+        and (box.w == SIZE_AUTO or box.w == SIZE_CONTENT)
         and aw or resolve_size_value(box.w, aw, raw.used_w)
     local used_h = outer_exact_h
-        and (box.h == SIZE_AUTO or box.h == SIZE_CONTENT or getmetatable(box.h) == mtSizePercent)
+        and (box.h == SIZE_AUTO or box.h == SIZE_CONTENT)
         and ah or resolve_size_value(box.h, ah, raw.used_h)
 
     local intr_min_w, intr_min_h = raw.min_w, raw.min_h
@@ -228,15 +209,15 @@ local function apply_box_measure(box, outer, raw)
     local mtw = getmetatable(box.w)
     if mtw == mtSizePx then
         intr_min_w, intr_max_w = box.w.px, box.w.px
-    elseif mtw == mtSizePercent and aw ~= INF then
-        intr_min_w, intr_max_w = aw * box.w.ratio, aw * box.w.ratio
+    elseif mtw == mtSizePercent then
+        intr_max_w = INF
     end
 
     local mth = getmetatable(box.h)
     if mth == mtSizePx then
         intr_min_h, intr_max_h = box.h.px, box.h.px
-    elseif mth == mtSizePercent and ah ~= INF then
-        intr_min_h, intr_max_h = ah * box.h.ratio, ah * box.h.ratio
+    elseif mth == mtSizePercent then
+        intr_max_h = INF
     end
 
     intr_min_w = clamp(intr_min_w, min_w, max_w)
@@ -289,50 +270,6 @@ local function is_row_axis(axis)
     return axis == AXIS_ROW or axis == AXIS_ROW_REV
 end
 
-local function main_margins(margin, axis)
-    if axis == AXIS_ROW then
-        return margin.l, margin.r
-    end
-    if axis == AXIS_ROW_REV then
-        return margin.r, margin.l
-    end
-    if axis == AXIS_COL then
-        return margin.t, margin.b
-    end
-    return margin.b, margin.t
-end
-
-local function cross_margins(margin, axis)
-    if axis == AXIS_ROW or axis == AXIS_ROW_REV then
-        return margin.t, margin.b
-    end
-    return margin.l, margin.r
-end
-
-local function main_size_of(m, axis)
-    return is_row_axis(axis) and m.used_w or m.used_h
-end
-
-local function cross_size_of(m, axis)
-    return is_row_axis(axis) and m.used_h or m.used_w
-end
-
-local function intrinsic_min_main(intr, axis)
-    return is_row_axis(axis) and intr.min_w or intr.min_h
-end
-
-local function intrinsic_max_main(intr, axis)
-    return is_row_axis(axis) and intr.max_w or intr.max_h
-end
-
-local function intrinsic_min_cross(intr, axis)
-    return is_row_axis(axis) and intr.min_h or intr.min_w
-end
-
-local function intrinsic_max_cross(intr, axis)
-    return is_row_axis(axis) and intr.max_h or intr.max_w
-end
-
 local function style_insets(style)
     local h = (style.pad_h or 0) + (style.border_w or 0)
     local v = (style.pad_v or 0) + (style.border_w or 0)
@@ -378,42 +315,80 @@ local function text_word_min_width(char_w, text)
     return best
 end
 
+local function split_text_lines(text)
+    local out = {}
+    local start = 1
+    while true do
+        local i = text:find("\n", start, true)
+        if not i then
+            out[#out + 1] = text:sub(start)
+            break
+        end
+        out[#out + 1] = text:sub(start, i - 1)
+        start = i + 1
+    end
+    if #out == 0 then
+        out[1] = ""
+    end
+    return out
+end
+
 local function default_text_measure(style, text, max_w, max_h, node, opts)
     local line_h = resolve_line_height(style.line_height, style.font_id, opts)
     local char_w = math_max(4, math_floor(line_h * 0.5 + 0.5))
-    local raw_w = #text * char_w
+    local lines_src = split_text_lines(text or "")
 
-    local min_w
-    if style.wrap == TEXT_NOWRAP then
-        min_w = raw_w
-    elseif style.wrap == TEXT_WORDWRAP then
-        min_w = text_word_min_width(char_w, text)
-    else
-        min_w = (#text > 0) and char_w or 0
-    end
+    local raw_w = 0
+    local min_w = 0
+    local explicit_lines = #lines_src
+    local wrapped_lines = 0
 
-    local lines = 1
-    local used_w = raw_w
-    if style.wrap ~= TEXT_NOWRAP and max_w ~= INF and max_w > 0 then
-        lines = math_max(1, math_ceil(raw_w / max_w))
-        used_w = math_min(raw_w, max_w)
+    for i = 1, explicit_lines do
+        local line = lines_src[i]
+        local line_w = #line * char_w
+        if line_w > raw_w then
+            raw_w = line_w
+        end
+
+        local line_min_w
+        if style.wrap == TEXT_NOWRAP then
+            line_min_w = line_w
+        elseif style.wrap == TEXT_WORDWRAP then
+            line_min_w = text_word_min_width(char_w, line)
+        else
+            line_min_w = (#line > 0) and char_w or 0
+        end
+        if line_min_w > min_w then
+            min_w = line_min_w
+        end
+
+        local line_count = 1
+        if style.wrap ~= TEXT_NOWRAP and max_w ~= INF and max_w > 0 then
+            line_count = math_max(1, math_ceil(line_w / max_w))
+        end
+        wrapped_lines = wrapped_lines + line_count
     end
 
     local limit_mt = getmetatable(style.line_limit)
     if limit_mt == mtMaxLines then
-        lines = math_min(lines, style.line_limit.count)
+        wrapped_lines = math_min(wrapped_lines, style.line_limit.count)
     end
 
-    local used_h = lines * line_h
+    local used_w = raw_w
+    if style.wrap ~= TEXT_NOWRAP and max_w ~= INF and max_w > 0 then
+        used_w = math_min(raw_w, max_w)
+    end
+
+    local used_h = wrapped_lines * line_h
     if max_h ~= INF then
         used_h = math_min(used_h, max_h)
     end
 
     return {
         min_w = min_w,
-        min_h = line_h,
+        min_h = explicit_lines * line_h,
         max_w = raw_w,
-        max_h = lines * line_h,
+        max_h = explicit_lines * line_h,
         used_w = used_w,
         used_h = used_h,
         baseline = math_floor(line_h * 0.8 + 0.5),
@@ -443,119 +418,115 @@ local function panel_like_measure(measure_node, box, style, child, constraint)
     return apply_box_measure(box, constraint, raw)
 end
 
-local function flex_collect_infos(measure_node, node, constraint)
-    local axis = node.axis
-    local avail_w = span_available(constraint.w)
-    local avail_h = span_available(constraint.h)
-    local avail_main = is_row_axis(axis) and avail_w or avail_h
-    local infos = {}
-    for i = 1, #node.children do
-        local item = node.children[i]
-        local m = measure_node(item.node, constraint)
-        local ml, mr = main_margins(item.margin, axis)
-        local mt, mb = cross_margins(item.margin, axis)
-        infos[i] = {
-            item = item,
-            measure = m,
-            base = resolve_basis_value(item.basis, avail_main, main_size_of(m, axis)),
-            min_main = intrinsic_min_main(m.intrinsic, axis),
-            max_main = intrinsic_max_main(m.intrinsic, axis),
-            min_cross = intrinsic_min_cross(m.intrinsic, axis),
-            max_cross = intrinsic_max_cross(m.intrinsic, axis),
-            main_margin_start = ml,
-            main_margin_end = mr,
-            cross_margin_start = mt,
-            cross_margin_end = mb,
-        }
+local function scroll_area_measure(measure_node, axis, box, style, child, constraint)
+    local inner = box_content_constraint(box, constraint)
+    local inset_h, inset_v = style_insets(style)
+    local child_w = sub_span(inner.w, inset_h * 2)
+    local child_h = sub_span(inner.h, inset_v * 2)
+
+    if axis == SCROLL_X or axis == SCROLL_BOTH then
+        child_w = SPAN_UNCONSTRAINED
     end
-    return infos, avail_main
+    if axis == SCROLL_Y or axis == SCROLL_BOTH then
+        child_h = SPAN_UNCONSTRAINED
+    end
+
+    local m = measure_node(child, Constraint(child_w, child_h))
+    local raw = {
+        min_w = ((axis == SCROLL_X or axis == SCROLL_BOTH) and 0 or m.intrinsic.min_w) + inset_h * 2,
+        min_h = ((axis == SCROLL_Y or axis == SCROLL_BOTH) and 0 or m.intrinsic.min_h) + inset_v * 2,
+        max_w = ((axis == SCROLL_X or axis == SCROLL_BOTH) and INF or m.intrinsic.max_w) + inset_h * 2,
+        max_h = ((axis == SCROLL_Y or axis == SCROLL_BOTH) and INF or m.intrinsic.max_h) + inset_v * 2,
+        used_w = m.used_w + inset_h * 2,
+        used_h = m.used_h + inset_v * 2,
+        baseline = m.baseline,
+    }
+    return apply_box_measure(box, constraint, raw)
 end
 
 local function flex_measure(measure_node, node, constraint)
     local inner = box_content_constraint(node.box, constraint)
-    local infos, avail_main = flex_collect_infos(measure_node, node, inner)
+    local infos, avail_main = flex.collect_infos(node, inner, measure_node)
     local axis = node.axis
+    local rowish = flex.is_row_axis(axis)
+    local cross_size = flex.span_available(rowish and inner.h or inner.w)
     local raw = raw_measure_zero()
 
     if #infos == 0 then
         return apply_box_measure(node.box, constraint, raw)
     end
 
-    if node.wrap == WRAP_NO or avail_main == INF then
-        local main_sum_min, main_sum_nat, cross_min, cross_nat = 0, 0, 0, 0
-        for i = 1, #infos do
-            local inf = infos[i]
-            main_sum_min = main_sum_min + inf.min_main + inf.main_margin_start + inf.main_margin_end
-            main_sum_nat = main_sum_nat + inf.base + inf.main_margin_start + inf.main_margin_end
-            cross_min = max_of(cross_min, inf.min_cross + inf.cross_margin_start + inf.cross_margin_end)
-            cross_nat = max_of(cross_nat, cross_size_of(inf.measure, axis) + inf.cross_margin_start + inf.cross_margin_end)
-        end
-        main_sum_min = main_sum_min + node.gap_main * math_max(0, #infos - 1)
-        main_sum_nat = main_sum_nat + node.gap_main * math_max(0, #infos - 1)
+    local sum_min_main = node.gap_main * math_max(0, #infos - 1)
+    local sum_hypo_main = node.gap_main * math_max(0, #infos - 1)
+    local min_line_main = 0
+    local cross_min_single = 0
 
-        if is_row_axis(axis) then
-            raw.min_w, raw.max_w, raw.used_w = main_sum_min, main_sum_nat, math_min(main_sum_nat, avail_main)
-            raw.min_h, raw.max_h, raw.used_h = cross_min, cross_nat, cross_nat
+    for i = 1, #infos do
+        local inf = infos[i]
+        local outer_min = inf.min_main + inf.main_margin_start + inf.main_margin_end
+        local outer_hypo = inf.hypo_main + inf.main_margin_start + inf.main_margin_end
+        sum_min_main = sum_min_main + outer_min
+        sum_hypo_main = sum_hypo_main + outer_hypo
+        min_line_main = max_of(min_line_main, outer_hypo)
+        cross_min_single = max_of(cross_min_single, inf.min_cross + inf.cross_margin_start + inf.cross_margin_end)
+    end
+
+    local lines = flex.collect_lines(infos, node.wrap, avail_main, node.gap_main)
+    local used_cross = 0
+    local max_line_main = 0
+    local single_cross = 0
+
+    for li = 1, #lines do
+        local line = lines[li]
+        local sizes = flex.resolve_line_main_sizes(infos, line, avail_main, node.gap_main)
+        local line_main = flex.line_used_main(infos, line, sizes, node.gap_main)
+        local line_cross = 0
+
+        for j = 1, #line do
+            local idx = line[j]
+            local inf = infos[idx]
+            local slot_main = sizes[idx]
+            local ccon = rowish
+                and Constraint(SpanExact(math_max(0, slot_main)), flex.exact_or_atmost(cross_size, false))
+                or Constraint(flex.exact_or_atmost(cross_size, false), SpanExact(math_max(0, slot_main)))
+            local m = measure_node(inf.item.node, ccon)
+            local actual_cross = flex.cross_size_of(m, axis)
+            line_cross = max_of(line_cross, actual_cross + inf.cross_margin_start + inf.cross_margin_end)
+        end
+
+        max_line_main = max_of(max_line_main, line_main)
+        used_cross = used_cross + line_cross
+        if li > 1 then
+            used_cross = used_cross + node.gap_cross
+        end
+        if li == 1 then
+            single_cross = line_cross
+        end
+    end
+
+    if node.wrap == WRAP_NO or avail_main == INF then
+        if rowish then
+            raw.min_w, raw.max_w, raw.used_w = sum_min_main, sum_hypo_main, max_line_main
+            raw.min_h, raw.max_h, raw.used_h = cross_min_single, single_cross, single_cross
         else
-            raw.min_w, raw.max_w, raw.used_w = cross_min, cross_nat, cross_nat
-            raw.min_h, raw.max_h, raw.used_h = main_sum_min, main_sum_nat, math_min(main_sum_nat, avail_main)
+            raw.min_w, raw.max_w, raw.used_w = cross_min_single, single_cross, single_cross
+            raw.min_h, raw.max_h, raw.used_h = sum_min_main, sum_hypo_main, max_line_main
         end
     else
-        local lines, cur, cur_used = {}, {}, 0
-        for i = 1, #infos do
-            local inf = infos[i]
-            local need = inf.base + inf.main_margin_start + inf.main_margin_end
-            if #cur > 0 then
-                need = need + node.gap_main
-            end
-            if #cur > 0 and cur_used + need > avail_main then
-                lines[#lines + 1] = cur
-                cur, cur_used = {}, 0
-                need = inf.base + inf.main_margin_start + inf.main_margin_end
-            end
-            cur[#cur + 1] = i
-            cur_used = cur_used + need
-        end
-        if #cur > 0 then
-            lines[#lines + 1] = cur
-        end
-
-        local used_cross, max_main, min_line_main = 0, 0, 0
-        for li = 1, #lines do
-            local line = lines[li]
-            local lu, lc = 0, 0
-            for j = 1, #line do
-                local inf = infos[line[j]]
-                lu = lu + inf.base + inf.main_margin_start + inf.main_margin_end
-                if j > 1 then
-                    lu = lu + node.gap_main
-                end
-                lc = max_of(lc, cross_size_of(inf.measure, axis) + inf.cross_margin_start + inf.cross_margin_end)
-            end
-            max_main = max_of(max_main, lu)
-            used_cross = used_cross + lc
-            if li > 1 then
-                used_cross = used_cross + node.gap_cross
-            end
-        end
-        for i = 1, #infos do
-            local need = infos[i].min_main + infos[i].main_margin_start + infos[i].main_margin_end
-            min_line_main = max_of(min_line_main, need)
-        end
-        if is_row_axis(axis) then
-            raw.min_w, raw.max_w, raw.used_w = min_line_main, max_main, math_min(max_main, avail_main)
+        if rowish then
+            raw.min_w, raw.max_w, raw.used_w = min_line_main, max_line_main, max_line_main
             raw.min_h, raw.max_h, raw.used_h = used_cross, used_cross, used_cross
         else
             raw.min_w, raw.max_w, raw.used_w = used_cross, used_cross, used_cross
-            raw.min_h, raw.max_h, raw.used_h = min_line_main, max_main, math_min(max_main, avail_main)
+            raw.min_h, raw.max_h, raw.used_h = min_line_main, max_line_main, max_line_main
         end
     end
 
     return apply_box_measure(node.box, constraint, raw)
 end
 
-function measure.new_cache()
-    return setmetatable({}, { __mode = "k" })
+function measure.new_cache(limit)
+    return setmetatable({}, { __mode = "k", __limit = limit or 64 })
 end
 
 function measure.clear_cache(cache)
@@ -600,6 +571,13 @@ function measure.measure(node, constraint, opts)
     local cache = opts.cache
     local text_measure = opts.text_measure or default_text_measure
     local stats = opts.stats
+    local cache_limit = INF
+    if cache then
+        local mt = getmetatable(cache)
+        if mt and mt.__limit then
+            cache_limit = mt.__limit
+        end
+    end
 
     local measure_uncached
 
@@ -619,12 +597,19 @@ function measure.measure(node, constraint, opts)
                     end
                     return hit
                 end
+                if cache_limit ~= INF and (by_node.__n or 0) >= cache_limit then
+                    by_node = { __n = 0 }
+                    cache[cur] = by_node
+                end
             else
-                by_node = {}
+                by_node = { __n = 0 }
                 cache[cur] = by_node
             end
             local out = measure_uncached(cur, c)
-            by_node[key] = out
+            if by_node[key] == nil then
+                by_node[key] = out
+                by_node.__n = (by_node.__n or 0) + 1
+            end
             return out
         end
         return measure_uncached(cur, c)
@@ -668,7 +653,7 @@ function measure.measure(node, constraint, opts)
         elseif kind == "Clip" or kind == "Transform" or kind == "Sized" then
             return passthrough_measure(measure_node, cur.box, cur.child, c)
         elseif kind == "ScrollArea" then
-            return panel_like_measure(measure_node, cur.box, cur.style, cur.child, c)
+            return scroll_area_measure(measure_node, cur.axis, cur.box, cur.style, cur.child, c)
         elseif kind == "Panel" then
             return panel_like_measure(measure_node, cur.box, cur.style, cur.child, c)
         elseif kind == "Rect" then

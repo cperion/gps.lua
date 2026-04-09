@@ -1,6 +1,17 @@
 # ui/demo
 
-Love2D showcase for the fresh UI stack.
+Love2D mock demo for the fresh UI stack.
+
+This version is a **DAW-style mock UI** with the compiler idea tucked inside the shell:
+
+- top transport / mode bar
+- left browser / project list
+- center arrangement timeline
+- bottom device chain / callback strip
+- right mixer
+- status bar and callback log
+
+The demo app/domain itself is also modeled with ASDL in `ui/demo/asdl.lua`.
 
 ## Run
 
@@ -18,14 +29,19 @@ love ui/demo
 - reducer-wired session/frame stepping via `ui.session`
 - drawing via `ui.draw`
 - Love2D backend adapter
-- runtime `Paint` refs for animated bars / scanlines
-- focus, hover, press, click, and scroll behavior
+- reducer-driven keyboard focus navigation + activation
+- a runtime-driven mock DAW dashboard with bounded structural identity
+- demo/domain state modeled with ASDL (`ui/demo/asdl.lua`)
+- the split between structural recompiles and live state tweaks
 
 ## Controls
 
-- `SPACE` — pause / resume transport
-- `TAB` — cycle scenes
-- `R` — shuffle channel states
-- `F` — trigger a flare pulse
-- mouse wheel over the event log — scroll
+- `TAB` / `SHIFT+TAB` — move keyboard focus
+- `ENTER` / `SPACE` — activate the focused item
+- `1` / `2` / `3` — switch Arrange / Routing / Machine overlays
+- `P` — play / stop transport
+- `G` — simulate a **structural edit** (rebuild / recompile)
+- `K` — simulate a **live tweak** (state mutation only)
+- `LEFT` / `RIGHT` — move selected compiler phase
+- `UP` / `DOWN` — move selected track
 - `ESC` — quit

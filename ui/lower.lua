@@ -44,6 +44,11 @@ local TextRequest = T.Lower.TextRequest
 local FOCUS_BLURRED = T.Interact.Blurred
 local FOCUS_FOCUSED = T.Interact.Focused
 
+local FOCUS_MAP = {
+    blurred = FOCUS_BLURRED,
+    focused = FOCUS_FOCUSED,
+}
+
 local UIEmpty = T.UI.Empty
 
 local BoxStyle = T.UI.BoxStyle
@@ -297,12 +302,26 @@ end)
 -- Public API
 -- ─────────────────────────────────────────────────────────────
 
+local function normalize_focus(focus)
+    if focus == nil then
+        return nil
+    end
+    if type(focus) == "string" then
+        local v = FOCUS_MAP[focus]
+        if not v then
+            error("ui.lower.request: unknown focus '" .. tostring(focus) .. "'", 2)
+        end
+        return v
+    end
+    return focus
+end
+
 function lower.request(theme, node, opts)
     opts = opts or {}
     return Request(
         theme,
         opts.focused_id or "",
-        opts.focus or FOCUS_BLURRED,
+        normalize_focus(opts.focus) or FOCUS_BLURRED,
         opts.style or DEFAULT_STYLE,
         node)
 end

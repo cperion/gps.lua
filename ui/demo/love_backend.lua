@@ -4,6 +4,11 @@
 
 local M = {}
 
+local math_floor = math.floor
+local math_max = math.max
+local math_min = math.min
+local math_ceil = math.ceil
+
 local function rgba8_to_float(rgba8, opacity)
     opacity = opacity or 1
     local a = ((rgba8 % 256) / 255) * opacity
@@ -29,6 +34,24 @@ local function line_height_ratio(font, line_height)
         return (h > 0) and (line_height.px / h) or 1
     end
     return 1
+end
+
+local function split_lines(text)
+    local out = {}
+    local start = 1
+    while true do
+        local i = text:find("\n", start, true)
+        if not i then
+            out[#out + 1] = text:sub(start)
+            break
+        end
+        out[#out + 1] = text:sub(start, i - 1)
+        start = i + 1
+    end
+    if #out == 0 then
+        out[1] = ""
+    end
+    return out
 end
 
 function M.new(opts)
@@ -102,6 +125,75 @@ function M.new(opts)
             or (style.align and style.align.kind == "TextJustify") and "justify"
             or "left")
         font:setLineHeight(old)
+    end
+
+    function self:measure_text(style, text, max_w, max_h)
+        text = text or ""
+        local font = self:get_font(style.font_id or self.current_font_id)
+        local ratio = line_height_ratio(font, style.line_height) or 1
+        local base_h = font:getHeight()
+        local line_h = base_h * ratio
+        local lines = split_lines(text)
+        local raw_w = 0
+        local min_w = 0
+        local used_w = 0
+        local wrapped_lines = 0
+
+        for i = 1, #lines do
+            local line = lines[i]
+            local line_w = font:getWidth(line)
+            if line_w > raw_w then
+                raw_w = line_w
+            end
+            if line_w > min_w then
+                min_w = line_w
+            end
+
+            if style.wrap and style.wrap.kind ~= "TextNoWrap" and max_w ~= math.huge and max_w and max_w > 0 then
+                local _, wrapped = font:getWrap(line, math_max(1, max_w))
+                local count = math_max(1, #wrapped)
+                wrapped_lines = wrapped_lines + count
+                local wrapped_w = 0
+                for j = 1, #wrapped do
+                    local ww = font:getWidth(wrapped[j])
+                    if ww > wrapped_w then
+                        wrapped_w = ww
+                    end
+                end
+                if wrapped_w > used_w then
+                    used_w = wrapped_w
+                end
+            else
+                wrapped_lines = wrapped_lines + 1
+                if line_w > used_w then
+                    used_w = line_w
+                end
+            end
+        end
+
+        if style.wrap and style.wrap.kind ~= "TextNoWrap" and max_w ~= math.huge and max_w and max_w > 0 then
+            used_w = math_min(used_w, max_w)
+        end
+
+        local line_limit = style.line_limit
+        if line_limit and line_limit.kind == "MaxLines" then
+            wrapped_lines = math_min(wrapped_lines, line_limit.count)
+        end
+
+        local used_h = wrapped_lines * line_h
+        if max_h ~= math.huge and max_h and max_h > 0 then
+            used_h = math_min(used_h, max_h)
+        end
+
+        return {
+            min_w = min_w,
+            min_h = #lines * line_h,
+            max_w = raw_w,
+            max_h = #lines * line_h,
+            used_w = used_w,
+            used_h = used_h,
+            baseline = math_floor(base_h * 0.8 + 0.5),
+        }
     end
 
     function self:push_clip(x, y, w, h)

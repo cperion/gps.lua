@@ -1,6 +1,7 @@
 -- ui/session.lua
 --
 -- Explicit UI session state, generic message handling, and reducer wiring.
+-- Includes keyboard focus traversal and focused-item activation hooks.
 --
 -- This module stays reducer-friendly:
 --   - state is plain data
@@ -27,6 +28,9 @@ local POINTER_DRAGGING = T.Interact.Dragging
 
 local FOCUS_BLURRED = T.Interact.Blurred
 local FOCUS_FOCUSED = T.Interact.Focused
+
+local AXIS_ROW_REV = T.Layout.AxisRowReverse
+local AXIS_COL_REV = T.Layout.AxisColReverse
 
 local KIND_CLICK       = T.Msg.Click
 local KIND_PRESS       = T.Msg.Press
@@ -108,7 +112,7 @@ local function normalize_kind(kind)
 end
 
 local function normalize_payload(payload)
-    if payload == nil then
+    if payload == nil or payload == PAYLOAD_NONE then
         return PAYLOAD_NONE
     end
     local tp = type(payload)
@@ -205,6 +209,26 @@ local function input_scroll(input)
            first_field(input, "scroll_y", "wheel_y")
 end
 
+local function input_focus_next(input)
+    return not not first_field(input, "focus_next", "tab_next")
+end
+
+local function input_focus_prev(input)
+    return not not first_field(input, "focus_prev", "tab_prev")
+end
+
+local function input_activate(input)
+    return not not first_field(input, "activate", "click_focused")
+end
+
+local function input_submit(input)
+    return not not first_field(input, "submit")
+end
+
+local function input_cancel(input)
+    return not not first_field(input, "cancel")
+end
+
 local Session = {}
 Session.__index = Session
 session.Session = Session
@@ -213,11 +237,16 @@ function session.new(opts)
     opts = opts or {}
     local self = setmetatable({}, Session)
     self.state = opts.state or session.state()
+    if self.state.nav == nil then
+        self.state.nav = {}
+    end
     self.backend = opts.backend
     self.measure_cache = opts.measure_cache or new_measure_cache()
     self.prune_dead_widgets = opts.prune_dead_widgets ~= false
     self._messages = {}
     self._seen_keys = {}
+    self._nav_index = {}
+    self._nav_seen = {}
     self._frame = nil
     self._input = nil
     self._env = nil
@@ -262,10 +291,134 @@ local function set_focused_emitting(self, id)
         self:emit(KIND_BLUR, prev)
     end
     self.state.focused = id
+    local nav = self.state.nav
+    if nav ~= nil then
+        nav.focused_index = (id ~= nil and id ~= "" and self._nav_index[id]) or 0
+    end
     if id ~= nil and id ~= "" then
         self:emit(KIND_FOCUS, id)
     end
     return self
+end
+
+local function clear_map(t)
+    for k in pairs(t) do
+        t[k] = nil
+    end
+end
+
+local function nav_state(self)
+    local nav = self.state.nav
+    if nav == nil then
+        nav = {}
+        self.state.nav = nav
+    end
+    local order = nav.order
+    if order == nil then
+        order = {}
+        nav.order = order
+    end
+    return nav, order
+end
+
+local function is_reverse_axis(axis)
+    return axis == AXIS_ROW_REV or axis == AXIS_COL_REV
+end
+
+local function collect_focus_ids(node, order, seen)
+    if node == nil then
+        return
+    end
+
+    local kind = node.kind
+    if kind == "Focusable" then
+        local id = node.id
+        if id ~= nil and id ~= "" and not seen[id] then
+            seen[id] = true
+            order[#order + 1] = id
+        end
+        collect_focus_ids(node.child, order, seen)
+    elseif kind == "Key" or kind == "HitBox" or kind == "Pressable"
+        or kind == "Pad" or kind == "Clip" or kind == "Transform"
+        or kind == "Sized" or kind == "ScrollArea" or kind == "Panel" then
+        collect_focus_ids(node.child, order, seen)
+    elseif kind == "Flex" then
+        local children = node.children
+        if is_reverse_axis(node.axis) then
+            for i = #children, 1, -1 do
+                collect_focus_ids(children[i].node, order, seen)
+            end
+        else
+            for i = 1, #children do
+                collect_focus_ids(children[i].node, order, seen)
+            end
+        end
+    elseif kind == "Stack" then
+        local children = node.children
+        for i = 1, #children do
+            collect_focus_ids(children[i], order, seen)
+        end
+    elseif kind == "Overlay" then
+        collect_focus_ids(node.base, order, seen)
+    end
+end
+
+local function sync_focus_nav(self, node)
+    local nav, order = nav_state(self)
+    local index = self._nav_index
+    local seen = self._nav_seen
+
+    clear_seq(order)
+    clear_map(index)
+    clear_map(seen)
+
+    if node ~= nil then
+        collect_focus_ids(node, order, seen)
+        for i = 1, #order do
+            index[order[i]] = i
+        end
+    end
+
+    nav.count = #order
+    nav.focused_index = (self.state.focused ~= nil and self.state.focused ~= "" and index[self.state.focused]) or 0
+    return nav, order, index
+end
+
+local function move_focus_from_nav(self, order, index, delta, opts)
+    local n = #order
+    if n == 0 then
+        return nil
+    end
+
+    local cur = self.state.focused
+    local cur_i = (cur ~= nil and cur ~= "" and index[cur]) or nil
+    local wrap = opts == nil or opts.wrap ~= false
+    local next_i
+
+    if cur_i == nil then
+        next_i = (delta >= 0) and 1 or n
+    else
+        next_i = cur_i + delta
+        if wrap then
+            if next_i < 1 then
+                next_i = n
+            elseif next_i > n then
+                next_i = 1
+            end
+        else
+            if next_i < 1 then
+                next_i = 1
+            elseif next_i > n then
+                next_i = n
+            end
+        end
+    end
+
+    local id = order[next_i]
+    if id ~= nil then
+        set_focused_emitting(self, id)
+    end
+    return id
 end
 
 function Session:get_state()
@@ -274,6 +427,9 @@ end
 
 function Session:set_state(state)
     self.state = state or session.state()
+    if self.state.nav == nil then
+        self.state.nav = {}
+    end
     return self
 end
 
@@ -416,6 +572,16 @@ function Session:focus_for(id)
     return session.focus_for_id(self.state, id)
 end
 
+function Session:focus_next(node, opts)
+    local _, order, index = sync_focus_nav(self, node)
+    return move_focus_from_nav(self, order, index, 1, opts)
+end
+
+function Session:focus_prev(node, opts)
+    local _, order, index = sync_focus_nav(self, node)
+    return move_focus_from_nav(self, order, index, -1, opts)
+end
+
 function Session:set_hot(id)
     self.state.hot = id
     return self
@@ -438,11 +604,19 @@ end
 
 function Session:focus(id)
     self.state.focused = id
+    local nav = self.state.nav
+    if nav ~= nil then
+        nav.focused_index = (id ~= nil and id ~= "" and self._nav_index[id]) or 0
+    end
     return self
 end
 
 function Session:blur()
     self.state.focused = nil
+    local nav = self.state.nav
+    if nav ~= nil then
+        nav.focused_index = 0
+    end
     return self
 end
 
@@ -517,11 +691,19 @@ function Session:frame(node, opts)
 
     self:begin_frame()
 
+    local _, nav_order, nav_index = sync_focus_nav(self, node)
+    if input_focus_prev(input) then
+        move_focus_from_nav(self, nav_order, nav_index, -1)
+    elseif input_focus_next(input) then
+        move_focus_from_nav(self, nav_order, nav_index, 1)
+    end
+
     local prev_hot = self.state.hot
     local hovered = prev_hot
+    local scroll_target = hovered
     local x, y = input_xy(input)
     if do_pick and x ~= nil and y ~= nil then
-        hovered = self:hit(node, {
+        local pick_opts = {
             frame = frame,
             x = x,
             y = y,
@@ -532,7 +714,9 @@ function Session:frame(node, opts)
             text_measure = opts.text_measure,
             font_height = opts.font_height,
             measure_stats = opts.measure_stats,
-        })
+        }
+        hovered = self:hit(node, pick_opts)
+        scroll_target = hit.scroll_id(node, frame, x, y, reducer_opts(self, pick_opts)) or hovered
     end
 
     if hovered ~= prev_hot then
@@ -584,9 +768,24 @@ function Session:frame(node, opts)
         end
     end
 
+    local focused = self.state.focused
+    if focused ~= nil and focused ~= "" then
+        if input_activate(input) then
+            self:emit(KIND_PRESS, focused)
+            self:emit(KIND_RELEASE, focused)
+            self:emit(KIND_CLICK, focused)
+        end
+        if input_submit(input) then
+            self:emit(KIND_SUBMIT, focused)
+        end
+        if input_cancel(input) then
+            self:emit(KIND_CANCEL, focused)
+        end
+    end
+
     local sx, sy = input_scroll(input)
-    if hovered ~= nil and ((sx ~= nil and sx ~= 0) or (sy ~= nil and sy ~= 0)) then
-        self:emit(KIND_SCROLL, hovered, { sx or 0, sy or 0 })
+    if scroll_target ~= nil and ((sx ~= nil and sx ~= 0) or (sy ~= nil and sy ~= 0)) then
+        self:emit(KIND_SCROLL, scroll_target, { sx or 0, sy or 0 })
     end
 
     if do_draw then

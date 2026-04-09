@@ -24,6 +24,7 @@
 
 local schema = require("ui.asdl")
 local measure = require("ui.measure")
+local flex = require("ui._flex")
 
 local T = schema.T
 
@@ -50,6 +51,10 @@ local AXIS_COL_REV = T.Layout.AxisColReverse
 
 local WRAP_NO = T.Layout.WrapNoWrap
 local WRAP_WRAP_REV = T.Layout.WrapWrapReverse
+
+local SCROLL_X = T.Layout.ScrollX
+local SCROLL_Y = T.Layout.ScrollY
+local SCROLL_BOTH = T.Layout.ScrollBoth
 
 local MAIN_END = T.Layout.MainEnd
 local MAIN_CENTER = T.Layout.MainCenter
@@ -226,6 +231,30 @@ end
 local function resolve_local_frame(node, outer, measure_opts)
     local m = measure.measure(node, measure.exact_constraint_from_frame(outer), measure_opts)
     return mkframe(outer.x, outer.y, m.used_w, m.used_h), m
+end
+
+local function scroll_child_constraint(node, viewport_w, viewport_h)
+    local cw = exact_or_atmost(viewport_w, false)
+    local ch = exact_or_atmost(viewport_h, false)
+    if node.axis == SCROLL_X or node.axis == SCROLL_BOTH then
+        cw = measure.UNCONSTRAINED
+    end
+    if node.axis == SCROLL_Y or node.axis == SCROLL_BOTH then
+        ch = measure.UNCONSTRAINED
+    end
+    return measure.constraint(cw, ch)
+end
+
+local function scroll_child_frame(node, frame, measure_opts)
+    local inset_h, inset_v = style_insets(node.style)
+    local viewport_w = math_max(0, frame.w - inset_h * 2)
+    local viewport_h = math_max(0, frame.h - inset_v * 2)
+    local viewport_x = frame.x + inset_h
+    local viewport_y = frame.y + inset_v
+    local m = measure.measure(node.child, scroll_child_constraint(node, viewport_w, viewport_h), measure_opts)
+    local child_w = (node.axis == SCROLL_X or node.axis == SCROLL_BOTH) and math_max(viewport_w, m.used_w) or viewport_w
+    local child_h = (node.axis == SCROLL_Y or node.axis == SCROLL_BOTH) and math_max(viewport_h, m.used_h) or viewport_h
+    return mkframe(viewport_x - node.scroll_x, viewport_y - node.scroll_y, child_w, child_h), viewport_x, viewport_y, viewport_w, viewport_h
 end
 
 local function inside(px, py, x, y, w, h)
@@ -545,341 +574,8 @@ local function draw_text_payload(text, x, y, w, h, style, active_id, ctx)
     end
 end
 
-local function flex_collect_infos(node, constraint, measure_opts)
-    local axis = node.axis
-    local avail_w = span_available(constraint.w)
-    local avail_h = span_available(constraint.h)
-    local avail_main = is_row_axis(axis) and avail_w or avail_h
-    local infos = {}
-    for i = 1, #node.children do
-        local item = node.children[i]
-        local m = measure.measure(item.node, constraint, measure_opts)
-        local ml, mr = main_margins(item.margin, axis)
-        local mt, mb = cross_margins(item.margin, axis)
-        infos[i] = {
-            item = item,
-            measure = m,
-            base = resolve_basis_value(item.basis, avail_main, main_size_of(m, axis)),
-            min_main = intrinsic_min_main(m.intrinsic, axis),
-            max_main = intrinsic_max_main(m.intrinsic, axis),
-            min_cross = intrinsic_min_cross(m.intrinsic, axis),
-            max_cross = intrinsic_max_cross(m.intrinsic, axis),
-            main_margin_start = ml,
-            main_margin_end = mr,
-            cross_margin_start = mt,
-            cross_margin_end = mb,
-        }
-    end
-    return infos, avail_main
-end
-
-local function distribute_line(infos, indices, avail_main, gap)
-    local n = #indices
-    local sizes = {}
-    local frozen = {}
-    for i = 1, n do
-        sizes[indices[i]] = infos[indices[i]].base
-    end
-    if avail_main == INF then
-        return sizes
-    end
-    while true do
-        local used = gap * math_max(0, n - 1)
-        local weight = 0
-        for i = 1, n do
-            local idx = indices[i]
-            local inf = infos[idx]
-            used = used + inf.main_margin_start + inf.main_margin_end
-            if frozen[idx] then
-                used = used + sizes[idx]
-            else
-                used = used + inf.base
-            end
-        end
-        local free = avail_main - used
-        if math_abs(free) < 1e-6 then
-            break
-        end
-        if free > 0 then
-            for i = 1, n do
-                local idx = indices[i]
-                if not frozen[idx] and infos[idx].item.grow > 0 then
-                    weight = weight + infos[idx].item.grow
-                end
-            end
-        else
-            for i = 1, n do
-                local idx = indices[i]
-                local inf = infos[idx]
-                if not frozen[idx] and inf.item.shrink > 0 then
-                    weight = weight + inf.item.shrink * inf.base
-                end
-            end
-        end
-        if weight <= 0 then
-            break
-        end
-        local clamped = false
-        for i = 1, n do
-            local idx = indices[i]
-            if not frozen[idx] then
-                local inf = infos[idx]
-                local target
-                if free > 0 then
-                    target = inf.item.grow > 0 and (inf.base + free * (inf.item.grow / weight)) or inf.base
-                else
-                    local sw = inf.item.shrink * inf.base
-                    target = sw > 0 and (inf.base + free * (sw / weight)) or inf.base
-                end
-                local cl = clamp(target, inf.min_main, inf.max_main)
-                if cl ~= target then
-                    sizes[idx] = cl
-                    frozen[idx] = true
-                    clamped = true
-                end
-            end
-        end
-        if not clamped then
-            for i = 1, n do
-                local idx = indices[i]
-                if not frozen[idx] then
-                    local inf = infos[idx]
-                    if free > 0 then
-                        sizes[idx] = inf.item.grow > 0 and (inf.base + free * (inf.item.grow / weight)) or inf.base
-                    else
-                        local sw = inf.item.shrink * inf.base
-                        sizes[idx] = sw > 0 and (inf.base + free * (sw / weight)) or inf.base
-                    end
-                end
-            end
-            break
-        end
-    end
-    for i = 1, n do
-        local idx = indices[i]
-        if not sizes[idx] then
-            sizes[idx] = infos[idx].base
-        end
-    end
-    return sizes
-end
-
-local function line_used_main(infos, indices, sizes, gap)
-    local used = gap * math_max(0, #indices - 1)
-    for i = 1, #indices do
-        local idx = indices[i]
-        used = used + sizes[idx] + infos[idx].main_margin_start + infos[idx].main_margin_end
-    end
-    return used
-end
-
 local function flex_layout_children(node, outer, measure_opts)
-    local frame = resolve_local_frame(node, outer, measure_opts)
-    local axis = node.axis
-    local rowish = is_row_axis(axis)
-    local main_size = rowish and frame.w or frame.h
-    local cross_size = rowish and frame.h or frame.w
-    local wrap = node.wrap
-    local inner_constraint = measure.available_constraint_from_frame(frame)
-    local child_infos = flex_collect_infos(node, inner_constraint, measure_opts)
-
-    if #child_infos == 0 then
-        return {}, frame
-    end
-
-    local lines = {}
-    if wrap == WRAP_NO or main_size == INF then
-        lines[1] = {}
-        for i = 1, #child_infos do
-            lines[1][i] = i
-        end
-    else
-        local cur = {}
-        local cur_used = 0
-        for i = 1, #child_infos do
-            local inf = child_infos[i]
-            local need = inf.base + inf.main_margin_start + inf.main_margin_end
-            if #cur > 0 then
-                need = need + node.gap_main
-            end
-            if #cur > 0 and cur_used + need > main_size then
-                lines[#lines + 1] = cur
-                cur = {}
-                cur_used = 0
-                need = inf.base + inf.main_margin_start + inf.main_margin_end
-            end
-            cur[#cur + 1] = i
-            cur_used = cur_used + need
-        end
-        if #cur > 0 then
-            lines[#lines + 1] = cur
-        end
-    end
-
-    local line_infos = {}
-    local natural_cross_total = 0
-
-    for li = 1, #lines do
-        local idxs = lines[li]
-        local sizes = distribute_line(child_infos, idxs, main_size, node.gap_main)
-        local used_main = line_used_main(child_infos, idxs, sizes, node.gap_main)
-        local line_cross = 0
-        local line_baseline = 0
-        local items = {}
-
-        for j = 1, #idxs do
-            local idx = idxs[j]
-            local inf = child_infos[idx]
-            local slot_main = sizes[idx]
-            local ccon = rowish
-                and measure.constraint(measure.exact(math_max(0, slot_main)), exact_or_atmost(cross_size, false))
-                or measure.constraint(exact_or_atmost(cross_size, false), measure.exact(math_max(0, slot_main)))
-            local m = measure.measure(inf.item.node, ccon, measure_opts)
-            local actual_cross = cross_size_of(m, axis)
-            local baseline = baseline_num(m.baseline)
-            if baseline and rowish then
-                line_baseline = math_max(line_baseline, baseline + inf.cross_margin_start)
-            end
-            line_cross = math_max(line_cross, actual_cross + inf.cross_margin_start + inf.cross_margin_end)
-            items[j] = {
-                idx = idx,
-                slot_main = slot_main,
-                actual_main = math_min(slot_main, main_size_of(m, axis)),
-                actual_cross = actual_cross,
-                measure = m,
-                baseline = baseline,
-            }
-        end
-
-        line_infos[li] = {
-            items = items,
-            used_main = used_main,
-            natural_cross = line_cross,
-            baseline = line_baseline,
-        }
-        natural_cross_total = natural_cross_total + line_cross
-        if li > 1 then
-            natural_cross_total = natural_cross_total + node.gap_cross
-        end
-    end
-
-    local line_cross_sizes = {}
-    local line_cross_pos = {}
-    local free_cross = (cross_size == INF) and 0 or math_max(0, cross_size - natural_cross_total)
-    local line_lead = 0
-    local line_gap_extra = 0
-
-    if #line_infos == 1 and cross_size ~= INF then
-        line_cross_sizes[1] = cross_size
-    elseif node.align_content == CONTENT_STRETCH and cross_size ~= INF and #line_infos > 0 then
-        local extra = free_cross / #line_infos
-        for li = 1, #line_infos do
-            line_cross_sizes[li] = line_infos[li].natural_cross + extra
-        end
-    else
-        for li = 1, #line_infos do
-            line_cross_sizes[li] = line_infos[li].natural_cross
-        end
-        if node.align_content == CONTENT_END then
-            line_lead = free_cross
-        elseif node.align_content == CONTENT_CENTER then
-            line_lead = free_cross / 2
-        elseif node.align_content == CONTENT_SPACE_BETWEEN then
-            line_gap_extra = (#line_infos > 1) and (free_cross / (#line_infos - 1)) or 0
-        elseif node.align_content == CONTENT_SPACE_AROUND then
-            line_gap_extra = free_cross / #line_infos
-            line_lead = line_gap_extra / 2
-        elseif node.align_content == CONTENT_SPACE_EVENLY then
-            line_gap_extra = free_cross / (#line_infos + 1)
-            line_lead = line_gap_extra
-        end
-    end
-
-    do
-        local p = line_lead
-        for li = 1, #line_infos do
-            line_cross_pos[li] = p
-            p = p + line_cross_sizes[li] + node.gap_cross + line_gap_extra
-        end
-    end
-
-    local placed = {}
-    for li = 1, #line_infos do
-        local line = line_infos[li]
-        local line_slot_cross = line_cross_sizes[li]
-        local free_main = (main_size == INF) and 0 or math_max(0, main_size - line.used_main)
-        local line_start = 0
-        local gap_extra = 0
-
-        if node.justify == MAIN_END then
-            line_start = free_main
-        elseif node.justify == MAIN_CENTER then
-            line_start = free_main / 2
-        elseif node.justify == MAIN_SPACE_BETWEEN then
-            gap_extra = (#line.items > 1) and (free_main / (#line.items - 1)) or 0
-        elseif node.justify == MAIN_SPACE_AROUND then
-            gap_extra = free_main / #line.items
-            line_start = gap_extra / 2
-        elseif node.justify == MAIN_SPACE_EVENLY then
-            gap_extra = free_main / (#line.items + 1)
-            line_start = gap_extra
-        end
-
-        local pmain = line_start
-        for j = 1, #line.items do
-            local item = line.items[j]
-            local inf = child_infos[item.idx]
-            local eff_align = inf.item.self_align
-            if eff_align == CROSS_AUTO then
-                eff_align = node.align_items
-            end
-            if (not rowish) and eff_align == CROSS_BASELINE then
-                eff_align = CROSS_START
-            end
-
-            local cross_inner = math_max(0, line_slot_cross - inf.cross_margin_start - inf.cross_margin_end)
-            local actual_cross = item.actual_cross
-            if eff_align == CROSS_STRETCH then
-                actual_cross = clamp(cross_inner, inf.min_cross, inf.max_cross)
-            else
-                actual_cross = clamp(actual_cross, inf.min_cross, inf.max_cross)
-            end
-
-            local cross_offset
-            if eff_align == CROSS_END then
-                cross_offset = line_slot_cross - inf.cross_margin_end - actual_cross
-            elseif eff_align == CROSS_CENTER then
-                cross_offset = inf.cross_margin_start + (cross_inner - actual_cross) / 2
-            elseif eff_align == CROSS_BASELINE and rowish and item.baseline then
-                cross_offset = line.baseline - item.baseline
-            else
-                cross_offset = inf.cross_margin_start
-            end
-
-            local logical_main = pmain + inf.main_margin_start
-            local logical_cross = line_cross_pos[li] + cross_offset
-
-            local x, y, w, h
-            if rowish then
-                w, h = item.actual_main, actual_cross
-                x = is_reverse_axis(axis) and (frame.x + frame.w - logical_main - w) or (frame.x + logical_main)
-                y = is_wrap_reverse(wrap) and (frame.y + frame.h - logical_cross - h) or (frame.y + logical_cross)
-            else
-                w, h = actual_cross, item.actual_main
-                x = is_wrap_reverse(wrap) and (frame.x + frame.w - logical_cross - w) or (frame.x + logical_cross)
-                y = is_reverse_axis(axis) and (frame.y + frame.h - logical_main - h) or (frame.y + logical_main)
-            end
-
-            placed[#placed + 1] = {
-                node = inf.item.node,
-                frame = mkframe(x, y, w, h),
-            }
-
-            pmain = pmain + inf.main_margin_start + item.slot_main + inf.main_margin_end + node.gap_main + gap_extra
-        end
-    end
-
-    return placed, frame
+    return flex.layout(node, outer, measure_opts, measure)
 end
 
 local draw_paint_node
@@ -1028,13 +724,9 @@ draw_ui_node = function(node, outer, active_id, ctx)
     elseif kind == "ScrollArea" then
         local frame = resolve_local_frame(node, outer, measure_opts)
         draw_box_chrome(frame, node.style, resolve_draw_id(node.id, active_id), node.id, ctx)
-        local inset_h, inset_v = style_insets(node.style)
-        local viewport_w = math_max(0, frame.w - inset_h * 2)
-        local viewport_h = math_max(0, frame.h - inset_v * 2)
-        local viewport_x = frame.x + inset_h
-        local viewport_y = frame.y + inset_v
+        local child_frame, viewport_x, viewport_y, viewport_w, viewport_h = scroll_child_frame(node, frame, measure_opts)
         push_clip(ctx, viewport_x + ctx.tx, viewport_y + ctx.ty, viewport_w, viewport_h)
-        draw_ui_node(node.child, mkframe(viewport_x - node.scroll_x, viewport_y - node.scroll_y, viewport_w, viewport_h), resolve_draw_id(node.id, active_id), ctx)
+        draw_ui_node(node.child, child_frame, resolve_draw_id(node.id, active_id), ctx)
         pop_clip(ctx)
         return
     elseif kind == "Panel" then

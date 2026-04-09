@@ -538,28 +538,28 @@ T:Define [[
 T:Define [[
     module Facts {
         Span = SpanUnconstrained
-             | SpanExact(number px) unique
-             | SpanAtMost(number px) unique
+             | SpanExact(number px)
+             | SpanAtMost(number px)
 
-        Baseline = NoBaseline | BaselinePx(number px) unique
+        Baseline = NoBaseline | BaselinePx(number px)
 
         Constraint = (Facts.Span w,
-                      Facts.Span h) unique
+                      Facts.Span h)
 
         Frame = (number x, number y,
-                 number w, number h) unique
+                 number w, number h)
 
         Intrinsic = (number min_w, number min_h,
                      number max_w, number max_h,
-                     Facts.Baseline baseline) unique
+                     Facts.Baseline baseline)
 
         Measure = (Facts.Constraint constraint,
                    Facts.Intrinsic intrinsic,
                    number used_w, number used_h,
-                   Facts.Baseline baseline) unique
+                   Facts.Baseline baseline)
 
         ScrollExtent = (number content_w, number content_h,
-                        number viewport_w, number viewport_h) unique
+                        number viewport_w, number viewport_h)
 
         Hit = Miss
             | HitId(string id)

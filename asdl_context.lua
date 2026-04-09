@@ -10,199 +10,30 @@
 --
 -- No List type. Plain Lua tables are lists.
 --   Device* devices = { osc, filter, gain }
+--
+-- Design note:
+--   Constructors are closure-only at runtime. The only codegen that remains is
+--   a fixed set of generic arity-specialized kernels generated once when this
+--   file loads. There is no per-schema or hot-path runtime codegen.
 
 local M = {}
 local Quote = require("quote")
 
-local function gen_unique_ctor(n, names, cache, nilkey)
-    -- Generate a specialized unique constructor for checked values.
-    -- Values are already normalized into v1..vn before the trie walk.
-    local q = Quote()
-    local args = {}
-    local _cache = q:val(cache, "cache")
-    local _nilkey = q:val(nilkey, "nilkey")
-    local _setmetatable = q:val(setmetatable, "setmetatable")
-    local name_refs = {}
-    for i = 1, n do
-        args[i] = "a" .. i
-        name_refs[i] = q:val(names[i], "N" .. i)
-    end
-    local arglist = table.concat(args, ", ")
+local type = type
+local error = error
+local pairs = pairs
+local ipairs = ipairs
+local select = select
+local tostring = tostring
+local rawset = rawset
+local getmetatable = getmetatable
+local setmetatable = setmetatable
+local tconcat = table.concat
+local sfmt = string.format
 
-    q("return function(self, %s)", arglist)
-    for i = 1, n do
-        q("  local k%d = a%d; if k%d == nil then k%d = %s end", i, i, i, i, _nilkey)
-    end
-
-    if n == 0 then
-        q("  local hit = %s[%s]", _cache, _nilkey)
-        q("  if hit then return hit end")
-        q("  local obj = %s({}, self)", _setmetatable)
-        q("  %s[%s] = obj; return obj", _cache, _nilkey)
-    elseif n == 1 then
-        q("  local hit = %s[k1]", _cache)
-        q("  if hit then return hit end")
-        q("  local obj = %s({[%s]=a1}, self)", _setmetatable, name_refs[1])
-        q("  %s[k1] = obj; return obj", _cache)
-    else
-        q("  local n1 = %s[k1]", _cache)
-        q("  if not n1 then n1 = {}; %s[k1] = n1 end", _cache)
-        for i = 2, n - 1 do
-            local prev = "n" .. (i - 1)
-            local cur = "n" .. i
-            q("  local %s = %s[k%d]", cur, prev, i)
-            q("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
-        end
-        local last_parent = "n" .. (n - 1)
-        q("  local hit = %s[k%d]", last_parent, n)
-        q("  if hit then return hit end")
-        local field_init = {}
-        for i = 1, n do field_init[i] = string.format("[%s]=a%d", name_refs[i], i) end
-        q("  local obj = %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
-        q("  %s[k%d] = obj; return obj", last_parent, n)
-    end
-
-    q("end")
-    local compiled = q:compile("=(asdl.ctor." .. table.concat(names, ".") .. ")")
-    return compiled
-end
-
--- Optimized: all-builtin, no nil possible (number, string, boolean)
-local function gen_unique_ctor_fast(n, names, cache)
-    -- Even faster: skip nilkey checks entirely.
-    -- Valid when all fields are non-nil builtins.
-    local q = Quote()
-    local args = {}
-    local _cache = q:val(cache, "cache")
-    local _setmetatable = q:val(setmetatable, "setmetatable")
-    local name_refs = {}
-    for i = 1, n do
-        args[i] = "a" .. i
-        name_refs[i] = q:val(names[i], "N" .. i)
-    end
-    local arglist = table.concat(args, ", ")
-
-    q("return function(self, %s)", arglist)
-
-    if n == 0 then
-        q("  local hit = %s[0]", _cache)
-        q("  if hit then return hit end")
-        q("  local obj = %s({}, self)", _setmetatable)
-        q("  %s[0] = obj; return obj", _cache)
-    else
-        for i = 1, n - 1 do
-            local prev = (i == 1) and _cache or ("n" .. (i-1))
-            local cur = "n" .. i
-            q("  local %s = %s[a%d]; if not %s then %s = {}; %s[a%d] = %s end",
-                cur, prev, i, cur, cur, prev, i, cur)
-        end
-        local last_parent = (n == 1) and _cache or ("n" .. (n-1))
-        q("  local hit = %s[a%d]; if hit then return hit end", last_parent, n)
-        local fi = {}
-        for i = 1, n do fi[i] = string.format("[%s]=a%d", name_refs[i], i) end
-        q("  local obj = %s({%s}, self)", _setmetatable, table.concat(fi, ","))
-        q("  %s[a%d] = obj; return obj", last_parent, n)
-    end
-
-    q("end")
-    local compiled = q:compile("=(asdl.ctor_fast." .. table.concat(names, ".") .. ")")
-    return compiled
-end
-
-local function gen_plain_ctor_fast(n, names)
-    local q = Quote()
-    local args = {}
-    local _setmetatable = q:val(setmetatable, "setmetatable")
-    local field_init = {}
-    local name_refs = {}
-    for i = 1, n do
-        args[i] = "a" .. i
-        name_refs[i] = q:val(names[i], "N" .. i)
-        field_init[i] = string.format("[%s]=a%d", name_refs[i], i)
-    end
-    local arglist = table.concat(args, ", ")
-
-    q("return function(self, %s)", arglist)
-    q("  return %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
-    q("end")
-    local compiled = q:compile("=(asdl.plain_fast." .. table.concat(names, ".") .. ")")
-    return compiled
-end
-
-local function gen_checked_ctor(name, names, checks, type_names, unique, cache, nilkey)
-    local n = #names
-    local q = Quote()
-    local args = {}
-    local _setmetatable = q:val(setmetatable, "setmetatable")
-    local _error = q:val(error, "error")
-    local _type = q:val(type, "type")
-    local _fmt = q:val(string.format, "fmt")
-    local _name = q:val(name, "name")
-    local _cache = cache and q:val(cache, "cache") or nil
-    local _nilkey = q:val(nilkey, "nilkey")
-    local check_refs, type_refs, name_refs = {}, {}, {}
-
-    for i = 1, n do
-        args[i] = "a" .. i
-        check_refs[i] = q:val(checks[i], "C" .. i)
-        type_refs[i] = q:val(type_names[i], "T" .. i)
-        name_refs[i] = q:val(names[i], "N" .. i)
-    end
-    local arglist = table.concat(args, ", ")
-
-    q("return function(self, %s)", arglist)
-    for i = 1, n do
-        q("  local v%d = a%d", i, i)
-        q("  local ok%d, aux%d = %s(v%d)", i, i, check_refs[i], i)
-        q("  if not ok%d then", i)
-        q("    %s(%s(\"bad arg #%d to '%%s': expected '%%s' got '%%s'%%s\", %s, %s, %s(a%d), aux%d and (\" at index \" .. aux%d) or \"\"), 2)",
-            _error, _fmt, i, _name, type_refs[i], _type, i, i, i)
-        q("  end")
-        q("  if aux%d ~= nil then v%d = aux%d end", i, i, i)
-    end
-
-    if unique then
-        if n == 0 then
-            q("  local hit = %s[%s]", _cache, _nilkey)
-            q("  if hit then return hit end")
-            q("  local obj = %s({}, self)", _setmetatable)
-            q("  %s[%s] = obj; return obj", _cache, _nilkey)
-        elseif n == 1 then
-            q("  local k1 = v1; if k1 == nil then k1 = %s end", _nilkey)
-            q("  local hit = %s[k1]", _cache)
-            q("  if hit then return hit end")
-            q("  local obj = %s({[%s]=v1}, self)", _setmetatable, name_refs[1])
-            q("  %s[k1] = obj; return obj", _cache)
-        else
-            q("  local k1 = v1; if k1 == nil then k1 = %s end", _nilkey)
-            q("  local n1 = %s[k1]", _cache)
-            q("  if not n1 then n1 = {}; %s[k1] = n1 end", _cache)
-            for i = 2, n - 1 do
-                local prev = "n" .. (i - 1)
-                local cur = "n" .. i
-                q("  local k%d = v%d; if k%d == nil then k%d = %s end", i, i, i, i, _nilkey)
-                q("  local %s = %s[k%d]", cur, prev, i)
-                q("  if not %s then %s = {}; %s[k%d] = %s end", cur, cur, prev, i, cur)
-            end
-            q("  local k%d = v%d; if k%d == nil then k%d = %s end", n, n, n, n, _nilkey)
-            local last_parent = "n" .. (n - 1)
-            q("  local hit = %s[k%d]", last_parent, n)
-            q("  if hit then return hit end")
-            local field_init = {}
-            for i = 1, n do field_init[i] = string.format("[%s]=v%d", name_refs[i], i) end
-            q("  local obj = %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
-            q("  %s[k%d] = obj; return obj", last_parent, n)
-        end
-    else
-        local field_init = {}
-        for i = 1, n do field_init[i] = string.format("[%s]=v%d", name_refs[i], i) end
-        q("  return %s({%s}, self)", _setmetatable, table.concat(field_init, ","))
-    end
-
-    q("end")
-    local compiled = q:compile("=(asdl.checked_ctor." .. name .. ")")
-    return compiled
-end
+local NIL = {}
+local LEAF = {}
+local MAX_SPECIAL_ARITY = 16
 
 -- ── Builtin type checks ─────────────────────────────────────
 
@@ -237,11 +68,296 @@ function Context:Extern(name, check_fn)
     self.checks[name] = check_fn
 end
 
+-- ── Normalization / triplet helpers ─────────────────────────
+
+local function normalize_field(fp, arg, argi, ctor_name)
+    local ok, aux = fp.normalize(arg)
+    if not ok then
+        error(sfmt(
+            "bad arg #%d to '%s': expected '%s' got '%s'%s",
+            argi, ctor_name, fp.type_name, type(arg),
+            aux and (" at index " .. aux) or ""), 2)
+    end
+    local value = (aux ~= nil) and aux or arg
+    local key = (value == nil) and NIL or value
+    return value, key
+end
+
+local function norm_fields_gen(state, i)
+    i = i + 1
+    local fp = state.fields[i]
+    if fp == nil then
+        return nil
+    end
+    local value, key = normalize_field(fp, state.args[i], i, state.name)
+    return i, fp, value, key
+end
+
+local function plain_sink(self, plan, g, p, c)
+    local obj = {}
+    while true do
+        c, fp, value = g(p, c)
+        if c == nil then
+            break
+        end
+        obj[fp.name] = value
+    end
+    return setmetatable(obj, self)
+end
+
+local function unique_sink(self, plan, g, p, c)
+    local values = {}
+    local keys = {}
+    local n = 0
+    while true do
+        c, _, value, key = g(p, c)
+        if c == nil then
+            break
+        end
+        n = n + 1
+        values[n] = value
+        keys[n] = key
+    end
+
+    local node = plan.cache
+    for i = 1, n do
+        local next = node[keys[i]]
+        if next == nil then
+            next = {}
+            node[keys[i]] = next
+        end
+        node = next
+    end
+
+    local hit = node[LEAF]
+    if hit ~= nil then
+        return hit
+    end
+
+    local obj = {}
+    local names = plan.names
+    for i = 1, n do
+        obj[names[i]] = values[i]
+    end
+    obj = setmetatable(obj, self)
+    node[LEAF] = obj
+    return obj
+end
+
+local function pack_args(n, ...)
+    local args = {}
+    for i = 1, n do
+        args[i] = select(i, ...)
+    end
+    return args
+end
+
+local function make_generic_ctor(plan)
+    local n = plan.arity
+    if plan.unique then
+        return function(self, ...)
+            local state = {
+                name = plan.name,
+                fields = plan.fields,
+                args = pack_args(n, ...),
+            }
+            return unique_sink(self, plan, norm_fields_gen, state, 0)
+        end
+    end
+    return function(self, ...)
+        local state = {
+            name = plan.name,
+            fields = plan.fields,
+            args = pack_args(n, ...),
+        }
+        return plain_sink(self, plan, norm_fields_gen, state, 0)
+    end
+end
+
+-- ── Load-time generated arity kernels ───────────────────────
+
+local function gen_plain_factory(n)
+    local q = Quote()
+    local _normalize_field = q:val(normalize_field, "normalize_field")
+    local _setmetatable = q:val(setmetatable, "setmetatable")
+    local args = {}
+    for i = 1, n do args[i] = "a" .. i end
+    local arglist = tconcat(args, ", ")
+
+    q("return function(plan)")
+    q("  local fields = plan.fields")
+    q("  local names = plan.names")
+    q("  local ctor_name = plan.name")
+    if n == 0 then
+        q("  return function(self)")
+        q("    return %s({}, self)", _setmetatable)
+        q("  end")
+    else
+        q("  return function(self, %s)", arglist)
+        for i = 1, n do
+            q("    local v%d = %s(fields[%d], a%d, %d, ctor_name)", i, _normalize_field, i, i, i)
+        end
+        q("    return %s({", _setmetatable)
+        for i = 1, n do
+            q("      [names[%d]] = v%d,", i, i)
+        end
+        q("    }, self)")
+        q("  end")
+    end
+    q("end")
+    return q:compile("=(asdl.ctor.plain." .. n .. ")")
+end
+
+local function gen_unique_factory(n)
+    local q = Quote()
+    local _normalize_field = q:val(normalize_field, "normalize_field")
+    local _setmetatable = q:val(setmetatable, "setmetatable")
+    local _LEAF = q:val(LEAF, "LEAF")
+    local args = {}
+    for i = 1, n do args[i] = "a" .. i end
+    local arglist = tconcat(args, ", ")
+
+    q("return function(plan)")
+    q("  local fields = plan.fields")
+    q("  local names = plan.names")
+    q("  local cache = plan.cache")
+    q("  local ctor_name = plan.name")
+    if n == 0 then
+        q("  return function(self)")
+        q("    local hit = cache[%s]", _LEAF)
+        q("    if hit ~= nil then return hit end")
+        q("    local obj = %s({}, self)", _setmetatable)
+        q("    cache[%s] = obj", _LEAF)
+        q("    return obj")
+        q("  end")
+    else
+        q("  return function(self, %s)", arglist)
+        for i = 1, n do
+            q("    local v%d, k%d = %s(fields[%d], a%d, %d, ctor_name)", i, i, _normalize_field, i, i, i)
+        end
+        q("    local node = cache")
+        for i = 1, n do
+            q("    local next%d = node[k%d]", i, i)
+            q("    if next%d == nil then", i)
+            q("      next%d = {}", i)
+            q("      node[k%d] = next%d", i, i)
+            q("    end")
+            q("    node = next%d", i)
+        end
+        q("    local hit = node[%s]", _LEAF)
+        q("    if hit ~= nil then return hit end")
+        q("    local obj = %s({", _setmetatable)
+        for i = 1, n do
+            q("      [names[%d]] = v%d,", i, i)
+        end
+        q("    }, self)")
+        q("    node[%s] = obj", _LEAF)
+        q("    return obj")
+        q("  end")
+    end
+    q("end")
+    return q:compile("=(asdl.ctor.unique." .. n .. ")")
+end
+
+local function build_ctor_kernels(max_arity)
+    local kernels = { plain = {}, unique = {} }
+    for n = 0, max_arity do
+        kernels.plain[n] = gen_plain_factory(n)
+        kernels.unique[n] = gen_unique_factory(n)
+    end
+    return kernels
+end
+
+local KERNELS = build_ctor_kernels(MAX_SPECIAL_ARITY)
+
 -- ── Field checking ───────────────────────────────────────────
 
-local nilkey = {}
+local function make_list_check(check, type_name, unique_parent)
+    if unique_parent then
+        local intern_trie = {}
+        local seen = setmetatable({}, { __mode = "kv" })
+        return function(vs)
+            if type(vs) ~= "table" then
+                return false
+            end
 
-local function make_check(ctx, field, unique)
+            local fast = seen[vs]
+            if fast ~= nil then
+                return true, fast
+            end
+
+            local len = #vs
+            local elems = nil
+            for i = 1, len do
+                local elem = vs[i]
+                local ok, aux = check(elem)
+                if not ok then
+                    return false, i
+                end
+                local value = (aux ~= nil) and aux or elem
+                if elems ~= nil then
+                    elems[i] = value
+                elseif value ~= elem then
+                    elems = {}
+                    for j = 1, i - 1 do elems[j] = vs[j] end
+                    elems[i] = value
+                end
+            end
+
+            local src = elems or vs
+            local node = intern_trie[len]
+            if node == nil then
+                node = {}
+                intern_trie[len] = node
+            end
+            for i = 1, len do
+                local key = src[i]
+                if key == nil then key = NIL end
+                local next = node[key]
+                if next == nil then
+                    next = {}
+                    node[key] = next
+                end
+                node = next
+            end
+
+            local existing = node[LEAF]
+            if existing == nil then
+                existing = {}
+                for i = 1, len do existing[i] = src[i] end
+                node[LEAF] = existing
+            end
+            seen[vs] = existing
+            return true, existing
+        end, type_name .. "*"
+    end
+
+    return function(vs)
+        if type(vs) ~= "table" then
+            return false
+        end
+        local len = #vs
+        local elems = nil
+        for i = 1, len do
+            local elem = vs[i]
+            local ok, aux = check(elem)
+            if not ok then
+                return false, i
+            end
+            local value = (aux ~= nil) and aux or elem
+            if elems ~= nil then
+                elems[i] = value
+            elseif value ~= elem then
+                elems = {}
+                for j = 1, i - 1 do elems[j] = vs[j] end
+                elems[i] = value
+            end
+        end
+        return true, elems
+    end, type_name .. "*"
+end
+
+local function make_check(ctx, field, unique_parent)
     local type_name = field.type
     local check = ctx.checks[type_name]
     if not check then
@@ -249,59 +365,65 @@ local function make_check(ctx, field, unique)
     end
 
     if field.list then
-        if unique then
-            -- Unique list interning: same elements → same table object.
-            -- Uses element-walk trie to find or create the canonical list.
-            -- The interned list is then used as a single key in the parent's trie.
-            local intern_trie = {}
-            local seen = setmetatable({}, { __mode = "kv" })  -- fast path: table identity
-            return function(vs)
-                if type(vs) ~= "table" then return false end
-                -- Fast: same table object seen before?
-                local hit = seen[vs]
-                if hit then return true, hit end
-                -- Slow: walk elements
-                local node = intern_trie
-                local len = #vs
-                local next = node[len]
-                if not next then next = {}; node[len] = next end
-                node = next
-                for i = 1, len do
-                    local elem = vs[i]
-                    if not check(elem) then return false, i end
-                    local key = elem
-                    if key == nil then key = nilkey end
-                    next = node[key]
-                    if not next then next = {}; node[key] = next end
-                    node = next
-                end
-                local existing = node[nilkey]
-                if not existing then
-                    local interned = {}
-                    for i = 1, len do interned[i] = vs[i] end
-                    node[nilkey] = interned
-                    existing = interned
-                end
-                seen[vs] = existing
-                return true, existing
-            end, type_name .. "*"
-        else
-            return function(vs)
-                if type(vs) ~= "table" then return false end
-                for i = 1, #vs do
-                    if not check(vs[i]) then return false, i end
-                end
-                return true
-            end, type_name .. "*"
-        end
+        return make_list_check(check, type_name, unique_parent)
     elseif field.optional then
-        return function(v) return v == nil or check(v) end, type_name .. "?"
+        return function(v)
+            if v == nil then
+                return true
+            end
+            return check(v)
+        end, type_name .. "?"
     else
         return check, type_name
     end
 end
 
 -- ── Class building ───────────────────────────────────────────
+
+local function build_ctor_plan(ctx, name, class, unique, fields)
+    for _, f in ipairs(fields) do
+        if f.namespace then
+            local fq = f.namespace .. f.type
+            if ctx.definitions[fq] then f.type = fq end
+            f.namespace = nil
+        end
+    end
+
+    local names = {}
+    local field_plans = {}
+    for i, f in ipairs(fields) do
+        local normalize, type_name = make_check(ctx, f, unique)
+        names[i] = f.name
+        field_plans[i] = {
+            name = f.name,
+            type_name = type_name,
+            normalize = normalize,
+        }
+    end
+
+    return {
+        name = name,
+        class = class,
+        arity = #fields,
+        unique = unique,
+        names = names,
+        fields = field_plans,
+        cache = unique and {} or nil,
+    }
+end
+
+local function install_ctor(mt, plan)
+    local n = plan.arity
+    if n <= MAX_SPECIAL_ARITY then
+        if plan.unique then
+            mt.__call = KERNELS.unique[n](plan)
+        else
+            mt.__call = KERNELS.plain[n](plan)
+        end
+    else
+        mt.__call = make_generic_ctor(plan)
+    end
+end
 
 local function build_class(ctx, name, unique, fields)
     local class = ctx.definitions[name]
@@ -313,105 +435,9 @@ local function build_class(ctx, name, unique, fields)
     local mt = {}
 
     if fields then
-        -- Resolve field types
-        for _, f in ipairs(fields) do
-            if f.namespace then
-                local fq = f.namespace .. f.type
-                if ctx.definitions[fq] then f.type = fq end
-                f.namespace = nil
-            end
-        end
+        local plan = build_ctor_plan(ctx, name, class, unique, fields)
+        install_ctor(mt, plan)
 
-        -- Build field names, checks, type names
-        local names, checks, type_names = {}, {}, {}
-        for i, f in ipairs(fields) do
-            names[i] = f.name
-            checks[i], type_names[i] = make_check(ctx, f, unique)
-        end
-        local n = #names
-
-        -- Detect fast-path: all fields are builtins (no list, no optional, no ASDL types)
-        local all_builtin = true
-        for i = 1, n do
-            if fields[i].list or fields[i].optional then all_builtin = false end
-            if not builtin_checks[fields[i].type] then all_builtin = false end
-        end
-
-        -- Constructor
-        if ctx.codegen_constructors then
-            if unique then
-                local cache = {}
-                if all_builtin then
-                    mt.__call = gen_unique_ctor_fast(n, names, cache)
-                else
-                    mt.__call = gen_checked_ctor(name, names, checks, type_names, true, cache, nilkey)
-                end
-            else
-                if all_builtin then
-                    mt.__call = gen_plain_ctor_fast(n, names)
-                else
-                    mt.__call = gen_checked_ctor(name, names, checks, type_names, false, false, nilkey)
-                end
-            end
-        elseif unique then
-            local cache = {}
-            if all_builtin then
-                -- Code-generated: unrolled trie, no loop, no select()
-                mt.__call = gen_unique_ctor_fast(n, names, cache)
-            else
-                function mt:__call(...)
-                    local obj = {}
-                    local node, key = cache, nilkey
-                    for i = 1, n do
-                        local v = select(i, ...)
-                        local ok, interned = checks[i](v)
-                        if not ok then
-                            error(string.format("bad arg #%d to '%s': expected '%s' got '%s'%s",
-                                i, name, type_names[i], type(v),
-                                interned and (" at index " .. interned) or ""), 2)
-                        end
-                        v = interned or v
-                        obj[names[i]] = v
-                        local next = node[key]
-                        if not next then next = {}; node[key] = next end
-                        node = next
-                        key = v
-                        if key == nil then key = nilkey end
-                    end
-                    local existing = node[key]
-                    if not existing then
-                        existing = setmetatable(obj, self)
-                        node[key] = existing
-                    end
-                    return existing
-                end
-            end
-        else
-            if all_builtin then
-                function mt:__call(...)
-                    local obj = {}
-                    for i = 1, n do obj[names[i]] = select(i, ...) end
-                    return setmetatable(obj, self)
-                end
-            else
-                function mt:__call(...)
-                    local obj = {}
-                    for i = 1, n do
-                        local v = select(i, ...)
-                        local ok, idx = checks[i](v)
-                        if not ok then
-                            error(string.format("bad arg #%d to '%s': expected '%s' got '%s'%s",
-                                i, name, type_names[i], type(v),
-                                idx and (" at index " .. idx) or ""), 2)
-                        end
-                        obj[names[i]] = v
-                    end
-                    return setmetatable(obj, self)
-                end
-            end
-        end
-
-        -- __tostring
         function class:__tostring()
             local parts = {}
             for i, f in ipairs(fields) do
@@ -420,13 +446,13 @@ local function build_class(ctx, name, unique, fields)
                     if f.list then
                         local elems = {}
                         for j = 1, #v do elems[j] = tostring(v[j]) end
-                        parts[#parts + 1] = f.name .. " = {" .. table.concat(elems, ",") .. "}"
+                        parts[#parts + 1] = f.name .. " = {" .. tconcat(elems, ",") .. "}"
                     else
                         parts[#parts + 1] = f.name .. " = " .. tostring(v)
                     end
                 end
             end
-            return name .. "(" .. table.concat(parts, ", ") .. ")"
+            return name .. "(" .. tconcat(parts, ", ") .. ")"
         end
     else
         local singleton = nil
@@ -439,24 +465,24 @@ local function build_class(ctx, name, unique, fields)
             return get_singleton(self)
         end
 
-        -- Allow the singleton value itself to be called like a constructor,
-        -- so nullary constructors can be used uniformly as `Ctor()` while
-        -- still remaining a canonical interned node when referenced directly.
         class.__call = function()
             return get_singleton(class)
         end
 
-        function class:__tostring() return name end
+        function class:__tostring()
+            return name
+        end
     end
 
-    -- Method propagation
     function mt:__newindex(k, v)
         for member in pairs(self.members) do
             rawset(member, k, v)
         end
     end
 
-    function mt:__tostring() return string.format("Class(%s)", name) end
+    function mt:__tostring()
+        return sfmt("Class(%s)", name)
+    end
 
     function class:isclassof(obj)
         return self.members[getmetatable(obj) or false] or false
@@ -469,7 +495,6 @@ end
 -- ── Define: process parsed definitions ───────────────────────
 
 function M.define(ctx, definitions)
-    -- Phase 1: declare all classes
     for _, d in ipairs(definitions) do
         ctx.definitions[d.name] = ctx.definitions[d.name] or { members = {} }
         ctx.checks[d.name] = function(v)
@@ -488,7 +513,6 @@ function M.define(ctx, definitions)
         end
     end
 
-    -- Phase 2: build classes
     for _, d in ipairs(definitions) do
         if d.type.kind == "sum" then
             local parent = build_class(ctx, d.name, false, nil)
@@ -508,13 +532,11 @@ end
 
 -- ── NewContext ────────────────────────────────────────────────
 
-function M.NewContext(opts)
-    opts = opts or {}
+function M.NewContext()
     local ctx = setmetatable({
         definitions = {},
         namespaces = {},
         checks = setmetatable({}, { __index = builtin_checks }),
-        codegen_constructors = not not opts.codegen_constructors,
     }, Context)
 
     function ctx:Define(text)

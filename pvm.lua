@@ -75,7 +75,7 @@ local function get_asdl()
 end
 
 function pvm.context()
-    local ctx = get_asdl().NewContext({ codegen_constructors = true })
+    local ctx = get_asdl().NewContext()
     local orig = ctx.Define
     function ctx:Define(text)
         orig(self, text)

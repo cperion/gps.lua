@@ -37,6 +37,7 @@ local ui = {
     measure_node = measure.measure,
     hit_node = hit.hit,
     hit_id = hit.id,
+    scroll_hit_id = hit.scroll_id,
     draw_node = draw.draw,
     record_node = draw.record,
     draw_paint = draw.paint,

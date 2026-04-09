@@ -1,341 +1,160 @@
 -- ui/demo/app.lua
+-- DAW-style mock demo for the fresh UI stack.
 --
--- Pure demo application model / theme / view builder for the fresh UI stack.
--- Love2D glue lives in `ui/demo/main.lua`; this file is intentionally plain Lua
--- so the authored UI and runtime shaping can be smoke-tested without Love.
+-- This is a mock UI, not a real DAW. The main goal is to look and feel like a
+-- modern DAW shell while still surfacing the core idea:
+--
+--   structural edits rebuild the compiled machine
+--   live control edits mutate runtime state only
 
+local pvm = require("pvm")
 local ui = require("ui.init")
+local demo_schema = require("ui.demo.asdl")
 
 local T = ui.T
+local D = demo_schema.T.Demo
 local ds = ui.ds
 local lower = ui.lower
 
-local M = { ui = ui, T = T, ds = ds, lower = lower }
+local Phase = D.Phase
+local Clip = D.Clip
+local Device = D.Device
+local Track = D.Track
+local State = D.State
+
+local M = {
+    ui = ui,
+    T = T,
+    D = D,
+    ds = ds,
+    lower = lower,
+    schema = demo_schema,
+}
 
 local math_abs = math.abs
+local math_cos = math.cos
 local math_floor = math.floor
 local math_max = math.max
 local math_min = math.min
 local math_sin = math.sin
-local math_random = math.random
+local string_format = string.format
+local string_upper = string.upper
+local table_concat = table.concat
+local type = type
 
 -- ─────────────────────────────────────────────────────────────
--- Theme constants
+-- Theme
 -- ─────────────────────────────────────────────────────────────
 
 local C = {
-    bg0 = 0x07111cff,
-    bg1 = 0x0d1726ff,
-    bg2 = 0x102033ff,
-    panel = 0x102033ee,
-    panel_hi = 0x152741ff,
-    panel_press = 0x0d1829ff,
-    panel_active = 0x132b40ff,
-    border = 0x223755ff,
-    border_hi = 0x39557dff,
-    fg = 0xe8f0ffff,
-    muted = 0x86a0c4ff,
-    dim = 0x5d7698ff,
-    accent = 0x68d5ffff,
-    accent_hi = 0x9ceaffff,
-    accent_soft = 0x163a56ff,
-    accent2 = 0xff96d8ff,
-    good = 0x79f3a6ff,
-    warn = 0xffcf7cff,
-    danger = 0xff7f9eff,
-    gold = 0xffe69aff,
-    line = 0x17324cff,
+    crust = 0x11131aff,
+    mantle = 0x171a22ff,
+    base = 0x1d222dff,
+    surface0 = 0x2a303dff,
+    surface1 = 0x394255ff,
+    overlay0 = 0x77819bff,
+    text = 0xd6dceaff,
+    subtext0 = 0xa4aec9ff,
+    blue = 0x76a9ffff,
+    green = 0x79d2a6ff,
+    red = 0xff7f8eff,
+    yellow = 0xffd36aff,
+    mauve = 0xc89dffff,
+    teal = 0x6ed9e2ff,
+    orange = 0xffaa66ff,
 }
 
-local S = {
-    bw = 1,
-    radius = 14,
-    shell_pad = 18,
-    panel_pad = 14,
-    panel_gap = 14,
-    button_pad_h = 12,
-    button_pad_v = 10,
-    chip_pad_h = 8,
-    chip_pad_v = 5,
-}
+local FONT_HEIGHTS = { [1] = 12, [2] = 14, [3] = 16, [4] = 13 }
+function M.font_sizes() return FONT_HEIGHTS end
+function M.font_height(id) return FONT_HEIGHTS[id] or 14 end
 
-local FONT_HEIGHTS = {
-    [0] = 14,
-    [1] = 14,
-    [2] = 24,
-    [3] = 46,
-    [4] = 12,
-}
-
-function M.font_height(font_id)
-    return FONT_HEIGHTS[font_id] or 14
-end
-
-function M.font_sizes()
-    return FONT_HEIGHTS
-end
-
-local FLAG_ACTIVE = ds.flag("active")
-
+local ACTIVE = ds.flag("active")
 local function flags_active(active)
-    return active and { FLAG_ACTIVE } or {}
+    return active and { ACTIVE } or {}
 end
 
-local THEME = ds.theme("aurora-control", {
+local THEME = ds.theme("daw_mock", {
     colors = {
-        { "bg0", C.bg0 },
-        { "bg1", C.bg1 },
-        { "bg2", C.bg2 },
-        { "panel", C.panel },
-        { "panel_hi", C.panel_hi },
-        { "panel_press", C.panel_press },
-        { "panel_active", C.panel_active },
-        { "border", C.border },
-        { "border_hi", C.border_hi },
-        { "fg", C.fg },
-        { "muted", C.muted },
-        { "dim", C.dim },
-        { "accent", C.accent },
-        { "accent_hi", C.accent_hi },
-        { "accent_soft", C.accent_soft },
-        { "accent2", C.accent2 },
-        { "good", C.good },
-        { "warn", C.warn },
-        { "danger", C.danger },
-        { "gold", C.gold },
-        { "line", C.line },
+        { "crust", C.crust }, { "mantle", C.mantle }, { "base", C.base },
+        { "surface0", C.surface0 }, { "surface1", C.surface1 },
+        { "overlay", C.overlay0 }, { "text", C.text }, { "subtext", C.subtext0 },
+        { "blue", C.blue }, { "green", C.green }, { "red", C.red },
+        { "yellow", C.yellow }, { "mauve", C.mauve }, { "teal", C.teal },
+        { "orange", C.orange },
     },
     spaces = {
-        { "bw", S.bw },
-        { "radius", S.radius },
-        { "shell_pad", S.shell_pad },
-        { "panel_pad", S.panel_pad },
-        { "panel_gap", S.panel_gap },
-        { "button_pad_h", S.button_pad_h },
-        { "button_pad_v", S.button_pad_v },
-        { "chip_pad_h", S.chip_pad_h },
-        { "chip_pad_v", S.chip_pad_v },
+        { "xs", 4 }, { "sm", 8 }, { "md", 12 }, { "lg", 16 }, { "bw", 1 },
     },
     fonts = {
-        { "body", 1 },
-        { "title", 2 },
-        { "hero", 3 },
-        { "mono", 4 },
+        { "ui_sm", 1 }, { "ui_md", 2 }, { "ui_lg", 3 }, { "mono", 4 },
     },
     surfaces = {
-        ds.surface("shell", {
-            ds.paint_rule(ds.paint_sel(), {
-                ds.bg(ds.ctok("bg0")),
-                ds.border_color(ds.ctok("bg0")),
-                ds.radius(ds.slit(0)),
-                ds.fg(ds.ctok("fg")),
-            }),
-        }, {
-            ds.metric_rule(ds.state_sel(), {
-                ds.pad_h(ds.stok("shell_pad")),
-                ds.pad_v(ds.stok("shell_pad")),
-                ds.border_w(ds.slit(0)),
-            }),
-        }, {
+        ds.surface("window", {
+            ds.paint_rule(ds.paint_sel(), { ds.bg(ds.ctok("crust")), ds.fg(ds.ctok("text")) }),
+        }, {}, {
             ds.text_rule(ds.state_sel(), {
-                ds.font(ds.ftok("body")),
-                ds.line_height(T.Layout.LineHeightPx(16)),
-                ds.text_align(T.Layout.TextStart),
-                ds.text_wrap(T.Layout.TextNoWrap),
-            }),
+                ds.font(ds.ftok("ui_md")),
+                ds.line_height(T.Layout.LineHeightPx(18)),
+                ds.text_wrap(T.Layout.TextWordWrap),
+            })
+        }),
+
+        ds.surface("transport", {
+            ds.paint_rule(ds.paint_sel(), { ds.bg(ds.ctok("mantle")), ds.fg(ds.ctok("text")), ds.border_color(ds.ctok("surface0")) }),
+        }, {
+            ds.metric_rule(ds.state_sel(), { ds.border_w(ds.stok("bw")), ds.pad_h(ds.stok("sm")), ds.pad_v(ds.stok("sm")) })
+        }, {
+            ds.text_rule(ds.state_sel(), { ds.font(ds.ftok("ui_md")), ds.text_wrap(T.Layout.TextNoWrap) })
         }),
 
         ds.surface("panel", {
-            ds.paint_rule(ds.paint_sel(), {
-                ds.bg(ds.ctok("panel")),
-                ds.border_color(ds.ctok("border")),
-                ds.radius(ds.stok("radius")),
-                ds.fg(ds.ctok("fg")),
-            }),
-            ds.paint_rule(ds.paint_sel({ flags = { "active" } }), {
-                ds.bg(ds.ctok("panel_active")),
-                ds.border_color(ds.ctok("accent")),
-            }),
-            ds.paint_rule(ds.paint_sel({ focus = "focused" }), {
-                ds.border_color(ds.ctok("accent2")),
-            }),
+            ds.paint_rule(ds.paint_sel(), { ds.bg(ds.ctok("mantle")), ds.fg(ds.ctok("text")), ds.border_color(ds.ctok("surface0")) }),
         }, {
-            ds.metric_rule(ds.state_sel(), {
-                ds.pad_h(ds.stok("panel_pad")),
-                ds.pad_v(ds.stok("panel_pad")),
-                ds.gap(ds.stok("panel_gap")),
-                ds.gap_cross(ds.stok("panel_gap")),
-                ds.border_w(ds.stok("bw")),
-            }),
+            ds.metric_rule(ds.state_sel(), { ds.border_w(ds.stok("bw")) })
         }, {
             ds.text_rule(ds.state_sel(), {
-                ds.font(ds.ftok("body")),
-                ds.line_height(T.Layout.LineHeightPx(16)),
-                ds.text_align(T.Layout.TextStart),
-                ds.text_wrap(T.Layout.TextNoWrap),
-            }),
-        }),
-
-        ds.surface("hero", {
-            ds.paint_rule(ds.paint_sel(), {
-                ds.bg(ds.ctok("bg1")),
-                ds.border_color(ds.ctok("accent")),
-                ds.radius(ds.stok("radius")),
-                ds.fg(ds.ctok("fg")),
-            }),
-            ds.paint_rule(ds.paint_sel({ flags = { "active" } }), {
-                ds.border_color(ds.ctok("accent2")),
-            }),
-        }, {
-            ds.metric_rule(ds.state_sel(), {
-                ds.pad_h(ds.slit(20)),
-                ds.pad_v(ds.slit(18)),
-                ds.gap(ds.slit(12)),
-                ds.gap_cross(ds.slit(12)),
-                ds.border_w(ds.stok("bw")),
-            }),
-        }, {
-            ds.text_rule(ds.state_sel(), {
-                ds.font(ds.ftok("body")),
+                ds.font(ds.ftok("ui_sm")),
                 ds.line_height(T.Layout.LineHeightPx(18)),
-                ds.text_align(T.Layout.TextStart),
-                ds.text_wrap(T.Layout.TextNoWrap),
-            }),
-        }),
-
-        ds.surface("nav", {
-            ds.paint_rule(ds.paint_sel(), {
-                ds.bg(ds.ctok("panel")),
-                ds.border_color(ds.ctok("border")),
-                ds.radius(ds.stok("radius")),
-                ds.fg(ds.ctok("muted")),
-            }),
-            ds.paint_rule(ds.paint_sel({ pointer = "hovered" }), {
-                ds.bg(ds.ctok("panel_hi")),
-                ds.border_color(ds.ctok("border_hi")),
-                ds.fg(ds.ctok("fg")),
-            }),
-            ds.paint_rule(ds.paint_sel({ pointer = "pressed" }), {
-                ds.bg(ds.ctok("accent_soft")),
-                ds.border_color(ds.ctok("accent")),
-                ds.fg(ds.ctok("fg")),
-            }),
-            ds.paint_rule(ds.paint_sel({ flags = { "active" } }), {
-                ds.bg(ds.ctok("accent_soft")),
-                ds.border_color(ds.ctok("accent")),
-                ds.fg(ds.ctok("accent_hi")),
-            }),
-            ds.paint_rule(ds.paint_sel({ focus = "focused" }), {
-                ds.border_color(ds.ctok("accent2")),
-            }),
-        }, {
-            ds.metric_rule(ds.state_sel(), {
-                ds.pad_h(ds.stok("button_pad_h")),
-                ds.pad_v(ds.stok("button_pad_v")),
-                ds.border_w(ds.stok("bw")),
-            }),
-        }, {
-            ds.text_rule(ds.state_sel(), {
-                ds.font(ds.ftok("title")),
-                ds.line_height(T.Layout.LineHeightPx(18)),
-                ds.text_align(T.Layout.TextStart),
-                ds.text_wrap(T.Layout.TextNoWrap),
-            }),
+                ds.text_wrap(T.Layout.TextWordWrap),
+            })
         }),
 
         ds.surface("button", {
-            ds.paint_rule(ds.paint_sel(), {
-                ds.bg(ds.ctok("panel")),
-                ds.border_color(ds.ctok("border")),
-                ds.radius(ds.stok("radius")),
-                ds.fg(ds.ctok("fg")),
-            }),
-            ds.paint_rule(ds.paint_sel({ pointer = "hovered" }), {
-                ds.bg(ds.ctok("panel_hi")),
-                ds.border_color(ds.ctok("border_hi")),
-            }),
-            ds.paint_rule(ds.paint_sel({ pointer = "pressed" }), {
-                ds.bg(ds.ctok("accent_soft")),
-                ds.border_color(ds.ctok("accent")),
-            }),
-            ds.paint_rule(ds.paint_sel({ flags = { "active" } }), {
-                ds.bg(ds.ctok("accent_soft")),
-                ds.border_color(ds.ctok("accent")),
-                ds.fg(ds.ctok("accent_hi")),
-            }),
-            ds.paint_rule(ds.paint_sel({ focus = "focused" }), {
-                ds.border_color(ds.ctok("accent2")),
-            }),
+            ds.paint_rule(ds.paint_sel(), { ds.bg(ds.ctok("base")), ds.fg(ds.ctok("subtext")), ds.border_color(ds.ctok("surface0")) }),
+            ds.paint_rule(ds.paint_sel({ pointer = "hovered" }), { ds.bg(ds.ctok("surface0")), ds.fg(ds.ctok("text")) }),
+            ds.paint_rule(ds.paint_sel({ flags = { "active" } }), { ds.bg(ds.ctok("surface1")), ds.fg(ds.ctok("blue")), ds.border_color(ds.ctok("blue")) }),
+            ds.paint_rule(ds.paint_sel({ focus = "focused" }), { ds.border_color(ds.ctok("mauve")) }),
         }, {
-            ds.metric_rule(ds.state_sel(), {
-                ds.pad_h(ds.stok("button_pad_h")),
-                ds.pad_v(ds.stok("button_pad_v")),
-                ds.border_w(ds.stok("bw")),
-            }),
+            ds.metric_rule(ds.state_sel(), { ds.border_w(ds.stok("bw")), ds.pad_h(ds.stok("md")), ds.pad_v(ds.stok("sm")) })
         }, {
-            ds.text_rule(ds.state_sel(), {
-                ds.font(ds.ftok("body")),
-                ds.line_height(T.Layout.LineHeightPx(16)),
-                ds.text_align(T.Layout.TextCenter),
-                ds.text_wrap(T.Layout.TextNoWrap),
-            }),
+            ds.text_rule(ds.state_sel(), { ds.font(ds.ftok("ui_sm")), ds.text_wrap(T.Layout.TextNoWrap) })
         }),
 
-        ds.surface("chip", {
-            ds.paint_rule(ds.paint_sel(), {
-                ds.bg(ds.ctok("bg2")),
-                ds.border_color(ds.ctok("border")),
-                ds.radius(ds.slit(999)),
-                ds.fg(ds.ctok("muted")),
-            }),
-            ds.paint_rule(ds.paint_sel({ flags = { "active" } }), {
-                ds.bg(ds.ctok("accent_soft")),
-                ds.border_color(ds.ctok("accent")),
-                ds.fg(ds.ctok("accent_hi")),
-            }),
+        ds.surface("browser_item", {
+            ds.paint_rule(ds.paint_sel(), { ds.bg(ds.clit(0)), ds.fg(ds.ctok("subtext")), ds.border_color(ds.clit(0)) }),
+            ds.paint_rule(ds.paint_sel({ pointer = "hovered" }), { ds.bg(ds.ctok("surface0")), ds.fg(ds.ctok("text")), ds.border_color(ds.ctok("surface0")) }),
+            ds.paint_rule(ds.paint_sel({ flags = { "active" } }), { ds.bg(ds.ctok("base")), ds.fg(ds.ctok("teal")), ds.border_color(ds.ctok("teal")) }),
+            ds.paint_rule(ds.paint_sel({ focus = "focused" }), { ds.border_color(ds.ctok("mauve")) }),
         }, {
-            ds.metric_rule(ds.state_sel(), {
-                ds.pad_h(ds.stok("chip_pad_h")),
-                ds.pad_v(ds.stok("chip_pad_v")),
-                ds.border_w(ds.stok("bw")),
-            }),
+            ds.metric_rule(ds.state_sel(), { ds.border_w(ds.stok("bw")), ds.pad_h(ds.stok("md")), ds.pad_v(ds.stok("sm")) })
         }, {
-            ds.text_rule(ds.state_sel(), {
-                ds.font(ds.ftok("mono")),
-                ds.line_height(T.Layout.LineHeightPx(12)),
-                ds.text_align(T.Layout.TextCenter),
-                ds.text_wrap(T.Layout.TextNoWrap),
-            }),
+            ds.text_rule(ds.state_sel(), { ds.font(ds.ftok("ui_sm")), ds.text_wrap(T.Layout.TextNoWrap) })
         }),
 
-        ds.surface("logline", {
-            ds.paint_rule(ds.paint_sel(), {
-                ds.bg(ds.clit(0)),
-                ds.border_color(ds.clit(0)),
-                ds.radius(ds.slit(8)),
-                ds.fg(ds.ctok("muted")),
-            }),
+        ds.surface("statusbar", {
+            ds.paint_rule(ds.paint_sel(), { ds.bg(ds.ctok("blue")), ds.fg(ds.ctok("crust")) }),
         }, {
-            ds.metric_rule(ds.state_sel(), {
-                ds.pad_h(ds.slit(8)),
-                ds.pad_v(ds.slit(6)),
-                ds.border_w(ds.slit(0)),
-            }),
+            ds.metric_rule(ds.state_sel(), { ds.pad_h(ds.stok("md")), ds.pad_v(ds.slit(2)) })
         }, {
-            ds.text_rule(ds.state_sel(), {
-                ds.font(ds.ftok("mono")),
-                ds.line_height(T.Layout.LineHeightPx(12)),
-                ds.text_align(T.Layout.TextStart),
-                ds.text_wrap(T.Layout.TextNoWrap),
-            }),
+            ds.text_rule(ds.state_sel(), { ds.font(ds.ftok("ui_sm")), ds.text_wrap(T.Layout.TextNoWrap) })
         }),
-    },
+    }
 })
 
 M.theme = THEME
 
 -- ─────────────────────────────────────────────────────────────
--- Typed shortcuts / layout helpers
+-- Typed helpers
 -- ─────────────────────────────────────────────────────────────
 
 local L = T.Layout
@@ -343,872 +162,1127 @@ local U = T.SemUI
 local P = T.Paint
 local R = T.Runtime
 
-local AXIS_ROW = L.AxisRow
-local AXIS_COL = L.AxisCol
-local WRAP_NO = L.WrapNoWrap
-local WRAP_WRAP = L.WrapWrap
-local MAIN_START = L.MainStart
-local MAIN_CENTER = L.MainCenter
-local CROSS_START = L.CrossStart
-local CROSS_CENTER = L.CrossCenter
-local CROSS_STRETCH = L.CrossStretch
-local CONTENT_START = L.ContentStart
+local FILL_BOX = L.Box(L.SizePercent(1), L.SizePercent(1), L.NoMin, L.NoMin, L.NoMax, L.NoMax)
+local AUTO_BOX = L.Box(L.SizeAuto, L.SizeAuto, L.NoMin, L.NoMin, L.NoMax, L.NoMax)
 
-local SCROLL_Y = L.ScrollY
+local function fill_w_h(h) return L.Box(L.SizePercent(1), L.SizePx(h), L.NoMin, L.NoMin, L.NoMax, L.NoMax) end
+local function box_w_fill_h(w) return L.Box(L.SizePx(w), L.SizePercent(1), L.NoMin, L.NoMin, L.NoMax, L.NoMax) end
 
-local SIZE_AUTO = L.SizeAuto
-local SIZE_CONTENT = L.SizeContent
-local NO_MIN = L.NoMin
-local NO_MAX = L.NoMax
-local BASIS_AUTO = L.BasisAuto
-local CROSS_AUTO = L.CrossAuto
-
-local USE_FONT = U.UseSurfaceFont
-local USE_LINE_HEIGHT = U.UseSurfaceLineHeight
-local USE_ALIGN = U.UseSurfaceTextAlign
-local USE_WRAP = U.UseSurfaceTextWrap
-local USE_OVERFLOW = U.UseSurfaceOverflow
-local USE_LINE_LIMIT = U.UseSurfaceLineLimit
-
-local ZERO_INSETS = L.Insets(0, 0, 0, 0)
-local FILL_BOX = L.Box(L.SizePercent(1), L.SizePercent(1), NO_MIN, NO_MIN, NO_MAX, NO_MAX)
-local AUTO_BOX = L.Box(SIZE_AUTO, SIZE_AUTO, NO_MIN, NO_MIN, NO_MAX, NO_MAX)
-local FILL_W_BOX = L.Box(L.SizePercent(1), SIZE_AUTO, NO_MIN, NO_MIN, NO_MAX, NO_MAX)
-
-local LEFT_W = 248
-local RIGHT_W = 320
-local ROOT_GAP = 18
-local HERO_H = 244
-local TRANSPORT_H = 84
-local CHANNEL_CARD_W = 472
-local CHANNEL_CARD_H = 164
-local CHANNEL_GAP = 16
-local PANEL_INSET = S.panel_pad + S.bw
-local LOG_HEADER_H = 82
-local METER_H = 34
-local METER_W = CHANNEL_CARD_W - PANEL_INSET * 2 - 4
-
-local BODY_TEXT = U.TextSpec(USE_FONT, USE_LINE_HEIGHT, USE_ALIGN, USE_WRAP, USE_OVERFLOW, USE_LINE_LIMIT)
-local LABEL_TEXT = U.TextSpec(
-    USE_FONT,
-    U.OverrideLineHeight(L.LineHeightPx(16)),
-    USE_ALIGN,
-    USE_WRAP,
-    USE_OVERFLOW,
-    USE_LINE_LIMIT)
-local CENTER_TEXT = U.TextSpec(
-    USE_FONT,
-    USE_LINE_HEIGHT,
-    U.OverrideTextAlign(L.TextCenter),
-    USE_WRAP,
-    USE_OVERFLOW,
-    USE_LINE_LIMIT)
-local MONO_TEXT = U.TextSpec(
-    U.OverrideFont(ds.ftok("mono")),
-    U.OverrideLineHeight(L.LineHeightPx(12)),
-    USE_ALIGN,
-    USE_WRAP,
-    USE_OVERFLOW,
-    USE_LINE_LIMIT)
-local HERO_TITLE_TEXT = U.TextSpec(
-    U.OverrideFont(ds.ftok("hero")),
-    U.OverrideLineHeight(L.LineHeightPx(46)),
-    USE_ALIGN,
-    USE_WRAP,
-    USE_OVERFLOW,
-    U.OverrideLineLimit(L.MaxLines(1)))
-local HERO_BODY_TEXT = U.TextSpec(
-    U.OverrideFont(ds.ftok("body")),
-    U.OverrideLineHeight(L.LineHeightPx(18)),
-    USE_ALIGN,
-    U.OverrideTextWrap(L.TextWordWrap),
-    USE_OVERFLOW,
-    U.OverrideLineLimit(L.MaxLines(3)))
-local WRAP_BODY_TEXT = U.TextSpec(
-    U.OverrideFont(ds.ftok("body")),
-    U.OverrideLineHeight(L.LineHeightPx(16)),
-    USE_ALIGN,
-    U.OverrideTextWrap(L.TextWordWrap),
-    USE_OVERFLOW,
-    U.OverrideLineLimit(L.MaxLines(4)))
-local TITLE_TEXT = U.TextSpec(
-    U.OverrideFont(ds.ftok("title")),
-    U.OverrideLineHeight(L.LineHeightPx(24)),
-    USE_ALIGN,
-    USE_WRAP,
-    USE_OVERFLOW,
-    U.OverrideLineLimit(L.MaxLines(1)))
-
-local function insets_all(px)
-    return L.Insets(px, px, px, px)
-end
-
-local function box_px(w, h)
-    return L.Box(L.SizePx(w), L.SizePx(h), NO_MIN, NO_MIN, NO_MAX, NO_MAX)
-end
-
-local function box_w(w)
-    return L.Box(L.SizePx(w), SIZE_AUTO, NO_MIN, NO_MIN, NO_MAX, NO_MAX)
-end
-
-local function box_h(h)
-    return L.Box(SIZE_AUTO, L.SizePx(h), NO_MIN, NO_MIN, NO_MAX, NO_MAX)
-end
-
-local function fill_w_h(h)
-    return L.Box(L.SizePercent(1), L.SizePx(h), NO_MIN, NO_MIN, NO_MAX, NO_MAX)
-end
-
-local function item(node, grow, shrink, basis, self_align, margin)
-    return U.FlexItem(node, grow or 0, shrink or 0, basis or BASIS_AUTO, self_align or CROSS_AUTO, margin or ZERO_INSETS)
+local function item(node, grow, shrink, basis, align)
+    return U.FlexItem(node, grow or 0, shrink or 0, basis or L.BasisAuto, align or L.CrossAuto, L.Insets(0, 0, 0, 0))
 end
 
 local function row(box, children, opts)
     opts = opts or {}
-    return U.Flex(
-        AXIS_ROW,
-        opts.wrap or WRAP_NO,
-        opts.gap_main or 0,
-        opts.gap_cross or 0,
-        opts.justify or MAIN_START,
-        opts.align_items or CROSS_START,
-        opts.align_content or CONTENT_START,
-        box,
-        children)
+    return U.Flex(L.AxisRow, opts.wrap or L.WrapNoWrap, opts.gap or 0, opts.gap_cross or 0,
+        opts.justify or L.MainStart, opts.align or L.CrossStart, opts.align_content or L.ContentStart,
+        box, children)
 end
 
 local function col(box, children, opts)
     opts = opts or {}
-    return U.Flex(
-        AXIS_COL,
-        opts.wrap or WRAP_NO,
-        opts.gap_main or 0,
-        opts.gap_cross or 0,
-        opts.justify or MAIN_START,
-        opts.align_items or CROSS_START,
-        opts.align_content or CONTENT_START,
-        box,
-        children)
+    return U.Flex(L.AxisCol, opts.wrap or L.WrapNoWrap, opts.gap or 0, opts.gap_cross or 0,
+        opts.justify or L.MainStart, opts.align or L.CrossStart, opts.align_content or L.ContentStart,
+        box, children)
 end
 
-local function center_box(box, child)
-    return col(box, {
-        item(child, 1, 1, BASIS_AUTO, CROSS_CENTER),
+local function text(box, txt)
+    local spec = U.TextSpec(U.UseSurfaceFont, U.UseSurfaceLineHeight, U.UseSurfaceTextAlign, U.UseSurfaceTextWrap, U.UseSurfaceOverflow, U.UseSurfaceLineLimit)
+    return U.Text("", box, spec, txt)
+end
+
+local function panel(surface, flags, id, scroll_y, box, child)
+    return U.Surface(surface, flags or {}, U.ScrollArea(id or "", L.ScrollY, 0, scroll_y or 0, box, child))
+end
+
+local function pressable(id, child)
+    return U.Focusable(id, U.Pressable(id, child))
+end
+
+local function scalar(v)
+    if type(v) == "string" then
+        return P.ScalarFromRef(R.NumRef(v))
+    end
+    return P.ScalarLit(v or 0)
+end
+
+local function text_value(v)
+    if type(v) == "string" then
+        return P.TextFromRef(R.TextRef(v))
+    end
+    return P.TextLit(v or "")
+end
+
+local function color_value(v)
+    if type(v) == "string" then
+        return P.ColorFromRef(R.ColorRef(v))
+    end
+    return P.ColorPackLit(ds.solid(v or 0))
+end
+
+local function paint_text_value(tag, x, y, w, h, font_id, color, align, line_height, wrap, overflow, line_limit, value)
+    return P.Text(
+        tag or "",
+        scalar(x), scalar(y), scalar(w), scalar(h),
+        font_id or 2,
+        color_value(color),
+        line_height or L.LineHeightPx(18),
+        align or L.TextStart,
+        wrap or L.TextNoWrap,
+        overflow or L.OverflowClip,
+        line_limit or L.MaxLines(1),
+        text_value(value))
+end
+
+local function paint_text_ref(tag, x, y, w, h, font_id, color, align, line_height, ref_name)
+    return paint_text_value(tag, x, y, w, h, font_id, color, align, line_height, L.TextNoWrap, L.OverflowClip, L.MaxLines(1), ref_name)
+end
+
+local function paint_text_multiline_ref(tag, x, y, w, h, font_id, color, align, line_height, ref_name)
+    return paint_text_value(tag, x, y, w, h, font_id, color, align, line_height, L.TextWordWrap, L.OverflowClip, L.UnlimitedLines, ref_name)
+end
+
+local function paint_fill(tag, x, y, w, h, color)
+    return P.FillRect(tag or "", scalar(x), scalar(y), scalar(w), scalar(h), color_value(color))
+end
+
+local function paint_stroke(tag, x, y, w, h, thickness, color)
+    return P.StrokeRect(tag or "", scalar(x), scalar(y), scalar(w), scalar(h), scalar(thickness or 1), color_value(color))
+end
+
+local function paint_line(tag, x1, y1, x2, y2, thickness, color)
+    return P.Line(tag or "", scalar(x1), scalar(y1), scalar(x2), scalar(y2), scalar(thickness or 1), color_value(color))
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- Mock domain
+-- ─────────────────────────────────────────────────────────────
+
+local PHASES = {
+    Phase("spec", "DawProjectSpec", "parse", "XML / interchange", "faithful representation of the exchange format"),
+    Phase("normalized", "DawProjectNormalized", "normalize", "scope / defaults / ambiguity", "consume inherited ambiguity and close open cases"),
+    Phase("source", "DawSource", "lower", "interchange grammar", "canonical authored DAW language"),
+    Phase("bound", "DawBound", "bind", "refs to tracks / assets / params", "all references become validated targets"),
+    Phase("graph", "DawGraph", "lower_graph", "containment / routing / sends", "explicit processing graph and use-sites"),
+    Phase("classified", "DawClassified", "classify", "generic graph nodes", "execution domain, rate, processor family"),
+    Phase("schedule", "DawSchedule", "schedule", "unordered classified graph", "topological jobs, spans, slices, state slots"),
+    Phase("machine", "DawMachine.Audio", "define_machine", "scheduled plan", "canonical gen / param / state audio machine"),
+    Phase("proto", "DawProtoTerra.Audio", "realize", "machine meaning", "Terra-native realization and installed callback"),
+}
+
+local TRACKS = {
+    Track("trk:drums", "Drum Bus", "group", "Master", {
+        Device("dev:drums:1", "Transient", "AudioFX", true),
+        Device("dev:drums:2", "Bus Comp", "AudioFX", true),
+        Device("dev:drums:3", "Limiter", "AudioFX", true),
     }, {
-        justify = MAIN_CENTER,
-        align_items = CROSS_CENTER,
-        align_content = CONTENT_START,
-    })
-end
-
-local function text(tag, box, spec, value)
-    return U.Text(tag or "", box or AUTO_BOX, spec or BODY_TEXT, value or "")
-end
-
-local function panel(surface_name, flags, id, scroll_y, box, child)
-    return U.Surface(surface_name, flags or {}, U.ScrollArea(id or "", SCROLL_Y, 0, scroll_y or 0, box, child))
-end
-
-local function button(surface_name, id, label, box, active)
-    return U.Focusable(id,
-        U.Pressable(id,
-            panel(surface_name or "button", flags_active(active), "", 0, box,
-                center_box(FILL_BOX, text(id .. ":label", AUTO_BOX, CENTER_TEXT, label)))))
-end
-
-local function chip(label, active)
-    return panel("chip", flags_active(active), "", 0, box_px(74, 26), center_box(FILL_BOX, text("", AUTO_BOX, CENTER_TEXT, label)))
-end
-
-local function ref_num(name)
-    return P.ScalarFromRef(R.NumRef(name))
-end
-
-local function scalar(n)
-    return P.ScalarLit(n)
-end
-
-local function color_pack(rgba8)
-    return P.ColorPackLit(ds.solid(rgba8))
-end
-
-local function text_ref(name)
-    return P.TextFromRef(R.TextRef(name))
-end
-
-local function dynamic_text_box(ref_name, w, h, font_id, line_height, align, rgba8)
-    return U.CustomPaint(
-        ref_name,
-        box_px(w, h),
-        P.Text(
-            "",
-            scalar(0),
-            scalar(0),
-            scalar(w),
-            scalar(h),
-            font_id,
-            color_pack(rgba8),
-            line_height,
-            align,
-            L.TextNoWrap,
-            L.OverflowVisible,
-            L.MaxLines(1),
-            text_ref(ref_name)))
-end
-
-local HERO_BARS = 28
-local hero_paint_cache = {}
-local meter_paint_cache = {}
-local backdrop_paint_cache = {}
-
-local function hero_paint()
-    local hit = hero_paint_cache[1]
-    if hit then
-        return hit
-    end
-
-    local children = {}
-    for i = 0, 3 do
-        children[#children + 1] = P.Line(
-            "",
-            scalar(0),
-            ref_num("hero:grid:y:" .. i),
-            ref_num("hero:w"),
-            ref_num("hero:grid:y:" .. i),
-            scalar(1),
-            color_pack(C.line))
-    end
-
-    for i = 1, HERO_BARS do
-        local color = (i % 5 == 0) and C.accent2 or ((i % 3 == 0) and C.good or C.accent)
-        children[#children + 1] = P.FillRect(
-            "",
-            ref_num("hero:bar:" .. i .. ":x"),
-            ref_num("hero:bar:" .. i .. ":y"),
-            ref_num("hero:bar:" .. i .. ":w"),
-            ref_num("hero:bar:" .. i .. ":h"),
-            color_pack(color))
-    end
-
-    children[#children + 1] = P.FillRect("", scalar(0), ref_num("hero:scan:y"), ref_num("hero:w"), scalar(2), color_pack(C.accent_hi))
-    children[#children + 1] = P.StrokeRect("", scalar(0), scalar(0), ref_num("hero:w"), ref_num("hero:h"), scalar(1), color_pack(C.border_hi))
-
-    hit = P.Group(children)
-    hero_paint_cache[1] = hit
-    return hit
-end
-
-local function meter_paint(prefix, fill_rgba8)
-    local key = prefix .. ":" .. fill_rgba8
-    local hit = meter_paint_cache[key]
-    if hit then
-        return hit
-    end
-
-    hit = P.Group({
-        P.FillRect("", scalar(0), scalar(0), ref_num(prefix .. ":w"), ref_num(prefix .. ":h"), color_pack(C.bg2)),
-        P.FillRect("", scalar(0), scalar(0), ref_num(prefix .. ":meter:w"), ref_num(prefix .. ":h"), color_pack(fill_rgba8)),
-        P.FillRect("", ref_num(prefix .. ":peak:x"), scalar(0), scalar(3), ref_num(prefix .. ":h"), color_pack(C.gold)),
-        P.StrokeRect("", scalar(0), scalar(0), ref_num(prefix .. ":w"), ref_num(prefix .. ":h"), scalar(1), color_pack(C.border_hi)),
-    })
-    meter_paint_cache[key] = hit
-    return hit
-end
-
-local function backdrop_paint()
-    local hit = backdrop_paint_cache[1]
-    if hit then
-        return hit
-    end
-
-    local children = {
-        P.FillRect("", scalar(0), scalar(0), ref_num("bg:w"), ref_num("bg:h"), color_pack(C.bg0)),
-    }
-
-    for i = 0, 10 do
-        children[#children + 1] = P.Line("", scalar(0), ref_num("bg:grid:y:" .. i), ref_num("bg:w"), ref_num("bg:grid:y:" .. i), scalar(1), color_pack(C.line))
-    end
-    for i = 0, 8 do
-        children[#children + 1] = P.Line("", ref_num("bg:grid:x:" .. i), scalar(0), ref_num("bg:grid:x:" .. i), ref_num("bg:h"), scalar(1), color_pack(C.line))
-    end
-    children[#children + 1] = P.FillRect("", scalar(0), ref_num("bg:scan:y"), ref_num("bg:w"), scalar(2), color_pack(C.accent_soft))
-
-    hit = P.Group(children)
-    backdrop_paint_cache[1] = hit
-    return hit
-end
-
--- ─────────────────────────────────────────────────────────────
--- Demo state
--- ─────────────────────────────────────────────────────────────
-
-local SCENES = {
-    { name = "NEBULA", subtitle = "Reactive cloud routing over the Helios lattice.", eyebrow = "SCENE // 01" },
-    { name = "ORBIT", subtitle = "Pinned signal arcs with staged gravity compensation.", eyebrow = "SCENE // 02" },
-    { name = "CASCADE", subtitle = "Crossfade spill woven through the auxiliary bus garden.", eyebrow = "SCENE // 03" },
-    { name = "MIRAGE", subtitle = "Specular shimmer mode for harmonic drift visualization.", eyebrow = "SCENE // 04" },
+        Clip("clip:drums:1", "Verse", 0.0, 2.0, 1, C.blue, false),
+        Clip("clip:drums:2", "Break", 2.0, 1.5, 1, C.teal, false),
+        Clip("clip:drums:3", "Drop", 4.0, 3.5, 1, C.green, false),
+    }),
+    Track("trk:bass", "Bass Synth", "instrument", "Drum Bus", {
+        Device("dev:bass:1", "Chord FX", "NoteFX", true),
+        Device("dev:bass:2", "Juno Voice", "Instrument", true),
+        Device("dev:bass:3", "Saturator", "AudioFX", true),
+    }, {
+        Clip("clip:bass:1", "Verse Riff", 0.0, 3.0, 1, C.mauve, false),
+        Clip("clip:bass:2", "Drop Pulse", 3.5, 4.0, 1, C.orange, false),
+    }),
+    Track("trk:vocal", "Vox Chops", "audio", "Master", {
+        Device("dev:vocal:1", "Warp Map", "AudioClip", true),
+        Device("dev:vocal:2", "Granulator", "AudioFX", true),
+        Device("dev:vocal:3", "Echo", "AudioFX", true),
+    }, {
+        Clip("clip:vocal:1", "Hook A", 0.5, 1.25, 1, C.red, true),
+        Clip("clip:vocal:2", "Hook B", 2.5, 1.25, 1, C.yellow, true),
+        Clip("clip:vocal:3", "Lift", 5.5, 1.5, 1, C.red, true),
+    }),
+    Track("trk:return", "Cloud Return", "return", "Master", {
+        Device("dev:return:1", "Diffusion", "AudioFX", true),
+        Device("dev:return:2", "Meter", "Analyzer", true),
+    }, {}),
 }
 
-local CHANNEL_NAMES = {
-    "AURORA BUS",
-    "GLASS DRONE",
-    "ION PULSE",
-    "LATTICE FM",
-    "PHASE RAIN",
-    "NOCTILUX",
+local INITIAL_LOGS = {
+    "installed callback from DawProtoTerra.Audio",
+    "structural identity rides on ASDL unique nodes",
+    "realization identity rides on terralib.memoize shapes",
+    "turning a knob writes state.live_params only",
+    "rerouting or changing clips rebuilds the machine",
 }
 
-local function touch_structure(state)
-    state.rev = (state.rev or 0) + 1
+local ROUTES = { "Master", "Drum Bus", "Parallel", "Cloud Return" }
+
+-- ─────────────────────────────────────────────────────────────
+-- Layout constants
+-- ─────────────────────────────────────────────────────────────
+
+local TOPBAR_H = 54
+local STATUS_H = 24
+local BROWSER_W = 228
+local MIXER_W = 268
+local DEVICE_H = 214
+local HEADER_H = 24
+local BROWSER_TRACK_ROW_H = 56
+local TRACK_ROW_H = 72
+local RULER_H = 22
+local TIMELINE_BEATS = 8
+local CLIP_CAP = 16
+local DEVICE_CAP = 6
+local LOG_ROWS = 4
+local MIXER_ROWS = 4
+local PHASE_SHORT = {
+    spec = "spec",
+    normalized = "normalize",
+    source = "source",
+    bound = "bind",
+    graph = "graph",
+    classified = "classify",
+    schedule = "schedule",
+    machine = "machine",
+    proto = "realize",
+}
+
+-- ─────────────────────────────────────────────────────────────
+-- Utility
+-- ─────────────────────────────────────────────────────────────
+
+local function clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
 end
 
-local function append_log(state, text_value)
-    local stamp = string.format("%06.2f", state.time)
-    table.insert(state.log, 1, stamp .. "  " .. text_value)
-    while #state.log > 160 do
-        state.log[#state.log] = nil
-    end
-    touch_structure(state)
-end
-
-local function make_channels()
+local function copy_seq(seq)
     local out = {}
-    for i = 1, #CHANNEL_NAMES do
-        out[i] = {
-            id = i,
-            name = CHANNEL_NAMES[i],
-            mute = false,
-            solo = (i == 2),
-            arm = (i == 4),
-            level = 0.2 + i * 0.05,
-            peak = 0.7,
-            gain = -6 + i * 1.5,
-        }
+    for i = 1, #seq do
+        out[i] = seq[i]
     end
     return out
 end
 
-function M.new_state()
-    local state = {
-        rev = 1,
-        time = 0,
-        playing = true,
-        scene = 1,
-        selected_channel = 2,
-        master = 0.78,
-        drift = 0.34,
-        latency = 12.8,
-        cpu = 18.0,
-        burst = 0,
-        log_scroll = 0,
-        log = {
-            "boot sequence complete",
-            "render graph fused with cached lower boundary",
-            "pointer packs pre-resolved for active scene",
-            "scope braid synced to aurora bus",
-            "love backend warmed and tracing cleanly",
-        },
-        channels = make_channels(),
+local function touch(state)
+    return pvm.with(state, { rev = state.rev + 1 })
+end
+
+local function append_log(state, message)
+    local logs = copy_seq(state.logs)
+    logs[#logs + 1] = message
+    while #logs > 24 do
+        table.remove(logs, 1)
+    end
+    return pvm.with(state, { logs = logs })
+end
+
+local function replace_number_at(seq, index, value)
+    local out = copy_seq(seq)
+    out[index] = value
+    return out
+end
+
+local function replace_track_at(state, index, track)
+    local tracks = copy_seq(state.tracks)
+    tracks[index] = track
+    return pvm.with(state, { tracks = tracks })
+end
+
+local function selected_phase(state)
+    return state.phases[state.selected_phase]
+end
+
+local function selected_track(state)
+    return state.tracks[state.selected_track]
+end
+
+local function next_route(route)
+    for i = 1, #ROUTES do
+        if ROUTES[i] == route then
+            return ROUTES[(i % #ROUTES) + 1]
+        end
+    end
+    return ROUTES[1]
+end
+
+local function rotate_devices(devices)
+    local out = copy_seq(devices)
+    if #out > 1 then
+        local first = out[1]
+        for i = 1, #out - 1 do
+            out[i] = out[i + 1]
+        end
+        out[#out] = first
+    end
+    return out
+end
+
+local function fmt_percent(n)
+    return string_format("%d%%", math_floor((n or 0) * 100 + 0.5))
+end
+
+local function fmt_db(v)
+    return string_format("%.1f dB", v or 0)
+end
+
+local function fmt_pan(v)
+    v = v or 0
+    if math_abs(v) < 0.05 then
+        return "C"
+    elseif v < 0 then
+        return string_format("L %.2f", math_abs(v))
+    end
+    return string_format("R %.2f", v)
+end
+
+local function meter_level(state, i)
+    local gain = state.gains_db[i] or 0
+    local base = state.playing and (0.33 + 0.22 * (0.5 + 0.5 * math_sin(state.time * 2.1 + i * 0.7))) or 0.06
+    local shape = 0.16 * (0.5 + 0.5 * math_cos(state.time * 5.2 + i))
+    return clamp(base + shape + ((gain + 12) / 24) * 0.22, 0.03, 1.0)
+end
+
+local function track_color(i)
+    if i == 1 then return C.blue end
+    if i == 2 then return C.green end
+    if i == 3 then return C.red end
+    return C.teal
+end
+
+local function device_color(family)
+    if family == "Instrument" then return C.green end
+    if family == "NoteFX" then return C.teal end
+    if family == "Analyzer" then return C.yellow end
+    if family == "AudioClip" then return C.red end
+    return C.blue
+end
+
+local function track_icon(role)
+    if role == "group" then return "▣" end
+    if role == "instrument" then return "◉" end
+    if role == "audio" then return "◍" end
+    return "↺"
+end
+
+local function mixer_label(track)
+    if track.role == "group" then return "DRUM" end
+    if track.role == "instrument" then return "BASS" end
+    if track.role == "audio" then return "VOX" end
+    if track.role == "return" then return "RVRB" end
+    return string_upper((track.name or "TRK"):sub(1, 5))
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- Paint graphs
+-- ─────────────────────────────────────────────────────────────
+
+local function arrangement_paint()
+    local kids = {}
+    local lh = L.LineHeightPx(16)
+    local small_lh = L.LineHeightPx(14)
+
+    kids[#kids + 1] = paint_fill("", 0, 0, "arr:w", "arr:h", C.base)
+    kids[#kids + 1] = paint_stroke("", 0, 0, "arr:w", "arr:h", 1, C.surface1)
+    kids[#kids + 1] = paint_text_ref("", 12, 6, 220, 18, 2, C.subtext0, L.TextStart, lh, "arr:title")
+    kids[#kids + 1] = paint_text_ref("", "arr:w_note_x", 6, "arr:note_w", 18, 1, C.overlay0, L.TextEnd, small_lh, "arr:note")
+
+    kids[#kids + 1] = paint_fill("", 0, "arr:body_y", "arr:header_w", "arr:body_h", C.mantle)
+    kids[#kids + 1] = paint_fill("", "arr:header_w", "arr:body_y", "arr:timeline_w", "arr:body_h", C.base)
+    kids[#kids + 1] = paint_line("", 0, "arr:ruler_y2", "arr:w", "arr:ruler_y2", 1, C.surface1)
+    kids[#kids + 1] = paint_line("", "arr:header_w", "arr:body_y", "arr:header_w", "arr:h", 1, C.surface1)
+
+    for beat = 0, TIMELINE_BEATS do
+        local base = "arr:beat:" .. beat
+        kids[#kids + 1] = paint_line("", base .. ":x", "arr:body_y", base .. ":x", "arr:h", 1, base .. ":color")
+        if beat < TIMELINE_BEATS then
+            kids[#kids + 1] = paint_text_ref("", base .. ":x_label", 30, 40, 14, 1, C.overlay0, L.TextStart, small_lh, base .. ":text")
+        end
+    end
+
+    for i = 1, #TRACKS do
+        local base = "arr:track:" .. i
+        kids[#kids + 1] = paint_fill("", 0, base .. ":y", "arr:w", base .. ":h", base .. ":bg")
+        kids[#kids + 1] = paint_line("", 0, base .. ":y2", "arr:w", base .. ":y2", 1, C.surface0)
+        kids[#kids + 1] = paint_text_ref("", 14, base .. ":title_y", 132, 16, 2, base .. ":title_color", L.TextStart, lh, base .. ":name")
+        kids[#kids + 1] = paint_text_ref("", 14, base .. ":meta_y", 156, 14, 1, C.overlay0, L.TextStart, small_lh, base .. ":meta")
+        kids[#kids + 1] = paint_text_ref("", 110, base .. ":meta_y", 60, 14, 1, base .. ":route_color", L.TextEnd, small_lh, base .. ":route")
+    end
+
+    kids[#kids + 1] = paint_line("", "arr:playhead_x", "arr:body_y", "arr:playhead_x", "arr:h", 2, C.yellow)
+
+    for i = 1, CLIP_CAP do
+        local base = "arr:clip:" .. i
+        kids[#kids + 1] = paint_fill("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", base .. ":fill")
+        kids[#kids + 1] = paint_stroke("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", 1, base .. ":stroke")
+        kids[#kids + 1] = paint_text_ref("", base .. ":tx", base .. ":ty", base .. ":tw", 14, 1, C.crust, L.TextStart, small_lh, base .. ":text")
+    end
+
+    for i = 1, #TRACKS do
+        local base = "arr:routebox:" .. i
+        kids[#kids + 1] = paint_fill("", base .. ":x1", base .. ":y", base .. ":w", base .. ":h", base .. ":fill1")
+        kids[#kids + 1] = paint_stroke("", base .. ":x1", base .. ":y", base .. ":w", base .. ":h", 1, base .. ":stroke1")
+        kids[#kids + 1] = paint_text_ref("", base .. ":x1t", base .. ":yt", base .. ":tw", 14, 1, C.crust, L.TextStart, small_lh, base .. ":text1")
+        kids[#kids + 1] = paint_fill("", base .. ":x2", base .. ":y", base .. ":w", base .. ":h", base .. ":fill2")
+        kids[#kids + 1] = paint_stroke("", base .. ":x2", base .. ":y", base .. ":w", base .. ":h", 1, base .. ":stroke2")
+        kids[#kids + 1] = paint_text_ref("", base .. ":x2t", base .. ":yt", base .. ":tw", 14, 1, C.crust, L.TextStart, small_lh, base .. ":text2")
+        kids[#kids + 1] = paint_line("", base .. ":lx1", base .. ":ly", base .. ":lx2", base .. ":ly", 2, base .. ":line")
+    end
+
+    for i = 1, #TRACKS do
+        for j = 1, 3 do
+            local base = "arr:machine:" .. i .. ":" .. j
+            kids[#kids + 1] = paint_fill("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", base .. ":fill")
+            kids[#kids + 1] = paint_stroke("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", 1, base .. ":stroke")
+            kids[#kids + 1] = paint_text_ref("", base .. ":tx", base .. ":ty", base .. ":tw", 14, 1, C.crust, L.TextStart, small_lh, base .. ":text")
+        end
+    end
+
+    for i = 1, 5 do
+        local base = "arr:auto:" .. i
+        kids[#kids + 1] = paint_line("", base .. ":x1", base .. ":y1", base .. ":x2", base .. ":y2", 2, base .. ":color")
+    end
+
+    return P.ClipRegion(scalar(0), scalar(0), scalar("arr:w"), scalar("arr:h"), P.Group(kids))
+end
+
+local function devices_paint()
+    local kids = {}
+    local lh = L.LineHeightPx(16)
+    local small_lh = L.LineHeightPx(14)
+
+    kids[#kids + 1] = paint_fill("", 0, 0, "dev:w", "dev:h", C.base)
+    kids[#kids + 1] = paint_stroke("", 0, 0, "dev:w", "dev:h", 1, C.surface1)
+    kids[#kids + 1] = paint_text_ref("", 12, 8, 280, 18, 2, C.subtext0, L.TextStart, lh, "dev:title")
+    kids[#kids + 1] = paint_text_ref("", "dev:w_note_x", 8, "dev:note_w", 18, 1, C.overlay0, L.TextEnd, small_lh, "dev:note")
+
+    for i = 1, DEVICE_CAP do
+        local base = "dev:slot:" .. i
+        kids[#kids + 1] = paint_fill("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", base .. ":fill")
+        kids[#kids + 1] = paint_stroke("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", 1, base .. ":stroke")
+        kids[#kids + 1] = paint_text_ref("", base .. ":tx", base .. ":ty", base .. ":tw", 16, 1, base .. ":title_color", L.TextStart, lh, base .. ":name")
+        kids[#kids + 1] = paint_text_ref("", base .. ":tx", base .. ":ty2", base .. ":tw", 14, 1, C.overlay0, L.TextStart, small_lh, base .. ":family")
+        for k = 1, 3 do
+            local knob = base .. ":bar:" .. k
+            kids[#kids + 1] = paint_stroke("", knob .. ":x", knob .. ":y_box", 14, "dev:bar_box_h", 1, C.surface1)
+            kids[#kids + 1] = paint_fill("", knob .. ":x", knob .. ":y_fill", 14, knob .. ":h", knob .. ":color")
+        end
+    end
+
+    kids[#kids + 1] = paint_fill("", "dev:info_x", 34, "dev:info_w", 72, C.mantle)
+    kids[#kids + 1] = paint_stroke("", "dev:info_x", 34, "dev:info_w", 72, 1, C.surface1)
+    kids[#kids + 1] = paint_text_ref("", "dev:info_tx", 42, "dev:info_tw", 16, 1, C.text, L.TextStart, small_lh, "dev:phase")
+    kids[#kids + 1] = paint_text_ref("", "dev:info_tx", 60, "dev:info_tw", 16, 1, C.subtext0, L.TextStart, small_lh, "dev:compile")
+    kids[#kids + 1] = paint_text_ref("", "dev:info_tx", 78, "dev:info_tw", 16, 1, C.subtext0, L.TextStart, small_lh, "dev:split")
+    kids[#kids + 1] = paint_stroke("", "dev:sem_x", 100, "dev:bar_w", 8, 1, C.surface1)
+    kids[#kids + 1] = paint_fill("", "dev:sem_x", 100, "dev:sem_w", 8, C.blue)
+    kids[#kids + 1] = paint_stroke("", "dev:sem_x", 122, "dev:bar_w", 8, 1, C.surface1)
+    kids[#kids + 1] = paint_fill("", "dev:sem_x", 122, "dev:terra_w", 8, C.green)
+    kids[#kids + 1] = paint_text_ref("", "dev:sem_x", 132, "dev:info_tw", 14, 1, C.overlay0, L.TextStart, small_lh, "dev:reuse")
+
+    for i = 1, LOG_ROWS do
+        local base = "dev:log:" .. i
+        kids[#kids + 1] = paint_fill("", 0, base .. ":y", "dev:w", 18, base .. ":bg")
+        kids[#kids + 1] = paint_text_ref("", 10, base .. ":y", "dev:log_w", 16, 4, base .. ":fg", L.TextStart, small_lh, base .. ":text")
+    end
+
+    return P.ClipRegion(scalar(0), scalar(0), scalar("dev:w"), scalar("dev:h"), P.Group(kids))
+end
+
+local function mixer_paint()
+    local kids = {}
+    local lh = L.LineHeightPx(16)
+    local small_lh = L.LineHeightPx(14)
+
+    kids[#kids + 1] = paint_fill("", 0, 0, "mix:w", "mix:h", C.base)
+    kids[#kids + 1] = paint_stroke("", 0, 0, "mix:w", "mix:h", 1, C.surface1)
+
+    for i = 1, MIXER_ROWS do
+        local base = "mix:strip:" .. i
+        kids[#kids + 1] = paint_fill("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", base .. ":fill")
+        kids[#kids + 1] = paint_stroke("", base .. ":x", base .. ":y", base .. ":w", base .. ":h", 1, base .. ":stroke")
+        kids[#kids + 1] = paint_text_ref("", base .. ":tx", base .. ":ty", base .. ":tw", 16, 1, base .. ":name_color", L.TextCenter, small_lh, base .. ":name")
+        kids[#kids + 1] = paint_stroke("", base .. ":meter_x", base .. ":meter_y", 12, "mix:meter_box_h", 1, C.surface1)
+        kids[#kids + 1] = paint_fill("", base .. ":meter_x", base .. ":meter_fill_y", 12, base .. ":meter_h", base .. ":meter_color")
+        kids[#kids + 1] = paint_stroke("", base .. ":fader_x", base .. ":fader_y", 14, "mix:fader_box_h", 1, C.surface1)
+        kids[#kids + 1] = paint_fill("", base .. ":fader_x", base .. ":handle_y", 14, 10, C.text)
+        kids[#kids + 1] = paint_text_ref("", base .. ":tx", base .. ":gain_y", base .. ":tw", 16, 1, C.subtext0, L.TextCenter, small_lh, base .. ":gain")
+        kids[#kids + 1] = paint_text_ref("", base .. ":tx", base .. ":pan_y", base .. ":tw", 16, 1, C.overlay0, L.TextCenter, small_lh, base .. ":pan")
+    end
+
+    return P.ClipRegion(scalar(0), scalar(0), scalar("mix:w"), scalar("mix:h"), P.Group(kids))
+end
+
+local function status_paint()
+    local lh = L.LineHeightPx(14)
+    return P.Group({
+        paint_text_ref("", 0, 0, "status:left_w", "status:h", 1, C.crust, L.TextStart, lh, "status:left"),
+        paint_text_ref("", "status:right_x", 0, "status:right_w", "status:h", 1, C.crust, L.TextEnd, lh, "status:right"),
+    })
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- Structural UI
+-- ─────────────────────────────────────────────────────────────
+
+local function transport_button(id, label, active)
+    return item(pressable(id, panel("button", flags_active(active), "", 0, AUTO_BOX, text(AUTO_BOX, label))), 0, 0)
+end
+
+local function transport_bar(state)
+    local phase = selected_phase(state)
+    return panel("transport", {}, "", 0, fill_w_h(TOPBAR_H), row(FILL_BOX, {
+        item(text(AUTO_BOX, " PROJECT · midnight circuits"), 0, 0),
+        transport_button("view:arrange", "ARRANGE", state.selected_view == "arrange"),
+        transport_button("view:routing", "ROUTING", state.selected_view == "routing"),
+        transport_button("view:machine", "MACHINE", state.selected_view == "machine"),
+        transport_button("action:play", state.playing and "STOP" or "PLAY", state.playing),
+        transport_button("action:struct", "ROUTE", false),
+        transport_button("action:live", "KNOB", false),
+        transport_button("action:phase_prev", "<", false),
+        item(text(AUTO_BOX, " stage · " .. phase.verb), 0, 0),
+        transport_button("action:phase_next", ">", false),
+        item(U.Spacer(FILL_BOX), 1, 1),
+        item(text(AUTO_BOX, string_format("tempo %d", state.bpm)), 0, 0),
+        item(text(AUTO_BOX, string_format("compile #%d", state.compile_gen)), 0, 0),
+    }, { align = L.CrossStretch, gap = 8 }))
+end
+
+local function browser_track_row(state, track, index)
+    local label = string_format(" %s  %s", track_icon(track.role), track.name)
+    local meta = string_format(" %s  →  %s", track.role, track.destination)
+    return item(pressable("browser:track:" .. index,
+        panel("browser_item", flags_active(index == state.selected_track), "", 0, fill_w_h(BROWSER_TRACK_ROW_H), col(FILL_BOX, {
+            item(text(fill_w_h(18), label), 0, 0),
+            item(text(fill_w_h(16), meta), 0, 0),
+        }))), 0, 0)
+end
+
+local function browser_panel(state)
+    local phase = selected_phase(state)
+    local track = selected_track(state)
+    local rows = {
+        item(text(fill_w_h(HEADER_H), " BROWSER"), 0, 0),
+        item(text(fill_w_h(18), " project tracks"), 0, 0),
     }
-    append_log(state, "aurora control shell online")
+    for i = 1, #state.tracks do
+        rows[#rows + 1] = browser_track_row(state, state.tracks[i], i)
+    end
+    rows[#rows + 1] = item(text(fill_w_h(18), " collections"), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " drums"), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " instruments"), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " vocals"), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " returns"), 0, 0)
+    rows[#rows + 1] = item(U.Spacer(FILL_BOX), 1, 1)
+    rows[#rows + 1] = item(text(fill_w_h(HEADER_H), " COMPILE STATUS"), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " phase · " .. phase.title), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " track · " .. track.name), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " structural edits rebuild callbacks"), 0, 0)
+    rows[#rows + 1] = item(text(fill_w_h(18), " live tweaks mutate state.live_params"), 0, 0)
+
+    return panel("panel", {}, "", 0, box_w_fill_h(BROWSER_W), col(FILL_BOX, rows, { gap = 6 }))
+end
+
+local function arrangement_overlay()
+    local rows = { item(U.Spacer(fill_w_h(RULER_H + 14)), 0, 0) }
+    for i = 1, #TRACKS do
+        rows[#rows + 1] = item(pressable("arr:track:" .. i, U.Spacer(fill_w_h(TRACK_ROW_H))), 0, 0)
+    end
+    rows[#rows + 1] = item(U.Spacer(FILL_BOX), 1, 1)
+    return col(FILL_BOX, rows)
+end
+
+local function arrangement_panel()
+    return panel("panel", {}, "", 0, FILL_BOX, U.Stack(FILL_BOX, {
+        U.CustomPaint("arr:paint", FILL_BOX, arrangement_paint()),
+        arrangement_overlay(),
+    }))
+end
+
+local function devices_panel()
+    return panel("panel", {}, "", 0, fill_w_h(DEVICE_H), U.CustomPaint("dev:paint", FILL_BOX, devices_paint()))
+end
+
+local function mixer_overlay()
+    local strips = {}
+    for i = 1, MIXER_ROWS do
+        strips[#strips + 1] = item(pressable("mix:track:" .. i, U.Spacer(FILL_BOX)), 1, 1)
+    end
+    return row(FILL_BOX, strips, { gap = 8, align = L.CrossStretch })
+end
+
+local function mixer_panel()
+    return panel("panel", {}, "", 0, box_w_fill_h(MIXER_W), col(FILL_BOX, {
+        item(text(fill_w_h(HEADER_H), " MIXER"), 0, 0),
+        item(U.Stack(FILL_BOX, {
+            U.CustomPaint("mix:paint", FILL_BOX, mixer_paint()),
+            mixer_overlay(),
+        }), 1, 1),
+    }))
+end
+
+local function status_bar()
+    return panel("statusbar", {}, "", 0, fill_w_h(STATUS_H), U.CustomPaint("status:paint", FILL_BOX, status_paint()))
+end
+
+function M.build_tree(state, layout, opts)
+    local focused_id = opts and opts.focused_id or ""
+
+    local sem = panel("window", {}, "", 0, FILL_BOX, col(FILL_BOX, {
+        item(transport_bar(state)),
+        item(row(FILL_BOX, {
+            item(browser_panel(state)),
+            item(col(FILL_BOX, {
+                item(arrangement_panel(), 1, 1),
+                item(devices_panel()),
+            }), 1, 1),
+            item(mixer_panel()),
+        }, { align = L.CrossStretch }), 1, 1),
+        item(status_bar()),
+    }))
+
+    return lower.node(THEME, sem, { focused_id = focused_id }), sem
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- Runtime build
+-- ─────────────────────────────────────────────────────────────
+
+function M.compute_layout(w, h)
+    local body_h = math_max(0, h - TOPBAR_H - STATUS_H)
+    local center_w = math_max(0, w - BROWSER_W - MIXER_W)
+    local arrange_h = math_max(160, body_h - DEVICE_H)
+    return {
+        width = w,
+        height = h,
+        body_h = body_h,
+        center_w = center_w,
+        arrange_h = arrange_h,
+        device_h = DEVICE_H,
+    }
+end
+
+function M.build_runtime(state, layout, opts)
+    local runtime = { numbers = {}, texts = {}, colors = {} }
+    local numbers = runtime.numbers
+    local texts = runtime.texts
+    local colors = runtime.colors
+
+    local phase = selected_phase(state)
+    local track = selected_track(state)
+
+    -- status
+    numbers["status:h"] = STATUS_H - 4
+    numbers["status:left_w"] = math_floor(layout.width * 0.6)
+    numbers["status:right_x"] = numbers["status:left_w"]
+    numbers["status:right_w"] = math_max(0, layout.width - numbers["status:left_w"] - 16)
+    texts["status:left"] = string_format(" mode %s   ·   phase %s   ·   track %s ", state.selected_view, phase.title, track.name)
+    texts["status:right"] = string_format(" semantic %s   terra %s   cpu %.1f%% ", fmt_percent(state.semantic_reuse), fmt_percent(state.terra_reuse), state.cpu_usage)
+
+    -- arrangement
+    numbers["arr:w"] = math_max(0, layout.center_w - 2)
+    numbers["arr:h"] = math_max(0, layout.arrange_h - 2)
+    numbers["arr:header_w"] = 178
+    numbers["arr:body_y"] = RULER_H + 14
+    numbers["arr:body_h"] = math_max(0, numbers["arr:h"] - numbers["arr:body_y"])
+    numbers["arr:ruler_y2"] = numbers["arr:body_y"]
+    numbers["arr:timeline_w"] = math_max(80, numbers["arr:w"] - numbers["arr:header_w"] - 12)
+    numbers["arr:w_note_x"] = math_max(10, numbers["arr:w"] - 220)
+    numbers["arr:note_w"] = 200
+    texts["arr:title"] = (state.selected_view == "arrange") and "ARRANGEMENT"
+        or (state.selected_view == "routing") and "ROUTING OVERLAY"
+        or "MACHINE OVERLAY"
+    texts["arr:note"] = (state.selected_view == "arrange") and "clips / automation / playhead"
+        or (state.selected_view == "routing") and "routing and send topology"
+        or "compiled slices / jobs / state families"
+
+    for beat = 0, TIMELINE_BEATS do
+        local base = "arr:beat:" .. beat
+        local x = numbers["arr:header_w"] + math_floor((beat / TIMELINE_BEATS) * numbers["arr:timeline_w"])
+        numbers[base .. ":x"] = x
+        numbers[base .. ":x_label"] = x + 4
+        texts[base .. ":text"] = tostring(beat + 1)
+        colors[base .. ":color"] = (beat % 2 == 0) and C.surface1 or C.surface0
+    end
+
+    for i = 1, #state.tracks do
+        local t = state.tracks[i]
+        local base = "arr:track:" .. i
+        local y = numbers["arr:body_y"] + (i - 1) * TRACK_ROW_H
+        numbers[base .. ":y"] = y
+        numbers[base .. ":y2"] = y + TRACK_ROW_H
+        numbers[base .. ":h"] = TRACK_ROW_H
+        numbers[base .. ":title_y"] = y + 10
+        numbers[base .. ":meta_y"] = y + 28
+        texts[base .. ":name"] = t.name
+        texts[base .. ":meta"] = t.role
+        texts[base .. ":route"] = t.destination
+        colors[base .. ":bg"] = (i == state.selected_track) and C.surface0 or C.mantle
+        colors[base .. ":title_color"] = (i == state.selected_track) and C.text or track_color(i)
+        colors[base .. ":route_color"] = (i == state.selected_track) and C.mauve or C.overlay0
+    end
+
+    numbers["arr:playhead_x"] = numbers["arr:header_w"]
+        + math_floor(((state.transport_beat % TIMELINE_BEATS) / TIMELINE_BEATS) * numbers["arr:timeline_w"])
+
+    do
+        local clip_slot = 1
+        for ti = 1, #state.tracks do
+            local t = state.tracks[ti]
+            for j = 1, #t.clips do
+                local c = t.clips[j]
+                if clip_slot <= CLIP_CAP then
+                    local base = "arr:clip:" .. clip_slot
+                    local x = numbers["arr:header_w"] + math_floor((c.start_beat / TIMELINE_BEATS) * numbers["arr:timeline_w"]) + 3
+                    local y = numbers["arr:track:" .. ti .. ":y"] + 8
+                    local w = math_max(24, math_floor((c.length_beat / TIMELINE_BEATS) * numbers["arr:timeline_w"]) - 6)
+                    local visible = (state.selected_view == "arrange") and 1 or 0
+                    numbers[base .. ":x"] = visible * x
+                    numbers[base .. ":y"] = visible * y
+                    numbers[base .. ":w"] = visible * w
+                    numbers[base .. ":h"] = visible * (TRACK_ROW_H - 16)
+                    numbers[base .. ":tx"] = visible * (x + 8)
+                    numbers[base .. ":ty"] = visible * (y + 6)
+                    numbers[base .. ":tw"] = visible * math_max(8, w - 12)
+                    texts[base .. ":text"] = c.label .. (c.warped and " · warp" or "")
+                    colors[base .. ":fill"] = c.color
+                    colors[base .. ":stroke"] = c.warped and C.mauve or C.crust
+                    clip_slot = clip_slot + 1
+                end
+            end
+        end
+        while clip_slot <= CLIP_CAP do
+            local base = "arr:clip:" .. clip_slot
+            numbers[base .. ":x"] = 0
+            numbers[base .. ":y"] = 0
+            numbers[base .. ":w"] = 0
+            numbers[base .. ":h"] = 0
+            numbers[base .. ":tx"] = 0
+            numbers[base .. ":ty"] = 0
+            numbers[base .. ":tw"] = 0
+            texts[base .. ":text"] = ""
+            colors[base .. ":fill"] = 0
+            colors[base .. ":stroke"] = 0
+            clip_slot = clip_slot + 1
+        end
+    end
+
+    for i = 1, #state.tracks do
+        local base = "arr:routebox:" .. i
+        local y = numbers["arr:track:" .. i .. ":y"] + 14
+        local visible = (state.selected_view == "routing") and 1 or 0
+        local x1 = numbers["arr:header_w"] + 28
+        local x2 = numbers["arr:w"] - 170
+        local w = 110
+        numbers[base .. ":x1"] = visible * x1
+        numbers[base .. ":x2"] = visible * x2
+        numbers[base .. ":y"] = visible * y
+        numbers[base .. ":w"] = visible * w
+        numbers[base .. ":h"] = visible * 28
+        numbers[base .. ":x1t"] = visible * (x1 + 8)
+        numbers[base .. ":x2t"] = visible * (x2 + 8)
+        numbers[base .. ":yt"] = visible * (y + 7)
+        numbers[base .. ":tw"] = visible * (w - 10)
+        numbers[base .. ":lx1"] = visible * (x1 + w)
+        numbers[base .. ":lx2"] = visible * x2
+        numbers[base .. ":ly"] = visible * (y + 14)
+        texts[base .. ":text1"] = state.tracks[i].name
+        texts[base .. ":text2"] = state.tracks[i].destination
+        colors[base .. ":fill1"] = track_color(i)
+        colors[base .. ":fill2"] = C.surface1
+        colors[base .. ":stroke1"] = C.crust
+        colors[base .. ":stroke2"] = C.crust
+        colors[base .. ":line"] = (i == state.selected_track) and C.yellow or C.overlay0
+    end
+
+    for i = 1, #state.tracks do
+        for j = 1, 3 do
+            local base = "arr:machine:" .. i .. ":" .. j
+            local visible = (state.selected_view == "machine") and 1 or 0
+            local box_w = math_max(48, math_floor((numbers["arr:timeline_w"] - 40) / 3))
+            local x = numbers["arr:header_w"] + 16 + (j - 1) * (box_w + 10)
+            local y = numbers["arr:track:" .. i .. ":y"] + 14
+            local labels = { "feeder", "chain", "out" }
+            local fills = { C.teal, C.blue, C.green }
+            numbers[base .. ":x"] = visible * x
+            numbers[base .. ":y"] = visible * y
+            numbers[base .. ":w"] = visible * box_w
+            numbers[base .. ":h"] = visible * 28
+            numbers[base .. ":tx"] = visible * (x + 8)
+            numbers[base .. ":ty"] = visible * (y + 7)
+            numbers[base .. ":tw"] = visible * (box_w - 10)
+            texts[base .. ":text"] = labels[j]
+            colors[base .. ":fill"] = fills[j]
+            colors[base .. ":stroke"] = (i == state.selected_track) and C.yellow or C.crust
+        end
+    end
+
+    do
+        local selected_y = numbers["arr:track:" .. state.selected_track .. ":y"] + TRACK_ROW_H - 18
+        for i = 1, 5 do
+            local base = "arr:auto:" .. i
+            local x1 = numbers["arr:header_w"] + math_floor(((i - 1) / 5) * numbers["arr:timeline_w"])
+            local x2 = numbers["arr:header_w"] + math_floor((i / 5) * numbers["arr:timeline_w"])
+            local y1 = selected_y - math_floor((0.5 + 0.5 * math_sin(state.time * 0.8 + i * 0.4)) * 20)
+            local y2 = selected_y - math_floor((0.5 + 0.5 * math_cos(state.time * 1.1 + i * 0.5)) * 18)
+            local visible = (state.selected_view == "arrange") and 1 or 0
+            numbers[base .. ":x1"] = visible * x1
+            numbers[base .. ":y1"] = visible * y1
+            numbers[base .. ":x2"] = visible * x2
+            numbers[base .. ":y2"] = visible * y2
+            colors[base .. ":color"] = (i == 3) and C.yellow or C.orange
+        end
+    end
+
+    -- devices
+    numbers["dev:w"] = math_max(0, layout.center_w - 2)
+    numbers["dev:h"] = DEVICE_H - 2
+    numbers["dev:w_note_x"] = math_max(10, numbers["dev:w"] - 220)
+    numbers["dev:note_w"] = 200
+    texts["dev:title"] = "DEVICE CHAIN"
+    texts["dev:note"] = string_format("selected track · %s", track.name)
+
+    do
+        local slots = math_max(1, #track.devices)
+        local gap = 10
+        local info_w = 270
+        local content_w = math_max(120, numbers["dev:w"] - info_w - 26)
+        local slot_w = math_max(52, math_floor((content_w - gap * math_max(0, slots - 1)) / slots))
+        local y = 34
+        for i = 1, DEVICE_CAP do
+            local base = "dev:slot:" .. i
+            if i <= #track.devices then
+                local dev = track.devices[i]
+                local x = 12 + (i - 1) * (slot_w + gap)
+                numbers[base .. ":x"] = x
+                numbers[base .. ":y"] = y
+                numbers[base .. ":w"] = slot_w
+                numbers[base .. ":h"] = 92
+                numbers[base .. ":tx"] = x + 8
+                numbers[base .. ":ty"] = y + 8
+                numbers[base .. ":ty2"] = y + 28
+                numbers[base .. ":tw"] = math_max(10, slot_w - 12)
+                texts[base .. ":name"] = dev.name
+                texts[base .. ":family"] = dev.family
+                colors[base .. ":fill"] = device_color(dev.family)
+                colors[base .. ":stroke"] = (i == 1) and C.yellow or C.crust
+                colors[base .. ":title_color"] = C.crust
+                for k = 1, 3 do
+                    local knob = base .. ":bar:" .. k
+                    local level = 0.2 + 0.65 * (0.5 + 0.5 * math_sin(state.time * (1.4 + k * 0.2) + i + k))
+                    numbers[knob .. ":x"] = x + 12 + (k - 1) * 20
+                    numbers[knob .. ":y_box"] = y + 48
+                    numbers[knob .. ":h"] = math_floor(24 * level)
+                    numbers[knob .. ":y_fill"] = y + 72 - numbers[knob .. ":h"]
+                    colors[knob .. ":color"] = (k == 2) and C.yellow or C.crust
+                end
+            else
+                numbers[base .. ":x"] = 0
+                numbers[base .. ":y"] = 0
+                numbers[base .. ":w"] = 0
+                numbers[base .. ":h"] = 0
+                numbers[base .. ":tx"] = 0
+                numbers[base .. ":ty"] = 0
+                numbers[base .. ":ty2"] = 0
+                numbers[base .. ":tw"] = 0
+                texts[base .. ":name"] = ""
+                texts[base .. ":family"] = ""
+                colors[base .. ":fill"] = 0
+                colors[base .. ":stroke"] = 0
+                colors[base .. ":title_color"] = 0
+                for k = 1, 3 do
+                    local knob = base .. ":bar:" .. k
+                    numbers[knob .. ":x"] = 0
+                    numbers[knob .. ":y_box"] = 0
+                    numbers[knob .. ":h"] = 0
+                    numbers[knob .. ":y_fill"] = 0
+                    colors[knob .. ":color"] = 0
+                end
+            end
+        end
+
+        numbers["dev:bar_box_h"] = 24
+        numbers["dev:info_x"] = numbers["dev:w"] - info_w - 12
+        numbers["dev:info_w"] = info_w
+        numbers["dev:info_tx"] = numbers["dev:info_x"] + 10
+        numbers["dev:info_tw"] = info_w - 16
+        numbers["dev:sem_x"] = numbers["dev:info_x"] + 10
+        numbers["dev:bar_w"] = info_w - 20
+        numbers["dev:sem_w"] = math_floor(numbers["dev:bar_w"] * clamp(state.semantic_reuse, 0, 1))
+        numbers["dev:terra_w"] = math_floor(numbers["dev:bar_w"] * clamp(state.terra_reuse, 0, 1))
+        texts["dev:phase"] = string_format("stage · %s", PHASE_SHORT[phase.key] or phase.verb)
+        texts["dev:compile"] = string_format("cb #%d", state.compile_gen)
+        texts["dev:split"] = "compiled / live split"
+        texts["dev:reuse"] = string_format("sem %s · terra %s", fmt_percent(state.semantic_reuse), fmt_percent(state.terra_reuse))
+    end
+
+    do
+        local first = math_max(1, #state.logs - LOG_ROWS + 1)
+        numbers["dev:log_w"] = math_max(10, numbers["dev:w"] - 20)
+        for i = 1, LOG_ROWS do
+            local line = state.logs[first + i - 1] or ""
+            local base = "dev:log:" .. i
+            numbers[base .. ":y"] = 132 + (i - 1) * 18
+            texts[base .. ":text"] = line
+            if line:find("no recompile", 1, true) then
+                colors[base .. ":fg"] = C.green
+            elseif line:find("rebuild", 1, true) or line:find("new machine", 1, true) or line:find("compile", 1, true) then
+                colors[base .. ":fg"] = C.yellow
+            else
+                colors[base .. ":fg"] = C.subtext0
+            end
+            colors[base .. ":bg"] = 0
+        end
+    end
+
+    -- mixer
+    numbers["mix:w"] = math_max(0, MIXER_W - 2)
+    numbers["mix:h"] = math_max(0, layout.body_h - HEADER_H - 2)
+    numbers["mix:meter_box_h"] = math_max(40, numbers["mix:h"] - 92)
+    numbers["mix:fader_box_h"] = math_max(40, numbers["mix:h"] - 92)
+
+    do
+        local gap = 8
+        local inner_w = numbers["mix:w"] - 12
+        local strip_w = math_max(40, math_floor((inner_w - gap * (MIXER_ROWS - 1)) / MIXER_ROWS))
+        for i = 1, MIXER_ROWS do
+            local base = "mix:strip:" .. i
+            local x = 6 + (i - 1) * (strip_w + gap)
+            local y = 0
+            local meter = meter_level(state, i)
+            local handle = clamp((state.gains_db[i] or 0 + 12) / 24, 0, 1)
+            numbers[base .. ":x"] = x
+            numbers[base .. ":y"] = y
+            numbers[base .. ":w"] = strip_w
+            numbers[base .. ":h"] = numbers["mix:h"]
+            numbers[base .. ":tx"] = x + 4
+            numbers[base .. ":ty"] = 8
+            numbers[base .. ":tw"] = strip_w - 8
+            numbers[base .. ":meter_x"] = x + 12
+            numbers[base .. ":meter_y"] = 38
+            numbers[base .. ":meter_h"] = math_floor(numbers["mix:meter_box_h"] * meter)
+            numbers[base .. ":meter_fill_y"] = 38 + numbers["mix:meter_box_h"] - numbers[base .. ":meter_h"]
+            numbers[base .. ":fader_x"] = x + strip_w - 26
+            numbers[base .. ":fader_y"] = 38
+            numbers[base .. ":handle_y"] = 38 + math_floor((1 - handle) * (numbers["mix:fader_box_h"] - 10))
+            numbers[base .. ":gain_y"] = numbers["mix:h"] - 34
+            numbers[base .. ":pan_y"] = numbers["mix:h"] - 18
+            texts[base .. ":name"] = mixer_label(state.tracks[i])
+            texts[base .. ":gain"] = fmt_db(state.gains_db[i])
+            texts[base .. ":pan"] = fmt_pan(state.pans[i])
+            colors[base .. ":fill"] = (i == state.selected_track) and C.surface0 or C.mantle
+            colors[base .. ":stroke"] = (i == state.selected_track) and C.mauve or C.surface1
+            colors[base .. ":name_color"] = (i == state.selected_track) and C.text or track_color(i)
+            colors[base .. ":meter_color"] = (meter > 0.82) and C.red or (meter > 0.62) and C.yellow or C.green
+        end
+    end
+
+    return runtime
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- State transitions
+-- ─────────────────────────────────────────────────────────────
+
+function M.new_state()
+    return State(
+        1,
+        0,
+        false,
+        "arrange",
+        7,
+        2,
+        12,
+        13.25,
+        128,
+        21.0,
+        0.96,
+        0.91,
+        4,
+        18,
+        "warm callback installed",
+        { -2.5, -1.0, -4.0, -6.0 },
+        { 0.0, -0.12, 0.14, 0.0 },
+        PHASES,
+        TRACKS,
+        INITIAL_LOGS)
+end
+
+local function set_view(state, view)
+    if state.selected_view == view then
+        return state
+    end
+    return touch(pvm.with(state, { selected_view = view }))
+end
+
+local function set_phase(state, index)
+    index = clamp(index, 1, #state.phases)
+    if state.selected_phase == index then
+        return state
+    end
+    return touch(pvm.with(state, { selected_phase = index }))
+end
+
+local function set_track(state, index)
+    index = clamp(index, 1, #state.tracks)
+    if state.selected_track == index then
+        return state
+    end
+    return touch(pvm.with(state, { selected_track = index }))
+end
+
+local function toggle_play(state)
+    state = pvm.with(state, { playing = not state.playing })
+    state = append_log(state, state.playing
+        and "transport started; callback reuses current installed machine"
+        or "transport stopped; callback remains installed")
+    return touch(state)
+end
+
+local function apply_structural_edit(state)
+    local index = state.selected_track
+    local track = state.tracks[index]
+    local new_dest = next_route(track.destination)
+    local new_track = Track(track.id, track.name, track.role, new_dest, rotate_devices(track.devices), track.clips)
+    state = replace_track_at(state, index, new_track)
+    state = pvm.with(state, {
+        compile_gen = state.compile_gen + 1,
+        structural_edits = state.structural_edits + 1,
+        semantic_reuse = 0.84 + ((state.compile_gen % 4) * 0.03),
+        terra_reuse = 0.72 + ((state.compile_gen % 3) * 0.05),
+        last_compile_kind = "structural edit → rebuild schedule → compile new callback",
+    })
+    state = append_log(state, string_format("%s rerouted to %s → new machine shape → compile #%d", track.name, new_dest, state.compile_gen))
+    return touch(state)
+end
+
+local function apply_live_tweak(state)
+    local index = state.selected_track
+    local gain_step = (state.live_edits % 2 == 0) and 1.25 or -0.75
+    local pan_step = ((state.live_edits % 3) - 1) * 0.08
+    local gains = replace_number_at(state.gains_db, index, clamp((state.gains_db[index] or 0) + gain_step, -12, 12))
+    local pans = replace_number_at(state.pans, index, clamp((state.pans[index] or 0) + pan_step, -1, 1))
+    state = pvm.with(state, {
+        gains_db = gains,
+        pans = pans,
+        live_edits = state.live_edits + 1,
+        semantic_reuse = 1.0,
+        terra_reuse = 1.0,
+        last_compile_kind = "live tweak → mutate state.live_params only",
+    })
+    state = append_log(state, string_format("%s live tweak → %s / %s (no recompile)", state.tracks[index].name, fmt_db(gains[index]), fmt_pan(pans[index])))
     return state
 end
 
-local function clamp_scroll(state, layout)
-    local content_h = #state.log * 28
-    local max_scroll = math_max(0, content_h - layout.log_view_h)
-    state.log_scroll = math_max(0, math_min(state.log_scroll, max_scroll))
-end
-
-local function has_any_solo(state)
-    for i = 1, #state.channels do
-        if state.channels[i].solo then
-            return true
-        end
-    end
-    return false
-end
-
 function M.update(state, dt)
-    state.time = state.time + dt
-    state.burst = math_max(0, state.burst - dt * 0.8)
-
-    local solo = has_any_solo(state)
-    local t = state.time
-    local scene_phase = state.scene * 0.7
-    local energy = 0
-
-    for i = 1, #state.channels do
-        local ch = state.channels[i]
-        local wave = 0.18 + 0.82 * (0.5 + 0.5 * math_sin(t * (1.2 + i * 0.12) + scene_phase + i * 0.9))
-        local target = wave
-        if not state.playing then
-            target = target * 0.15
-        end
-        if solo and not ch.solo then
-            target = target * 0.08
-        end
-        if ch.mute then
-            target = target * 0.05
-        end
-        if ch.arm then
-            target = math_min(1, target + 0.08)
-        end
-        if state.burst > 0 then
-            target = math_min(1, target + state.burst * 0.35)
-        end
-
-        ch.level = ch.level + (target - ch.level) * math_min(1, dt * 5.5)
-        ch.peak = math_max(ch.level, ch.peak - dt * 0.22)
-        ch.gain = -18 + ch.level * 24
-        energy = energy + ch.level
+    local time = state.time + dt
+    local transport = state.transport_beat
+    if state.playing then
+        transport = transport + dt * (state.bpm / 60)
     end
 
-    energy = energy / #state.channels
-    state.master = state.master + ((energy * 0.72 + 0.18) - state.master) * math_min(1, dt * 3.5)
-    state.drift = 0.5 + 0.5 * math_sin(t * 0.65 + scene_phase)
-    state.latency = 9.5 + 7.5 * (0.5 + 0.5 * math_sin(t * 0.4 + 1.7))
-    state.cpu = 11 + 22 * energy + (state.playing and 6 or 0)
-end
-
-local function shuffle_targets(state)
-    state.burst = 1
-    for i = 1, #state.channels do
-        local ch = state.channels[i]
-        ch.mute = false
-        ch.solo = false
-        ch.arm = (math_random() > 0.66)
-        ch.level = 0.1 + math_random() * 0.8
-        ch.peak = math_min(1, ch.level + math_random() * 0.15)
+    local cpu = 11 + (state.playing and 9 or 2) + math_abs(math_sin(time * 1.7)) * 7
+    local semantic = state.semantic_reuse
+    local terra = state.terra_reuse
+    if semantic < 0.999 then
+        semantic = math_min(1.0, semantic + dt * 0.08)
     end
-    append_log(state, "spectral matrix shuffled")
-end
-
-local function toggle_scene(state, scene_id)
-    if scene_id >= 1 and scene_id <= #SCENES and scene_id ~= state.scene then
-        state.scene = scene_id
-        state.burst = 0.7
-        append_log(state, "scene switched to " .. SCENES[scene_id].name)
-    end
-end
-
-local function handle_click(state, id)
-    if id == nil then
-        return
+    if terra < 0.999 then
+        terra = math_min(1.0, terra + dt * 0.05)
     end
 
-    local scene_id = tonumber(id:match("^scene:(%d+)$"))
-    if scene_id then
-        return toggle_scene(state, scene_id)
-    end
-
-    local ch_card = tonumber(id:match("^channel:(%d+)$"))
-    if ch_card then
-        state.selected_channel = ch_card
-        append_log(state, "focused channel " .. CHANNEL_NAMES[ch_card])
-        return
-    end
-
-    local ch_mute = tonumber(id:match("^channel:(%d+):mute$"))
-    if ch_mute then
-        local ch = state.channels[ch_mute]
-        ch.mute = not ch.mute
-        append_log(state, (ch.mute and "muted " or "unmuted ") .. ch.name)
-        return
-    end
-
-    local ch_solo = tonumber(id:match("^channel:(%d+):solo$"))
-    if ch_solo then
-        local ch = state.channels[ch_solo]
-        ch.solo = not ch.solo
-        append_log(state, (ch.solo and "solo enabled on " or "solo cleared on ") .. ch.name)
-        return
-    end
-
-    local ch_arm = tonumber(id:match("^channel:(%d+):arm$"))
-    if ch_arm then
-        local ch = state.channels[ch_arm]
-        ch.arm = not ch.arm
-        append_log(state, (ch.arm and "armed " or "disarmed ") .. ch.name)
-        return
-    end
-
-    if id == "transport:play" then
-        state.playing = not state.playing
-        append_log(state, state.playing and "transport resumed" or "transport paused")
-        return
-    end
-
-    if id == "transport:shuffle" then
-        return shuffle_targets(state)
-    end
-
-    if id == "transport:flare" then
-        state.burst = 1
-        append_log(state, "flare pulse injected into master bus")
-        return
-    end
+    return pvm.with(state, {
+        time = time,
+        transport_beat = transport,
+        cpu_usage = cpu,
+        semantic_reuse = semantic,
+        terra_reuse = terra,
+    })
 end
 
 function M.handle_event(state, event, layout)
-    if event.kind == T.Msg.Click then
-        handle_click(state, event.id)
-    elseif event.kind == T.Msg.Scroll and event.id == "log:scroll" then
-        local prev = state.log_scroll
-        state.log_scroll = state.log_scroll - (event.payload.b * 28)
-        if layout then
-            clamp_scroll(state, layout)
+    if event.kind == T.Msg.Click or event.kind == T.Msg.Submit then
+        local browser_track = tonumber(event.id:match("^browser:track:(%d+)$"))
+        if browser_track then
+            return set_track(state, browser_track)
         end
-        if state.log_scroll ~= prev then
-            touch_structure(state)
+
+        local arr_track = tonumber(event.id:match("^arr:track:(%d+)$"))
+        if arr_track then
+            return set_track(state, arr_track)
+        end
+
+        local mix_track = tonumber(event.id:match("^mix:track:(%d+)$"))
+        if mix_track then
+            return set_track(state, mix_track)
+        end
+
+        local view = event.id:match("^view:(.+)$")
+        if view then
+            return set_view(state, view)
+        end
+
+        if event.id == "action:play" then
+            return toggle_play(state)
+        elseif event.id == "action:struct" then
+            return apply_structural_edit(state)
+        elseif event.id == "action:live" then
+            return apply_live_tweak(state)
+        elseif event.id == "action:phase_prev" then
+            return set_phase(state, state.selected_phase - 1)
+        elseif event.id == "action:phase_next" then
+            return set_phase(state, state.selected_phase + 1)
         end
     end
+
+    return state
 end
 
 function M.handle_messages(state, messages, layout)
     for i = 1, #messages do
-        M.handle_event(state, messages[i], layout)
+        state = M.handle_event(state, messages[i], layout)
     end
+    return state
 end
 
-function M.keypressed(state, key)
-    if key == "space" then
-        state.playing = not state.playing
-        append_log(state, state.playing and "transport resumed from keyboard" or "transport paused from keyboard")
-    elseif key == "tab" then
-        toggle_scene(state, (state.scene % #SCENES) + 1)
-    elseif key == "r" then
-        shuffle_targets(state)
-    elseif key == "f" then
-        state.burst = 1
-        append_log(state, "manual flare pulse")
-    else
-        local scene_id = tonumber(key)
-        if scene_id and SCENES[scene_id] then
-            toggle_scene(state, scene_id)
-        end
+function M.keypressed(state, key, opts)
+    if key == "1" then
+        return set_view(state, "arrange"), true
+    elseif key == "2" then
+        return set_view(state, "routing"), true
+    elseif key == "3" then
+        return set_view(state, "machine"), true
+    elseif key == "p" then
+        return toggle_play(state), true
+    elseif key == "g" then
+        return apply_structural_edit(state), true
+    elseif key == "k" then
+        return apply_live_tweak(state), true
+    elseif key == "left" then
+        return set_phase(state, state.selected_phase - 1), true
+    elseif key == "right" then
+        return set_phase(state, state.selected_phase + 1), true
+    elseif key == "up" then
+        return set_track(state, state.selected_track - 1), true
+    elseif key == "down" then
+        return set_track(state, state.selected_track + 1), true
     end
+    return state, false
 end
 
--- ─────────────────────────────────────────────────────────────
--- Layout + runtime shaping
--- ─────────────────────────────────────────────────────────────
-
-function M.compute_layout(width, height)
-    local shell_inner_w = math_max(0, width - (S.shell_pad * 2))
-    local shell_inner_h = math_max(0, height - (S.shell_pad * 2))
-    local center_w = math_max(0, shell_inner_w - LEFT_W - RIGHT_W - ROOT_GAP * 2)
-    local hero_inner_w = math_max(0, center_w - PANEL_INSET * 2)
-    local hero_inner_h = math_max(0, HERO_H - PANEL_INSET * 2)
-    local log_inner_h = math_max(0, shell_inner_h - PANEL_INSET * 2)
-    local log_view_h = math_max(0, log_inner_h - LOG_HEADER_H - 10)
-
-    return {
-        width = width,
-        height = height,
-        shell_inner_w = shell_inner_w,
-        shell_inner_h = shell_inner_h,
-        left_w = LEFT_W,
-        right_w = RIGHT_W,
-        center_w = center_w,
-        gap = ROOT_GAP,
-        hero_h = HERO_H,
-        transport_h = TRANSPORT_H,
-        channel_w = CHANNEL_CARD_W,
-        channel_h = CHANNEL_CARD_H,
-        channel_gap = CHANNEL_GAP,
-        panel_inset = PANEL_INSET,
-        hero_inner_w = hero_inner_w,
-        hero_inner_h = hero_inner_h,
-        log_header_h = LOG_HEADER_H,
-        log_view_h = log_view_h,
-        meter_w = METER_W,
-        meter_h = METER_H,
-    }
-end
-
-function M.build_runtime(state, layout)
-    local numbers = {}
-    local texts = {
-        ["stat:master"] = string.format("%.0f%%", state.master * 100),
-        ["stat:drift"] = string.format("%.0f%%", state.drift * 100),
-        ["stat:latency"] = string.format("%.1f ms", state.latency),
-        ["stat:cpu"] = string.format("%.0f%%", state.cpu),
-    }
-
-    numbers["bg:w"] = layout.shell_inner_w
-    numbers["bg:h"] = layout.shell_inner_h
-    numbers["bg:scan:y"] = math_floor((0.5 + 0.5 * math_sin(state.time * 0.35)) * math_max(0, layout.shell_inner_h - 2))
-    for i = 0, 10 do
-        numbers["bg:grid:y:" .. i] = math_floor(layout.shell_inner_h * (i / 10))
-    end
-    for i = 0, 8 do
-        numbers["bg:grid:x:" .. i] = math_floor(layout.shell_inner_w * (i / 8))
-    end
-
-    numbers["hero:w"] = layout.hero_inner_w
-    numbers["hero:h"] = layout.hero_inner_h
-    numbers["hero:scan:y"] = math_floor((0.5 + 0.5 * math_sin(state.time * 0.95 + 0.7)) * math_max(0, layout.hero_inner_h - 2))
-    for i = 0, 3 do
-        numbers["hero:grid:y:" .. i] = math_floor(math_max(0, layout.hero_inner_h - 20) * (i / 3))
-    end
-
-    do
-        local pad_x = 8
-        local gap = 4
-        local bar_w = math_max(6, math_floor((layout.hero_inner_w - pad_x * 2) / HERO_BARS) - gap)
-        local max_bar_h = math_max(3, layout.hero_inner_h - 12)
-        for i = 1, HERO_BARS do
-            local wave = 0.18 + 0.82 * (0.5 + 0.5 * math_sin(state.time * (1.6 + i * 0.02) + state.scene * 0.9 + i * 0.35))
-            if not state.playing then
-                wave = wave * 0.12
-            end
-            if state.burst > 0 then
-                wave = math_min(1, wave + state.burst * 0.25)
-            end
-            local h = math_max(3, math_floor(wave * max_bar_h))
-            numbers["hero:bar:" .. i .. ":x"] = pad_x + (i - 1) * (bar_w + gap)
-            numbers["hero:bar:" .. i .. ":w"] = bar_w
-            numbers["hero:bar:" .. i .. ":h"] = h
-            numbers["hero:bar:" .. i .. ":y"] = max_bar_h - h
-        end
-    end
-
-    for i = 1, #state.channels do
-        local ch = state.channels[i]
-        local prefix = "channel:" .. i
-        texts[prefix .. ":gain"] = string.format("%+.1f dB", ch.gain)
-        numbers[prefix .. ":w"] = layout.meter_w
-        numbers[prefix .. ":h"] = layout.meter_h
-        numbers[prefix .. ":meter:w"] = math_floor(ch.level * layout.meter_w)
-        numbers[prefix .. ":peak:x"] = math_floor(ch.peak * layout.meter_w)
-    end
-
-    return {
-        numbers = numbers,
-        texts = texts,
-        colors = {},
-    }
-end
-
--- ─────────────────────────────────────────────────────────────
--- View builders
--- ─────────────────────────────────────────────────────────────
-
-local function nav_button(scene_id, active)
-    local scene = SCENES[scene_id]
-    return button("nav", "scene:" .. scene_id, scene.name, box_px(LEFT_W, 52), active)
-end
-
-local function stat_panel(title_value, value_ref, box)
-    return panel("panel", {}, "", 0, box,
-        col(FILL_BOX, {
-            item(text("", AUTO_BOX, MONO_TEXT, title_value)),
-            item(dynamic_text_box(value_ref, box.w.px - 2 * (S.panel_pad + S.bw), 28, 2, L.LineHeightPx(24), L.TextStart, C.fg)),
-        }, {
-            gap_main = 6,
-            justify = MAIN_CENTER,
-            align_items = CROSS_START,
-        }))
-end
-
-local function sidebar(state)
-    return col(box_w(LEFT_W), {
-        item(panel("panel", {}, "", 0, box_px(LEFT_W, 126),
-            col(FILL_BOX, {
-                item(text("brand:eyebrow", AUTO_BOX, MONO_TEXT, "PI // FRESH UI STACK")),
-                item(text("brand:title", AUTO_BOX, HERO_TITLE_TEXT, "AURORA")),
-                item(text("brand:sub", AUTO_BOX, HERO_BODY_TEXT, "A Love2D showcase built on the new reducer-first UI architecture.")),
-            }, { gap_main = 8 }))),
-
-        item(panel("panel", {}, "", 0, box_px(LEFT_W, 296),
-            col(FILL_BOX, {
-                item(text("scene:hdr", AUTO_BOX, MONO_TEXT, "SCENE SELECTION")),
-                item(nav_button(1, state.scene == 1)),
-                item(nav_button(2, state.scene == 2)),
-                item(nav_button(3, state.scene == 3)),
-                item(nav_button(4, state.scene == 4)),
-            }, { gap_main = 10 }))),
-
-        item(panel("panel", {}, "", 0, box_px(LEFT_W, 170),
-            col(FILL_BOX, {
-                item(text("tips:hdr", AUTO_BOX, MONO_TEXT, "LIVE CONTROLS")),
-                item(text("tips:1", AUTO_BOX, BODY_TEXT, "SPACE  pause / resume transport")),
-                item(text("tips:2", AUTO_BOX, BODY_TEXT, "TAB    cycle scenes")),
-                item(text("tips:3", AUTO_BOX, BODY_TEXT, "R      shuffle channels")),
-                item(text("tips:4", AUTO_BOX, BODY_TEXT, "mouse wheel over log to scroll")),
-            }, { gap_main = 8 }))),
-
-        item(panel("panel", {}, "", 0, box_px(LEFT_W, 160),
-            col(FILL_BOX, {
-                item(text("focus:hdr", AUTO_BOX, MONO_TEXT, "FOCUSED CHANNEL")),
-                item(text("focus:name", AUTO_BOX, TITLE_TEXT, state.channels[state.selected_channel].name)),
-                item(row(FILL_BOX, {
-                    item(chip(state.channels[state.selected_channel].mute and "MUTED" or "OPEN", state.channels[state.selected_channel].mute)),
-                    item(chip(state.channels[state.selected_channel].solo and "SOLO" or "WIDE", state.channels[state.selected_channel].solo)),
-                    item(chip(state.channels[state.selected_channel].arm and "ARM" or "SAFE", state.channels[state.selected_channel].arm)),
-                }, { gap_main = 8 })),
-            }, { gap_main = 10 })), 1, 1),
-    }, {
-        gap_main = 16,
-        align_items = CROSS_START,
-    })
-end
-
-local function hero_panel(state)
-    local scene = SCENES[state.scene]
-    return panel("hero", flags_active(state.playing), "", 0, box_h(HERO_H),
-        T.SemUI.Stack(FILL_BOX, {
-            U.CustomPaint("hero:paint", FILL_BOX, hero_paint()),
-            col(FILL_BOX, {
-                item(text("hero:eyebrow", AUTO_BOX, MONO_TEXT, scene.eyebrow)),
-                item(text("hero:title", AUTO_BOX, HERO_TITLE_TEXT, scene.name)),
-                item(text("hero:subtitle", fill_w_h(64), HERO_BODY_TEXT, scene.subtitle)),
-                item(row(box_h(44), {
-                    item(button("button", "transport:play", state.playing and "PAUSE" or "PLAY", box_px(120, 44), state.playing)),
-                    item(button("button", "transport:shuffle", "SHUFFLE", box_px(128, 44), false)),
-                    item(button("button", "transport:flare", "FLARE", box_px(112, 44), false)),
-                }, {
-                    gap_main = 10,
-                    align_items = CROSS_CENTER,
-                })),
-            }, {
-                gap_main = 10,
-                justify = MAIN_START,
-                align_items = CROSS_START,
-            }),
-        }))
-end
-
-local function transport_panel()
-    return panel("panel", {}, "", 0, box_h(TRANSPORT_H),
-        row(FILL_BOX, {
-            item(stat_panel("MASTER", "stat:master", box_px(132, TRANSPORT_H - 2 * PANEL_INSET))),
-            item(stat_panel("DRIFT", "stat:drift", box_px(132, TRANSPORT_H - 2 * PANEL_INSET))),
-            item(stat_panel("LATENCY", "stat:latency", box_px(150, TRANSPORT_H - 2 * PANEL_INSET))),
-            item(stat_panel("CPU", "stat:cpu", box_px(120, TRANSPORT_H - 2 * PANEL_INSET))),
-        }, {
-            gap_main = 12,
-            justify = MAIN_START,
-            align_items = CROSS_CENTER,
-        }))
-end
-
-local function channel_card(state, index)
-    local ch = state.channels[index]
-    local surface_flags = flags_active(state.selected_channel == index)
-    local meter_color = ch.mute and C.dim or (ch.solo and C.gold or C.accent)
-    local meter = U.CustomPaint(
-        "channel:" .. index,
-        box_px(METER_W, METER_H),
-        meter_paint("channel:" .. index, meter_color))
-
-    return U.Focusable("channel:" .. index,
-        U.Pressable("channel:" .. index,
-            panel("panel", surface_flags, "", 0, box_px(CHANNEL_CARD_W, CHANNEL_CARD_H),
-                col(FILL_BOX, {
-                    item(row(box_px(CHANNEL_CARD_W - PANEL_INSET * 2, 28), {
-                        item(text("channel:name:" .. index, AUTO_BOX, TITLE_TEXT, ch.name), 1, 1),
-                        item(dynamic_text_box("channel:" .. index .. ":gain", 84, 18, 4, L.LineHeightPx(12), L.TextEnd, C.muted)),
-                    }, { gap_main = 8, align_items = CROSS_CENTER })),
-
-                    item(text("channel:meta:" .. index, AUTO_BOX, BODY_TEXT,
-                        string.format("scene vector %02d  //  focus lane %02d", state.scene, index))),
-
-                    item(meter),
-
-                    item(row(box_px(CHANNEL_CARD_W - PANEL_INSET * 2, 34), {
-                        item(button("button", "channel:" .. index .. ":mute", "MUTE", box_px(82, 34), ch.mute)),
-                        item(button("button", "channel:" .. index .. ":solo", "SOLO", box_px(82, 34), ch.solo)),
-                        item(button("button", "channel:" .. index .. ":arm", "ARM", box_px(78, 34), ch.arm)),
-                    }, { gap_main = 8 })),
-                }, {
-                    gap_main = 10,
-                    justify = MAIN_START,
-                    align_items = CROSS_START,
-                }))))
-end
-
-local function channels_grid(state)
-    local children = {}
-    for i = 1, #state.channels do
-        children[#children + 1] = item(channel_card(state, i), 0, 0, BASIS_AUTO, CROSS_AUTO)
-    end
-    return row(AUTO_BOX, children, {
-        wrap = WRAP_WRAP,
-        gap_main = CHANNEL_GAP,
-        gap_cross = CHANNEL_GAP,
-        align_items = CROSS_START,
-        align_content = CONTENT_START,
-    })
-end
-
-local function log_view(state)
-    local line_box = box_px(RIGHT_W - PANEL_INSET * 4, 28)
-    local lines = {}
-    for i = 1, #state.log do
-        lines[#lines + 1] = item(panel("logline", {}, "", 0, line_box,
-            row(FILL_BOX, {
-                item(text("log:" .. i, AUTO_BOX, MONO_TEXT, state.log[i]), 1, 1),
-            }, { align_items = CROSS_CENTER })))
-    end
-
-    return panel("panel", {}, "", 0, box_w(RIGHT_W),
-        col(FILL_BOX, {
-            item(text("log:hdr", AUTO_BOX, MONO_TEXT, "EVENT TAP")),
-            item(text("log:sub", box_px(RIGHT_W - PANEL_INSET * 2, 48), WRAP_BODY_TEXT, "Hovered widgets, focus transitions, and demo actions stream here in real time.")),
-            item(panel("panel", {}, "log:scroll", state.log_scroll, AUTO_BOX,
-                col(FILL_BOX, lines, { gap_main = 0, align_items = CROSS_START })), 1, 1),
-        }, {
-            gap_main = 10,
-            align_items = CROSS_START,
-        }))
-end
-
-local function center_column(state)
-    return col(AUTO_BOX, {
-        item(hero_panel(state)),
-        item(transport_panel()),
-        item(channels_grid(state), 1, 1),
-    }, {
-        gap_main = 16,
-        align_items = CROSS_START,
-    })
-end
-
-function M.build_semui(state, layout)
-    return panel("shell", {}, "", 0, FILL_BOX,
-        T.SemUI.Stack(FILL_BOX, {
-            U.CustomPaint("backdrop", FILL_BOX, backdrop_paint()),
-            row(FILL_BOX, {
-                item(sidebar(state), 0, 0),
-                item(center_column(state), 1, 1),
-                item(log_view(state), 0, 0),
-            }, {
-                gap_main = ROOT_GAP,
-                align_items = CROSS_START,
-            }),
-        }))
-end
-
-function M.build_tree(state, layout, opts)
-    opts = opts or {}
-    clamp_scroll(state, layout)
-    local sem = M.build_semui(state, layout)
-    local ui_node = lower.node(THEME, sem, {
-        focused_id = opts.focused_id or "",
-    })
-    return ui_node, sem
+function M.textinput(state, text_value, opts)
+    return state, false
 end
 
 function M.build(state, opts)
-    opts = opts or {}
-    local width = opts.width or 1600
-    local height = opts.height or 920
-    local layout = M.compute_layout(width, height)
+    local layout = M.compute_layout(opts and opts.width or 1280, opts and opts.height or 720)
     local ui_node, sem = M.build_tree(state, layout, opts)
-    local runtime = M.build_runtime(state, layout)
-    return ui_node, runtime, layout, sem
+    return ui_node, M.build_runtime(state, layout, opts), layout, sem
+end
+
+function M.footer(state)
+    local phase = selected_phase(state)
+    local track = selected_track(state)
+    local left = string_format("mode %s   phase %s   track %s", state.selected_view, phase.title, track.name)
+    local right = string_format("compile #%d   semantic %s   terra %s   cpu %.1f%%", state.compile_gen, fmt_percent(state.semantic_reuse), fmt_percent(state.terra_reuse), state.cpu_usage)
+    return left, right
 end
 
 return M

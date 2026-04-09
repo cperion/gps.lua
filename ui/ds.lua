@@ -125,32 +125,37 @@ local function wipe(t)
     end
 end
 
+local function require_binding(theme, field_name, cache, name, what)
+    local b = build_map(theme, cache, field_name)[name]
+    if not b then
+        error(string.format("ui.ds.resolve: unknown %s '%s' in theme '%s'", what, tostring(name), tostring(theme.name)), 2)
+    end
+    return b
+end
+
 local function get_surface(theme, name)
-    return build_map(theme, surface_map_cache, "surfaces")[name]
+    return require_binding(theme, "surfaces", surface_map_cache, name, "surface")
 end
 
 local function resolve_color_val(theme, val)
     if getmetatable(val) == MT.ColorLit then
         return val.rgba8
     end
-    local b = build_map(theme, color_tok_cache, "colors")[val.name]
-    return b and b.rgba8 or 0
+    return require_binding(theme, "colors", color_tok_cache, val.name, "color token").rgba8
 end
 
 local function resolve_space_val(theme, val)
     if getmetatable(val) == MT.SpaceLit then
         return val.px
     end
-    local b = build_map(theme, space_tok_cache, "spaces")[val.name]
-    return b and b.px or 0
+    return require_binding(theme, "spaces", space_tok_cache, val.name, "space token").px
 end
 
 local function resolve_font_val(theme, val)
     if getmetatable(val) == MT.FontLit then
         return val.font_id
     end
-    local b = build_map(theme, font_tok_cache, "fonts")[val.name]
-    return b and b.font_id or 0
+    return require_binding(theme, "fonts", font_tok_cache, val.name, "font token").font_id
 end
 
 local function resolve_scale_val(val)
@@ -220,9 +225,6 @@ local POINTER_PHASES = {
 local function resolve_style_impl(query)
     local theme = query.theme
     local surface = get_surface(theme, query.surface)
-    if not surface then
-        return DEFAULT_STYLE
-    end
 
     local focus = query.focus
     local flags = query.flags
@@ -337,6 +339,9 @@ end
 
 local resolve_style = pvm.lower("ui.ds.resolve", resolve_style_impl)
 
+local normalize_focus
+local normalize_flags
+
 -- ─────────────────────────────────────────────────────────────
 -- Public API
 -- ─────────────────────────────────────────────────────────────
@@ -346,7 +351,7 @@ function ds.resolve(query)
 end
 
 function ds.query(theme, surface_name, focus, flags)
-    return Query(theme, surface_name, focus or FOCUS_BLURRED, flags or {})
+    return Query(theme, surface_name or "", normalize_focus(focus) or FOCUS_BLURRED, normalize_flags(flags) or {})
 end
 
 function ds.stats()
@@ -430,7 +435,7 @@ local function normalize_pointer(pointer)
     return pointer
 end
 
-local function normalize_focus(focus)
+normalize_focus = function(focus)
     if focus == nil then
         return nil
     end
@@ -444,7 +449,7 @@ local function normalize_focus(focus)
     return focus
 end
 
-local function normalize_flags(flags)
+normalize_flags = function(flags)
     if flags == nil then
         return nil
     end

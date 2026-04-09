@@ -24,6 +24,9 @@ local demo = {
         released = false,
         scroll_x = 0,
         scroll_y = 0,
+        focus_next = false,
+        focus_prev = false,
+        activate = false,
         press_x = 0,
         press_y = 0,
     },
@@ -63,7 +66,9 @@ local function sync_tree(force)
 end
 
 local function sync_runtime()
-    demo.runtime = app.build_runtime(demo.state, sync_layout())
+    demo.runtime = app.build_runtime(demo.state, sync_layout(), {
+        focused_id = (demo.session and demo.session.state.focused) or "",
+    })
     demo.stats.runtime_builds = demo.stats.runtime_builds + 1
 end
 
@@ -72,6 +77,9 @@ local function reset_input_edges()
     demo.input.released = false
     demo.input.scroll_x = 0
     demo.input.scroll_y = 0
+    demo.input.focus_next = false
+    demo.input.focus_prev = false
+    demo.input.activate = false
 end
 
 local function update_memory_stats()
@@ -91,6 +99,7 @@ function love.load()
     demo.backend = LoveBackend.new({ sizes = app.font_sizes() })
     demo.session = ui.new_session({ backend = demo.backend })
     demo.state = app.new_state()
+    demo.session:focus("action:play")
 
     sync_layout()
     sync_tree(true)
@@ -104,14 +113,50 @@ function love.resize()
     sync_runtime()
 end
 
-function love.keypressed(key)
+function love.keypressed(key, scancode, isrepeat)
     if key == "escape" then
         love.event.quit()
         return
     end
-    app.keypressed(demo.state, key)
+
+    local handled
+    demo.state, handled = app.keypressed(demo.state, key, {
+        session = demo.session,
+        layout = demo.layout or sync_layout(),
+        isrepeat = isrepeat,
+        mods = {
+            shift = love.keyboard.isDown("lshift", "rshift"),
+            ctrl = love.keyboard.isDown("lctrl", "rctrl"),
+            alt = love.keyboard.isDown("lalt", "ralt"),
+        },
+    })
+
+    if not handled and not isrepeat then
+        if key == "tab" then
+            if love.keyboard.isDown("lshift", "rshift") then
+                demo.input.focus_prev = true
+            else
+                demo.input.focus_next = true
+            end
+        elseif key == "return" or key == "kpenter" or key == "space" then
+            demo.input.activate = true
+        end
+    end
+
     sync_tree(false)
     sync_runtime()
+end
+
+function love.textinput(text)
+    local handled
+    demo.state, handled = app.textinput(demo.state, text, {
+        session = demo.session,
+        layout = demo.layout or sync_layout(),
+    })
+    if handled then
+        sync_tree(false)
+        sync_runtime()
+    end
 end
 
 function love.mousepressed(x, y, button)
@@ -134,7 +179,7 @@ function love.wheelmoved(x, y)
 end
 
 function love.update(dt)
-    app.update(demo.state, dt)
+    demo.state = app.update(demo.state, dt)
     sync_tree(false)
     sync_runtime()
 
@@ -153,13 +198,19 @@ function love.update(dt)
             dragging = dragging,
             scroll_x = demo.input.scroll_x,
             scroll_y = demo.input.scroll_y,
+            focus_next = demo.input.focus_next,
+            focus_prev = demo.input.focus_prev,
+            activate = demo.input.activate,
         },
         runtime = demo.runtime,
         font_height = app.font_height,
+        text_measure = function(style, text, max_w, max_h, node, opts)
+            return demo.backend:measure_text(style, text, max_w, max_h, node, opts)
+        end,
         draw = false,
     })
 
-    app.handle_messages(demo.state, demo.session:messages(), demo.layout)
+    demo.state = app.handle_messages(demo.state, demo.session:messages(), demo.layout)
     sync_tree(false)
     sync_runtime()
 
@@ -176,24 +227,28 @@ function love.draw()
         frame = current_frame(),
         runtime = demo.runtime,
         font_height = app.font_height,
+        text_measure = function(style, text, max_w, max_h, node, opts)
+            return demo.backend:measure_text(style, text, max_w, max_h, node, opts)
+        end,
     })
 
     love.graphics.setScissor()
     love.graphics.origin()
     love.graphics.setFont(demo.backend:get_font(4))
     love.graphics.setColor(0.55, 0.67, 0.82, 1)
-    love.graphics.printf(
-        string.format(
-            "fps %d   mem %.1f MB (peak %.1f)   hovered %s   focused %s   tree builds %d   scene %d",
+    local left, right = "", ""
+    if demo.state and app.footer then
+        left, right = app.footer(demo.state)
+    end
+    love.graphics.print(
+        string.format("fps %d   mem %.1f MB (peak %.1f)   focused %s   tree builds %d",
             love.timer.getFPS(),
             demo.mem_kb / 1024,
             demo.mem_peak_kb / 1024,
-            tostring(demo.session.state.hot or "-"),
             tostring(demo.session.state.focused or "-"),
-            demo.stats.rebuilds,
-            demo.state.scene),
-        0,
-        h - 20,
-        w - 16,
-        "right")
+            demo.stats.rebuilds),
+        10,
+        h - 20)
+    love.graphics.printf(left or "", 280, h - 20, math.max(0, w - 700), "left")
+    love.graphics.printf(right or "", math.max(0, w - 420), h - 20, 410, "right")
 end
