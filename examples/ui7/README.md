@@ -2,11 +2,19 @@
 
 `main.lua` contains the app logic and returns an app object.
 
+The demo now uses canonical `uilib` for immediate UI authoring.
+(`uilib` now resolves to the immediate/session-based implementation formerly
+introduced as `uilib_iter`.)
+
+- the UI param tree is rebuilt directly from current state each frame
+- no retained command compilation is used in the demo path
+- sliders/meters/readouts update live without recompilation boundaries
+
 `main.t` is the canonical launcher/runtime:
 - SDL3 creates the window and drives events
 - OpenGL renders directly
 - SDL_ttf provides font measurement and text rasterization
-- `uilib` paints through a backend interface, not through Love2D
+- the backend is SDL3/GL, not Love2D
 
 ## Run
 

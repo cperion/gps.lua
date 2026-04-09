@@ -1163,6 +1163,32 @@ function ui.report()
     return table.concat({ line(stats.measure), line(stats.compile), line(stats.assemble), line(stats.paint_compile), string.format("%-20s calls=%-6d hits=%-6d rate=%d%%", rs.name, rs.calls, rs.hits, (rs.calls > 0) and math.floor((rs.hits / rs.calls) * 100 + 0.5) or 0) }, "\n")
 end
 
+ui._internal = {
+    INF = INF,
+    NULL_PACK = NULL_PACK,
+    WHITE_PACK = WHITE_PACK,
+    DEFAULT_TEXTSTYLE = DEFAULT_TEXTSTYLE,
+    ZERO_INSETS = ZERO_INSETS,
+    AUTO_BOX = AUTO_BOX,
+    SPAN_UNBOUNDED = SPAN_UNBOUNDED,
+    BASELINE_NONE = BASELINE_NONE,
+    SpanExact = SpanExact,
+    SpanAtMost = SpanAtMost,
+    Constraint = Constraint,
+    Frame = Frame,
+    Measure = Measure,
+    resolve_line_height = resolve_line_height,
+    raw_text_width = raw_text_width,
+    raw_text_height = raw_text_height,
+    raw_text_baseline = raw_text_baseline,
+    get_font = get_font,
+    shape_text = shape_text,
+    shaped_text = shaped_text,
+    text_intrinsic_widths = text_intrinsic_widths,
+    pick = pick,
+    pointer_for_id = pointer_for_id,
+}
+
 require("uilib_exec")(ui, T, {
     NULL_PACK = NULL_PACK, TXT_START = TXT_START, TXT_NOWRAP = TXT_NOWRAP,
     TXT_CENTER = TXT_CENTER, TXT_END = TXT_END, TXT_JUSTIFY = TXT_JUSTIFY,

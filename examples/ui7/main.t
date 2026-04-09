@@ -251,7 +251,7 @@ local function new_sdl_host()
         end
 
         function font:getHeight()
-            return tonumber(C.TTF_GetFontHeight(self._font))
+            return tonumber(C.TTF_GetFontLineSkip(self._font))
         end
 
         function font:getBaseline()
@@ -300,6 +300,18 @@ local function new_sdl_host()
             if surf == nil then error(sdl_error("SDL_ConvertSurface"), 2) end
         end
 
+        local upload_ptr = surf.pixels
+        local row_bytes = tonumber(surf.w) * 4
+        local packed = nil
+        if tonumber(surf.pitch) ~= row_bytes then
+            packed = ffi.new("uint8_t[?]", row_bytes * tonumber(surf.h))
+            local src = ffi.cast("uint8_t*", surf.pixels)
+            for y = 0, tonumber(surf.h) - 1 do
+                ffi.copy(packed + y * row_bytes, src + y * tonumber(surf.pitch), row_bytes)
+            end
+            upload_ptr = packed
+        end
+
         local texbuf = terralib.new(C.GLuint[1])
         C.glGenTextures(1, texbuf)
         local tex = tonumber(texbuf[0])
@@ -309,7 +321,7 @@ local function new_sdl_host()
         C.glTexParameteri(C.GL_TEXTURE_2D, C.GL_TEXTURE_WRAP_S, C.GL_CLAMP)
         C.glTexParameteri(C.GL_TEXTURE_2D, C.GL_TEXTURE_WRAP_T, C.GL_CLAMP)
         C.glPixelStorei(C.GL_UNPACK_ALIGNMENT, 1)
-        C.glTexImage2D(C.GL_TEXTURE_2D, 0, C.GL_RGBA, surf.w, surf.h, 0, C.GL_RGBA, C.GL_UNSIGNED_BYTE, surf.pixels)
+        C.glTexImage2D(C.GL_TEXTURE_2D, 0, C.GL_RGBA, surf.w, surf.h, 0, C.GL_RGBA, C.GL_UNSIGNED_BYTE, upload_ptr)
         C.glBindTexture(C.GL_TEXTURE_2D, 0)
 
         state.texture_cache_age = state.texture_cache_age + 1
@@ -350,7 +362,12 @@ local function new_sdl_host()
             end
             if line ~= "" then
                 local tex = get_text_texture(font, line, state.color)
-                if not tex.empty then draw_textured_quad(tex.tex, dx, y + (i - 1) * line_h, tex.w, tex.h) end
+                if not tex.empty then
+                    draw_textured_quad(tex.tex,
+                        math.floor(dx + 0.5),
+                        math.floor(y + (i - 1) * line_h + 0.5),
+                        tex.w, tex.h)
+                end
             end
         end
     end
