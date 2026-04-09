@@ -1,4 +1,4 @@
--- pvm.lua — the recording phase boundary
+-- pvm3.lua — the recording phase boundary
 --
 -- One primitive. Everything else is composition.
 --
@@ -24,21 +24,21 @@
 --
 -- ── API ─────────────────────────────────────────────────────
 --
---   pvm.context()              ASDL type system (interned, immutable)
---   pvm.with(node, overrides)  structural update preserving sharing
---   pvm.T                      triplet algebra module
+--   pvm3.context()              ASDL type system (interned, immutable)
+--   pvm3.with(node, overrides)  structural update preserving sharing
+--   pvm3.T                      triplet algebra module
 --
---   pvm.phase(name, handlers)  the ONE boundary primitive
---   pvm.lower(name, fn)        identity-cached value boundary
---   pvm.drain(g, p, c)         canonical terminal: materialize → array
---   pvm.drain_into(g, p, c, out)  terminal optimization for append-only sinks
---   pvm.report(phases)         cache behavior diagnostics
+--   pvm3.phase(name, handlers)  the ONE boundary primitive
+--   pvm3.lower(name, fn)        identity-cached value boundary
+--   pvm3.drain(g, p, c)         canonical terminal: materialize → array
+--   pvm3.drain_into(g, p, c, out)  terminal optimization for append-only sinks
+--   pvm3.report(phases)         cache behavior diagnostics
 --
 -- ── What pvm2 primitives this replaces ──────────────────────
 --
---   pvm2.verb_memo   → pvm.phase (recording triplet on miss)
---   pvm2.verb_iter   → pvm.phase (just don't cache: use T directly)
---   pvm2.verb_flat   → pvm.phase + pvm.drain_into
+--   pvm2.verb_memo   → pvm3.phase (recording triplet on miss)
+--   pvm2.verb_iter   → pvm3.phase (just don't cache: use T directly)
+--   pvm2.verb_flat   → pvm3.phase + pvm3.drain_into
 --   pvm2.pipe        → chain of phases (fusion is automatic)
 --   pvm2.fuse_maps   → T.map/T.filter over phase output (fusion is automatic)
 --   pvm2.fuse_pipeline → just call phases in sequence (fusion is automatic)
@@ -56,47 +56,10 @@
 --   The compiler does not produce machines.
 --   The compiler IS machines. All the way down.
 
-local unpack = table.unpack or unpack
+local _pvm = require("pvm")
 local Triplet = require("triplet")
 
-local pvm = {}
-
-local function get_asdl()
-    if not package.preload["gps.asdl_lexer"] then
-        package.preload["gps.asdl_lexer"] = function() return require("asdl_lexer") end
-    end
-    if not package.preload["gps.asdl_parser"] then
-        package.preload["gps.asdl_parser"] = function() return require("asdl_parser") end
-    end
-    if not package.preload["gps.asdl_context"] then
-        package.preload["gps.asdl_context"] = function() return require("asdl_context") end
-    end
-    return require("gps.asdl_context")
-end
-
-function pvm.context()
-    local ctx = get_asdl().NewContext({ codegen_constructors = true })
-    local orig = ctx.Define
-    function ctx:Define(text)
-        orig(self, text)
-        return self
-    end
-    return ctx
-end
-
-function pvm.with(node, overrides)
-    local mt = getmetatable(node)
-    if not mt or not mt.__fields then
-        error("pvm.with: not an ASDL node", 2)
-    end
-    local fields = mt.__fields
-    local args = {}
-    for i = 1, #fields do
-        local name = fields[i].name
-        args[i] = overrides[name] ~= nil and overrides[name] or node[name]
-    end
-    return mt(unpack(args, 1, #fields))
-end
+local pvm3 = {}
 local getmetatable = getmetatable
 local type = type
 local rawset = rawset
@@ -123,7 +86,9 @@ end
 --  FOUNDATION — from pvm, unchanged
 -- ══════════════════════════════════════════════════════════════
 
-pvm.T = Triplet
+pvm3.context = _pvm.context
+pvm3.with = _pvm.with
+pvm3.T = Triplet
 
 -- ══════════════════════════════════════════════════════════════
 --  SEQ — the hit-path gen
@@ -151,7 +116,7 @@ end
 -- ══════════════════════════════════════════════════════════════
 --  RECORDING GEN — the miss-path gen
 --
---  The core primitive of pvm.
+--  The core primitive of pvm3.
 --
 --  A recording is shared by every consumer that asks for the same
 --  node while the miss is still in flight.
@@ -229,7 +194,7 @@ end
 --
 --  Replaces: verb_memo, verb_iter, verb_flat, pipe, fuse_maps.
 --
---  Canonical pvm usage is phase -> triplet -> terminal consumer.
+--  Canonical pvm3 usage is phase -> triplet -> terminal consumer.
 --  drain/fold/each are the primary exits. drain_into is just a
 --  sink optimization; it is not a second execution model.
 --
@@ -254,7 +219,7 @@ end
 --
 --  Usage:
 --
---    local lower = pvm.phase("lower", {
+--    local lower = pvm3.phase("lower", {
 --        [Widget.Row] = function(node)
 --            -- return triplet: concatenation of lowered children
 --            return T.concat(
@@ -264,18 +229,18 @@ end
 --        end,
 --        [Widget.Text] = function(node)
 --            -- leaf: return a single-element triplet
---            return pvm.once(DrawText(node.value, node.style))
+--            return pvm3.once(DrawText(node.value, node.style))
 --        end,
 --    })
 --
 --    -- pull-driven: nothing evaluates until you drain
---    local commands = pvm.drain(lower(root))
+--    local commands = pvm3.drain(lower(root))
 --
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.phase(name, handlers)
+function pvm3.phase(name, handlers)
 	if type(handlers) ~= "table" then
-		error("pvm.phase: handlers must be a table", 2)
+		error("pvm3.phase: handlers must be a table", 2)
 	end
 
 	-- build dispatch table: metatable/class → handler function
@@ -307,7 +272,7 @@ function pvm.phase(name, handlers)
 		local mt = getmetatable(node)
 		local handler = dispatch[mt]
 		if not handler then
-			error("pvm.phase '" .. name .. "': no handler for " .. tostring(mt and mt.kind or type(node)), 2)
+			error("pvm3.phase '" .. name .. "': no handler for " .. tostring(mt and mt.kind or type(node)), 2)
 		end
 
 		local g, p, c = handler(node)
@@ -411,7 +376,7 @@ end
 --
 --  Usage:
 --
---    local solve = pvm.lower("solve", function(tree)
+--    local solve = pvm3.lower("solve", function(tree)
 --        return layout_solver(tree)
 --    end)
 --
@@ -419,7 +384,7 @@ end
 --
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.lower(name, fn)
+function pvm3.lower(name, fn)
 	local cache = setmetatable({}, { __mode = "k" })
 	local stats = { name = name, calls = 0, hits = 0 }
 
@@ -439,7 +404,7 @@ function pvm.lower(name, fn)
 	boundary.name = name
 	boundary.__call = function(_, node, ...)
 		if select("#", ...) ~= 0 then
-			error("pvm.lower '" .. tostring(name) .. "': extra args are not supported", 2)
+			error("pvm3.lower '" .. tostring(name) .. "': extra args are not supported", 2)
 		end
 		return call(node)
 	end
@@ -463,7 +428,7 @@ function pvm.lower(name, fn)
 	end
 	function boundary:warm(node, ...)
 		if select("#", ...) ~= 0 then
-			error("pvm.lower '" .. tostring(name) .. "': extra args are not supported", 2)
+			error("pvm3.lower '" .. tostring(name) .. "': extra args are not supported", 2)
 		end
 		return call(node)
 	end
@@ -540,7 +505,7 @@ end
 --  only called at the outermost install boundary.
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.drain(g, p, c)
+function pvm3.drain(g, p, c)
 	if g == nil then
 		return {}
 	end
@@ -570,7 +535,7 @@ end
 -- This is a sink optimization over the canonical triplet path,
 -- not a separate flat execution architecture.
 
-function pvm.drain_into(g, p, c, out)
+function pvm3.drain_into(g, p, c, out)
 	if g == nil then
 		return out
 	end
@@ -602,13 +567,13 @@ end
 --  For side-effectful consumption (rendering, audio output)
 --  without materializing an array.
 --
---    pvm.each(render(root), function(cmd)
+--    pvm3.each(render(root), function(cmd)
 --        execute_draw(cmd)
 --    end)
 --
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.each(g, p, c, fn)
+function pvm3.each(g, p, c, fn)
 	if g == nil then
 		return
 	end
@@ -642,13 +607,13 @@ end
 --
 --  For reductions that don't need an intermediate array.
 --
---    local total = pvm.fold(phase(root), 0, function(acc, val)
+--    local total = pvm3.fold(phase(root), 0, function(acc, val)
 --        return acc + val.size
 --    end)
 --
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.fold(g, p, c, init, fn)
+function pvm3.fold(g, p, c, init, fn)
 	if g == nil then
 		return init
 	end
@@ -687,7 +652,7 @@ end
 --  <50% means the ASDL or phase boundaries are wrong.
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.report(phases)
+function pvm3.report(phases)
 	local out = {}
 	for i = 1, #phases do
 		local s = phases[i]:stats()
@@ -707,9 +672,9 @@ function pvm.report(phases)
 end
 
 -- Formatted report string
-function pvm.report_string(phases)
+function pvm3.report_string(phases)
 	local lines = {}
-	local report = pvm.report(phases)
+	local report = pvm3.report(phases)
 	for i = 1, #report do
 		local r = report[i]
 		lines[i] = string.format("  %-24s calls=%-6d hits=%-6d shared=%-6d reuse=%.1f%%", r.name, r.calls, r.hits, r.shared, r.reuse_ratio * 100)
@@ -721,7 +686,7 @@ end
 --  ARRAY AS TRIPLET — unchanged from pvm2
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.seq(array, n)
+function pvm3.seq(array, n)
 	n = n or #array
 	if n >= #array then
 		return seq_gen, array, 0
@@ -729,7 +694,7 @@ function pvm.seq(array, n)
 	return seq_n_gen, { array = array, n = n }, 0
 end
 
-function pvm.seq_rev(array, n)
+function pvm3.seq_rev(array, n)
 	n = n or #array
 	if n > #array then
 		n = #array
@@ -750,7 +715,7 @@ end
 --  The leaf case. When a handler produces one output element.
 --
 --    [Widget.Text] = function(node)
---        return pvm.once(DrawText(node.value))
+--        return pvm3.once(DrawText(node.value))
 --    end
 --
 -- ══════════════════════════════════════════════════════════════
@@ -762,7 +727,7 @@ local function once_gen(val, emitted)
 	return 1, val
 end
 
-function pvm.once(value)
+function pvm3.once(value)
 	return once_gen, value, 0
 end
 
@@ -774,7 +739,7 @@ local function empty_gen()
 	return nil
 end
 
-function pvm.empty()
+function pvm3.empty()
 	return empty_gen, nil, nil
 end
 
@@ -827,11 +792,11 @@ local function concat3_gen(s, phase)
 	return 3, v
 end
 
-function pvm.concat2(g1, p1, c1, g2, p2, c2)
+function pvm3.concat2(g1, p1, c1, g2, p2, c2)
 	return concat2_gen, { g1, p1, c1, g2, p2, c2 }, 1
 end
 
-function pvm.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
+function pvm3.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
 	return concat3_gen, { g1, p1, c1, g2, p2, c2, g3, p3, c3 }, 1
 end
 
@@ -841,7 +806,7 @@ end
 --  Takes an array of packed triplets: { {g,p,c}, {g,p,c}, ... }
 --  Returns a single concatenated triplet.
 --
---  For large arity this stays inside pvm with one small state machine
+--  For large arity this stays inside pvm3 with one small state machine
 --  instead of building a meta-iterator for Triplet.flatten().
 -- ══════════════════════════════════════════════════════════════
 
@@ -875,21 +840,21 @@ local function concatn_gen(s, active)
 	end
 end
 
-function pvm.concat_all(trips)
+function pvm3.concat_all(trips)
 	local n = #trips
 	if n == 0 then
-		return pvm.empty()
+		return pvm3.empty()
 	end
 	if n == 1 then
 		return trips[1][1], trips[1][2], trips[1][3]
 	end
 	if n == 2 then
 		local t1, t2 = trips[1], trips[2]
-		return pvm.concat2(t1[1], t1[2], t1[3], t2[1], t2[2], t2[3])
+		return pvm3.concat2(t1[1], t1[2], t1[3], t2[1], t2[2], t2[3])
 	end
 	if n == 3 then
 		local t1, t2, t3 = trips[1], trips[2], trips[3]
-		return pvm.concat3(t1[1], t1[2], t1[3], t2[1], t2[2], t2[3], t3[1], t3[2], t3[3])
+		return pvm3.concat3(t1[1], t1[2], t1[3], t2[1], t2[2], t2[3], t3[1], t3[2], t3[3])
 	end
 	return concatn_gen, { trips, n, 0, nil, nil, nil }, true
 end
@@ -901,14 +866,14 @@ end
 --  concatenate results.
 --
 --    [Widget.Row] = function(node)
---        return pvm.children(lower, node.items)
+--        return pvm3.children(lower, node.items)
 --    end
 --
 --  This is pull-driven: if any child hits, its seq is instant.
 --  If a child misses, its recording triplet fuses with the
 --  parent's recording.
 --
---  For large arrays, children stay lazy: pvm does not prebuild an
+--  For large arrays, children stay lazy: pvm3 does not prebuild an
 --  intermediate triplet array for every child before draining.
 -- ══════════════════════════════════════════════════════════════
 
@@ -945,13 +910,13 @@ local function children_gen(s, active)
 	end
 end
 
-function pvm.children(phase_fn, array, n)
+function pvm3.children(phase_fn, array, n)
 	n = n or #array
 	if n > #array then
 		n = #array
 	end
 	if n == 0 then
-		return pvm.empty()
+		return pvm3.empty()
 	end
 	if n == 1 then
 		return phase_fn(array[1])
@@ -959,15 +924,15 @@ function pvm.children(phase_fn, array, n)
 	if n == 2 then
 		local g1, p1, c1 = phase_fn(array[1])
 		local g2, p2, c2 = phase_fn(array[2])
-		return pvm.concat2(g1, p1, c1, g2, p2, c2)
+		return pvm3.concat2(g1, p1, c1, g2, p2, c2)
 	end
 	if n == 3 then
 		local g1, p1, c1 = phase_fn(array[1])
 		local g2, p2, c2 = phase_fn(array[2])
 		local g3, p3, c3 = phase_fn(array[3])
-		return pvm.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
+		return pvm3.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
 	end
 	return children_gen, { phase_fn, array, n, 0, nil, nil, nil }, true
 end
 
-return pvm
+return pvm3
