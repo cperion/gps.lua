@@ -66,23 +66,23 @@ T:Define [[
                      | ContentStretch
                      | ContentSpaceBetween | ContentSpaceAround | ContentSpaceEvenly
 
-        Size = SizeAuto | SizePx(number px) | SizePercent(number ratio) | SizeContent
+        Size = SizeAuto | SizePx(number px) unique | SizePercent(number ratio) unique | SizeContent
 
-        Basis = BasisAuto | BasisPx(number px)
-              | BasisPercent(number ratio) | BasisContent
+        Basis = BasisAuto | BasisPx(number px) unique
+              | BasisPercent(number ratio) unique | BasisContent
 
-        Min = NoMin | MinPx(number px)
-        Max = NoMax | MaxPx(number px)
+        Min = NoMin | MinPx(number px) unique
+        Max = NoMax | MaxPx(number px) unique
 
         TextWrap = TextNoWrap | TextWordWrap | TextCharWrap
         TextAlign = TextStart | TextCenter | TextEnd | TextJustify
         Overflow = OverflowVisible | OverflowClip | OverflowEllipsis
 
         LineHeight = LineHeightAuto
-                   | LineHeightPx(number px)
-                   | LineHeightScale(number scale)
+                   | LineHeightPx(number px) unique
+                   | LineHeightScale(number scale) unique
 
-        LineLimit = UnlimitedLines | MaxLines(number count)
+        LineLimit = UnlimitedLines | MaxLines(number count) unique
 
         Insets = (number l, number t, number r, number b) unique
 
@@ -538,10 +538,10 @@ T:Define [[
 T:Define [[
     module Facts {
         Span = SpanUnconstrained
-             | SpanExact(number px)
-             | SpanAtMost(number px)
+             | SpanExact(number px) unique
+             | SpanAtMost(number px) unique
 
-        Baseline = NoBaseline | BaselinePx(number px)
+        Baseline = NoBaseline | BaselinePx(number px) unique
 
         Constraint = (Facts.Span w,
                       Facts.Span h) unique
