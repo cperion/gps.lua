@@ -2,16 +2,26 @@
 
 Love2D mock demo for the fresh UI stack.
 
-This version is a **DAW-style mock UI** with the compiler idea tucked inside the shell:
+This version is a **Bitwig-style DAW mock UI** with the compiler idea tucked inside the shell:
 
-- top transport / mode bar
-- left browser / project list
+- title bar + transport / mode toolbar
+- left detail rail
+- launcher / track list panel
 - center arrangement timeline
-- bottom device chain / callback strip
-- right mixer
-- status bar and callback log
+- right project / inspector panel
+- bottom device chain editor
+- bottom project remotes panel
+- status bar
 
-The demo app/domain itself is also modeled with ASDL in `ui/demo/asdl.lua`.
+The demo app/domain is modeled with ASDL in `ui/demo/asdl.lua`.
+
+It now has explicit layers:
+- DAW project/domain ASDL
+- demo widget/view ASDL (`DemoView`)
+- `ui/demo/lower.lua` for `DemoView -> SemUI`
+- generic `ui.lower` for `SemUI -> UI`
+- richer app widgets in `DemoView` for launcher rows, launcher buttons/slots, arrangement track headers/clips, and inspector controls
+- custom draw for audio-heavy surfaces like arrangement and the device editor
 
 ## Run
 
@@ -32,10 +42,12 @@ love ui/demo
 - reducer-driven keyboard focus navigation + activation
 - a runtime-driven mock DAW dashboard with bounded structural identity
 - demo/domain state modeled with ASDL (`ui/demo/asdl.lua`)
+- an explicit ASDL widget/view layer between project data and generic UI
 - the split between structural recompiles and live state tweaks
 
 ## Controls
 
+- launcher buttons (`M/S/R`) are real widgets and clip slots are real launch widgets
 - `TAB` / `SHIFT+TAB` — move keyboard focus
 - `ENTER` / `SPACE` — activate the focused item
 - `1` / `2` / `3` — switch Arrange / Routing / Machine overlays

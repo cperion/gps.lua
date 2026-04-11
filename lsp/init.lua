@@ -1,0 +1,144 @@
+-- lsp/init.lua
+--
+-- Public facade for the Lua LSP.
+
+package.path = "./?.lua;./?/init.lua;" .. package.path
+
+local ASDL       = require("lsp.asdl")
+local Lexer      = require("lsp.lexer")
+local Parser     = require("lsp.parser")
+local Semantics  = require("lsp.semantics")
+local TypeInfer  = require("lsp.typeinfer")
+local Complete   = require("lsp.complete")
+local DocSymbols = require("lsp.docsymbols")
+local SigHelp    = require("lsp.sighelp")
+local Rename     = require("lsp.rename")
+local Adapter    = require("lsp.adapter")
+local Server     = require("lsp.server")
+local JsonRpc    = require("lsp.jsonrpc")
+
+local M = {}
+
+function M.context()   return ASDL.context() end
+function M.lexer(ctx)  return Lexer.new(ctx) end
+function M.parser(ctx) return Parser.new(ctx) end
+function M.semantics(ctx) return Semantics.new(ctx) end
+
+function M.typeinfer(sem_engine)
+    return TypeInfer.new(sem_engine)
+end
+
+function M.complete(sem_engine, type_engine)
+    return Complete.new(sem_engine, type_engine)
+end
+
+function M.docsymbols(sem_engine)
+    return DocSymbols.new(sem_engine)
+end
+
+function M.sighelp(sem_engine, type_engine)
+    return SigHelp.new(sem_engine, type_engine)
+end
+
+function M.rename(sem_engine, adapter)
+    return Rename.new(sem_engine, adapter)
+end
+
+function M.adapter(engine, opts)
+    return Adapter.new(engine, opts)
+end
+
+--- Create a fully-wired LSP server with standalone parser + all features.
+function M.server(opts)
+    opts = opts or {}
+    local ctx = opts.context or M.context()
+    local C = ctx.Lua
+    local parser_engine = M.parser(ctx)
+    local sem = opts.engine or M.semantics(ctx)
+
+    if not opts.parse then
+        opts.parse = function(uri, text, _prev_file, _C, _params)
+            local source = C.SourceFile(uri, text or "")
+            local result = parser_engine.parse(source)
+            return result.file, result.meta
+        end
+    end
+
+    if not opts.adapter_opts then opts.adapter_opts = {} end
+    if not opts.adapter_opts.anchor_to_range then
+        opts.adapter_opts.anchor_to_range = function(_file, anchor, _aid, meta)
+            if not anchor or not meta then return nil end
+            local aid = anchor.id
+            for i = 1, #meta.positions do
+                local p = meta.positions[i]
+                if p.anchor.id == aid then
+                    return {
+                        start = { line = p.range.start.line, character = p.range.start.character },
+                        ["end"] = { line = p.range.stop.line, character = p.range.stop.character },
+                    }
+                end
+            end
+            return nil
+        end
+    end
+
+    if not opts.position_to_anchor then
+        opts.position_to_anchor = function(_file, position, doc)
+            local meta = doc and doc.meta
+            if not meta then return nil end
+            local line = position.line or 0
+            local ch = position.character or 0
+            for i = 1, #meta.positions do
+                local p = meta.positions[i]
+                local rs, re = p.range.start, p.range.stop
+                if (line > rs.line or (line == rs.line and ch >= rs.character))
+                    and (line < re.line or (line == re.line and ch <= re.character)) then
+                    return p.anchor
+                end
+            end
+            return nil
+        end
+    end
+
+    opts.context = ctx
+    opts.engine = sem
+    local core = Server.new(opts)
+
+    -- Wire up extra engines
+    local type_engine = M.typeinfer(sem)
+    local complete_engine = M.complete(sem, type_engine)
+    local docsymbols_engine = M.docsymbols(sem)
+    local sighelp_engine = M.sighelp(sem, type_engine)
+    local rename_engine = M.rename(sem, core.adapter)
+
+    -- Attach extra engines to core for request handling
+    core._type_engine = type_engine
+    core._complete_engine = complete_engine
+    core._docsymbols_engine = docsymbols_engine
+    core._sighelp_engine = sighelp_engine
+    core._rename_engine = rename_engine
+
+    return core
+end
+
+--- Run a full LSP server on stdio.
+function M.run_stdio(opts)
+    local server = M.server(opts)
+    return JsonRpc.new({ core = server }):run_stdio()
+end
+
+-- Expose modules
+M.ASDL = ASDL
+M.Lexer = Lexer
+M.Parser = Parser
+M.Semantics = Semantics
+M.TypeInfer = TypeInfer
+M.Complete = Complete
+M.DocSymbols = DocSymbols
+M.SigHelp = SigHelp
+M.Rename = Rename
+M.Adapter = Adapter
+M.Server = Server
+M.JsonRpc = JsonRpc
+
+return M

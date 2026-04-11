@@ -12,7 +12,7 @@ Modules:
 - `ui/draw.lua` — drawing reducer
 - `ui/_flex.lua` — private shared flex kernel used by `ui/draw.lua`, `ui/hit.lua`, and `ui/measure.lua`
 - `ui/init.lua` — public facade (`require("ui")` also works via root shim)
-- `ui/demo/` — Love2D showcase app for the fresh UI stack, now with a live editor pane and its own domain ASDL
+- `ui/demo/` — Love2D showcase app for the fresh UI stack, with DAW project ASDL, demo widget/view ASDL, `ui/demo/lower.lua`, and custom audio-oriented draw surfaces
 
 Implemented now:
 - `ui/asdl.lua`

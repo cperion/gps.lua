@@ -99,7 +99,7 @@ But user nouns:
 
 ### 1.5 The hard part
 
-The framework primitives — ASDL, verb, lower, with, for-loop execution — are tools. They do not tell you what to model. They do not tell you what the source language should be. They do not tell you where knowledge is consumed, what lower forms are honest, or how many layers you actually need.
+The framework primitives — ASDL, phase, lower, with, for-loop execution — are tools. They do not tell you what to model. They do not tell you what the source language should be. They do not tell you where knowledge is consumed, what lower forms are honest, or how many layers you actually need.
 
 That is the hard part.
 
@@ -162,39 +162,40 @@ That purity is what makes:
 - memoization coherent — same input → same output → skip
 - tests trivial — construct input, call apply, assert output
 
-### 2.4 Boundaries (verb + lower)
+### 2.4 Boundaries (phase + lower)
 
 A boundary is a memoized transformation from one representation to another.
 
 There are two kinds:
 
-**verb** — a type-dispatched cached transform. Each sum type variant gets its own handler. The boundary dispatches by the node's type and caches the result on the node's identity.
+**phase** — a type-dispatched streaming boundary. Each sum type variant gets its own handler. The boundary dispatches by the node's type, wraps the handler's output in a recording triplet, and caches the result (as a flat array) on first full drain.
 
 ```lua
-local widget_to_ui = pvm.verb("ui", {
-    [T.App.TrackRow]  = function(self) ... end,
-    [T.App.Button]    = function(self) ... end,
-    [T.App.Meter]     = function(self) ... end,
-}, { cache = true })
+local widget_to_cmds = pvm.phase("ui", {
+    [T.App.TrackRow]  = function(self) ... return pvm.children(widget_to_cmds, self.rows) end,
+    [T.App.Button]    = function(self) ... return pvm.once(Rct(self.tag, ...)) end,
+    [T.App.Meter]     = function(self) ... return pvm.once(Rct(self.tag, ...)) end,
+})
 
--- Now: widget:ui() dispatches to the right handler, caches on identity.
--- Same widget pointer → cached result → skip the entire handler.
+-- widget:ui() → (g, p, c) triplet. Drain it to materialize values.
+-- Same widget pointer → seq_gen hit → skip the entire handler. Zero work.
+pvm.each(widget_to_cmds(root), function(cmd) paint(cmd) end)
 ```
 
-**lower** — an identity-cached function boundary. No type dispatch. Just "if you've seen this input before, return the cached output."
+**lower** — an identity-cached value boundary. No type dispatch. One function, caches a single value per node identity.
 
 ```lua
-local compile = pvm.lower("compile", function(root)
-    return layout(root)
+local solve = pvm.lower("solve", function(root)
+    return layout_solver(root)   -- returns one value, cached on root's identity
 end)
 ```
 
-Both are memoized. Both skip work when the input is unchanged. The difference: verb dispatches by type (for sum-type boundaries), lower caches a single function (for type-agnostic transforms).
+Both are memoized. Both skip work when the input is unchanged. The difference: `phase` dispatches by type and produces a **stream** of values (triplet); `lower` caches a **single value** (a solved layout, a scheduled plan).
 
 A boundary consumes unresolved knowledge. A real boundary answers a real question:
-- what layout nodes does this widget need? (verb)
-- what flat commands does this layout tree produce? (lower)
-- what does this name resolve to? (verb)
+- what commands does this widget produce? (phase)
+- what solved layout does this tree require? (lower)
+- what does this name resolve to? (phase)
 
 A boundary is not just "another pass." It is a reduction of ambiguity.
 
@@ -260,7 +261,7 @@ This is incremental compilation as a direct consequence of architecture, not a b
 The loop makes hot swap natural rather than exotic:
 - old source compiled to a Cmd array
 - a new event changes the source
-- affected subtrees recompile (verb/lower caches skip unchanged parts)
+- affected subtrees recompile (phase/lower caches skip unchanged parts)
 - a new Cmd array is produced
 - the for-loop runs the new array
 
@@ -286,12 +287,12 @@ for i = 1, #cmds do paint(cmds[i]) end          -- painting
 for i = #cmds, 1, -1 do hit_test(cmds[i]) end   -- hit testing (reverse z-order)
 ```
 
-Or different verb boundaries producing different output arrays:
+Or different phase boundaries producing different output arrays:
 
 ```lua
-local paint_cmds = compile_paint(source)   -- verb: source → paint commands
-local hit_cmds   = compile_hit(source)     -- verb: source → hit regions
-local a11y_tree  = compile_a11y(source)    -- verb: source → accessibility tree
+local paint_cmds = compile_paint(source)   -- phase: source → paint commands
+local hit_cmds   = compile_hit(source)     -- phase: source → hit regions
+local a11y_tree  = compile_a11y(source)    -- phase: source → accessibility tree
 ```
 
 These are not special cases. They are ordinary outputs of the same compiler architecture. Each is a separate memoized boundary. Each caches independently. Editing the source recompiles only the affected subtrees for each output.
@@ -330,7 +331,7 @@ It includes:
 - Source ASDL and its constructors
 - Event ASDL
 - Apply
-- verb boundaries (type-dispatched cached transforms)
+- phase boundaries (type-dispatched recording-triplet transforms)
 - lower boundaries (identity-cached function transforms)
 - layout computation
 - structural error collection
@@ -351,10 +352,8 @@ This is where questions are answered:
 The codegen level is where the compilation primitives themselves are made fast.
 
 It includes:
-- code-generated ASDL constructors (unrolled interning tries)
-- code-generated verb dispatch (if-elseif chain on metatable identity)
-- code-generated lower cache lookups
-- hygienic codegen via quote.lua
+- code-generated ASDL constructors (unrolled interning tries, no loops or `select()`)
+- hygienic codegen via quote.lua for custom hot-path generation
 
 Its characteristic properties are:
 - happens once at definition time, not per frame
@@ -362,9 +361,15 @@ Its characteristic properties are:
 - uses loadstring to compile specialized functions
 - the generated code IS what LuaJIT traces
 
+Note: `pvm.phase` dispatch uses a direct `getmetatable` table lookup — no
+loadstring, no generated source. The dispatch is simple and predictable.
+Code generation applies where it matters most: ASDL constructor interning
+(unrolled per field count) and any custom hot-path kernels you author with
+quote.lua.
+
 This is the realization layer. In older descriptions of this pattern, realization was a large conceptual architecture involving "proto languages," "artifact families," "binding schemas," "install catalogs," and "host contracts." Those abstractions were needed when the target was native code via LLVM (Terra) or bytecode templates via string.dump.
 
-In pvm, realization is 148 lines of quote.lua plus the codegen paths in verb and lower. The insight is preserved — machine meaning must become executable form — but the mechanism is simple: `loadstring` produces a function, that function runs in the for-loop.
+In pvm, realization is 148 lines of quote.lua for ASDL constructor codegen. The insight is preserved — machine meaning must become executable form — but the mechanism is direct: `pvm.phase` wraps handlers in recording triplets, and `pvm.drain` / `pvm.each` pulls through them.
 
 ### 3.3 The execution level
 
@@ -413,27 +418,27 @@ This was architecturally honest for systems targeting native code via LLVM or by
 
 In pvm, the entire realization story is:
 
-1. **verb** generates a dispatch function via loadstring. The function does `if mt == C1 then result = H1(node) elseif ...`. It caches on node identity.
+1. **phase** dispatches by `getmetatable(node)` — a plain table lookup. On miss, the handler's triplet is wrapped in a recording that commits to cache on full drain. No loadstring. No generated dispatch.
 
-2. **lower** generates a cache-check function via loadstring. Same cache-on-identity story.
+2. **lower** wraps a function with an identity cache. On miss, calls the function and stores the result. Also no loadstring.
 
-3. **ASDL constructors** generate interning functions via loadstring. Unrolled trie walks with no loops.
+3. **ASDL constructors** generate interning functions via loadstring. Unrolled trie walks with no loops, no `select()`. This IS the codegen-level work.
 
-4. **quote.lua** (148 lines) provides hygienic codegen: `val()` captures upvalues, `sym()` creates fresh names, `compile()` does the loadstring.
+4. **quote.lua** (148 lines) provides hygienic codegen: `val()` captures upvalues, `sym()` creates fresh names, `compile()` does the loadstring. Used for constructors and custom hot-path kernels.
 
-That's it. No proto language. No artifact families. No binding schemas. No install catalogs. The generated function IS the installed artifact. Recompilation IS re-generating the function (which happens rarely, only when the set of types changes).
+That's it. No proto language. No artifact families. No binding schemas. No install catalogs. The flat Cmd array IS the installed artifact. Recompilation IS producing a new Cmd array (incrementally, only for changed subtrees).
 
 The insight from the old proto/realization vocabulary is preserved in a single sentence:
 
-> Machine meaning must become executable form. In pvm, that form is a code-generated dispatch function plus a flat Cmd array.
+> Machine meaning must become executable form. In pvm, that form is a recording-triplet phase boundary that lazily fills a flat Cmd array, executed by `pvm.each` or a for-loop.
 
 ### 3.6 When the three levels compress
 
 Not every application needs all three levels to be visible:
 
-**Small apps** (calculator, simple tool): Compilation + execution only. No codegen needed. verb and lower work without code generation — they just use closure-based caching.
+**Small apps** (calculator, simple tool): Compilation + execution only. No codegen needed. `pvm.phase` and `pvm.lower` work without code generation — plain metatable lookups and closure caches.
 
-**Medium apps** (track editor, document editor): verb/lower codegen for hot dispatch. The generated dispatch function saves measurable time because it presents LuaJIT with a single monomorphic function to trace.
+**Medium apps** (track editor, document editor): ASDL constructor codegen for hot interning. The generated trie-walk functions present LuaJIT with unrolled, monomorphic code to trace.
 
 **Large apps** (DAW, game engine, IDE): quote.lua for custom hot-path generation. Hand-crafted codegen for specialized inner loops, shader compilation, audio kernel generation.
 
@@ -459,7 +464,7 @@ Mixing these error families leads to bad design.
 
 Compilation-level tests look like:
 - construct ASDL input
-- call verb / lower / apply
+- call phase / lower / apply
 - assert output
 
 Codegen-level tests look like:
@@ -566,7 +571,7 @@ This means: if you find yourself needing complex mutable state during execution,
 
 The rule that tells you how many layers you need:
 
-> Every level of structural recursion in your domain requires one ASDL layer. Each layer's output is consumed by the next layer's verb/lower boundary. The final layer is flat.
+> Every level of structural recursion in your domain requires one ASDL layer. Each layer's output is consumed by the next layer's phase/lower boundary. The final layer is flat.
 
 In the track editor (ui5):
 
@@ -576,7 +581,7 @@ Layer 1: UI.Node     — structural recursion (Column contains children)
 Layer 2: View.Cmd    — FLAT (no recursion, just an array)
 ```
 
-App.Widget has structural recursion: TrackList contains TrackRows, Inspector contains Buttons and Sliders. This recursion is consumed by the `:ui()` verb boundary, which produces UI.Nodes.
+App.Widget has structural recursion: TrackList contains TrackRows, Inspector contains Buttons and Sliders. This recursion is consumed by the `:ui()` phase boundary, which produces UI.Nodes.
 
 UI.Node has structural recursion: Column contains children, Padding wraps a child. This recursion is consumed by the `:place()` layout walk, which produces flat View.Cmd arrays.
 
@@ -970,7 +975,7 @@ The method:
 2. List all the decisions that need to be resolved
 3. Order them by dependency
 4. Group decisions that must happen together (coupling)
-5. Each group becomes a verb/lower boundary
+5. Each group becomes a phase/lower boundary
 
 The counting rule from §4.6 tells you how many layers:
 - Count recursive types → that many layers + one flat layer
@@ -1131,7 +1136,7 @@ The pattern's purity guarantees make parallelism safe by construction:
 Every program has at least two for-loops from the same source:
 
 ```text
-Source ASDL ──verb──> ... ──place──> Cmd[]
+Source ASDL ──phase──> ... ──place──> Cmd[]
                                       │
                                       ├── for i=1,#cmds do paint(cmds[i]) end
                                       └── for i=#cmds,1,-1 do hit(cmds[i]) end
@@ -1245,7 +1250,7 @@ Fix: split into two boundaries. Each should do ONE kind of knowledge consumption
 
 There is one invariant that, if maintained, guarantees the system works correctly:
 
-> **Every distinction that matters at runtime is either resolved in the sum type (verb dispatch), present in the Cmd fields (payload), or stripped (dead). Nothing is lost. Nothing is duplicated. Nothing is misclassified.**
+> **Every distinction that matters at runtime is either resolved in the sum type (phase dispatch), present in the Cmd fields (payload), or stripped (dead). Nothing is lost. Nothing is duplicated. Nothing is misclassified.**
 
 ---
 
@@ -1281,7 +1286,7 @@ In the pattern: resolution phases make each node self-contained. No function nee
 
 Dynamic dispatch tables, generic node walkers asking "what are you?" repeatedly, runtime graph traversals rediscovering semantic facts.
 
-In the pattern: verb boundaries resolve type dispatch at compilation time. The for-loop does not ask "what are you?" — it reads `cmd.kind` which is already decided.
+In the pattern: phase boundaries resolve type dispatch at compilation time. The for-loop does not ask "what are you?" — it reads `cmd.kind` which is already decided.
 
 ### 7.6 Virtual DOM and reconciliation
 
@@ -1304,7 +1309,7 @@ In the pattern: pure functions. Construct ASDL input, call function, assert outp
 
 Hand-rolled code caches, one-off registries, closure caches with unclear invalidation.
 
-In the pattern: verb and lower are the ONLY caches. They are structural, automatic, and inspectable via `pvm.report()`.
+In the pattern: phase and lower are the ONLY caches. They are structural, automatic, and inspectable via `pvm.report_string()`.
 
 ### 7.9 The general principle
 
@@ -1330,7 +1335,7 @@ It moves complexity to places where it is more explicit, more local, and more me
 Once the pattern simplifies a codebase, there is a temptation to reintroduce the old furniture by habit:
 - adding a state manager where Source ASDL + Apply suffices
 - adding an observer bus where Event ASDL + Apply suffices
-- adding invalidation flags where identity + verb/lower suffices
+- adding invalidation flags where identity + phase/lower suffices
 - adding a service container where a resolution phase suffices
 - adding a virtual DOM where ASDL interning suffices
 
@@ -1477,32 +1482,20 @@ module View {
 }
 ```
 
-**The verb boundary** (Layer 0 → Layer 1):
+**The phase boundary** (Layer 0 → Layer 1):
 
 ```lua
-local widget_to_ui = pvm.verb("ui", {
-    [T.App.TrackRow] = function(self) ... return Col(0, {...}) end,
-    [T.App.Button]   = function(self) ... return Rct(self.tag, ...) end,
-    [T.App.Meter]    = function(self) ... return Rct(self.tag, ...) end,
+local widget_to_cmds = pvm.phase("ui", {
+    [T.App.TrackRow] = function(self) ... return pvm.children(widget_to_cmds, self.rows) end,
+    [T.App.Button]   = function(self) ... return pvm.once(Rct(self.tag, ...)) end,
+    [T.App.Meter]    = function(self) ... return pvm.once(Rct(self.tag, ...)) end,
     ... -- 11 handlers
-}, { cache = true })
+})
 ```
 
-Generated dispatch (inspectable via `widget_to_ui.source`):
-```lua
-return function(node)
-  local hit = node_cache[node]
-  if hit ~= nil then return hit end
-  local mt = getmetatable(node)
-  local result
-  if mt == C_1 then result = H_1(node)
-  elseif mt == C_2 then result = H_2(node)
-  ...
-  end
-  node_cache[node] = result
-  return result
-end
-```
+Dispatch: `getmetatable(node)` lookup — no generated code, plain table read.
+On hit: `seq_gen` over cached array, zero handler work.
+On miss: recording triplet wraps handler output, commits to cache on drain.
 
 **The layout walk** (Layer 1 → Layer 2):
 
@@ -1522,21 +1515,25 @@ function T.UI.Rect:place(x, y, mw, mh, out)
 end
 ```
 
-**The for-loop** (execution):
+**Execution** (pull-driven):
 ```lua
-for i = 1, #cmds do
-    local cmd = cmds[i]
+-- Paint: pull lazily, cache fills as side effect
+pvm.each(widget_to_cmds(root), function(cmd)
     local k = cmd.kind
     if k == K_RECT then ... paint rectangle ...
     elseif k == K_TEXT then ... paint text ...
     elseif k == K_PUSH_CLIP then ... set scissor ...
     end
-end
+end)
+
+-- Hit test: drain to array, reverse-iterate
+local cmds = pvm.drain(widget_to_cmds(root))   -- instant seq hit if cached
+for i = #cmds, 1, -1 do hit_test(cmds[i], mx, my) end
 ```
 
 **Performance**: build_widgets = 14.3µs (90%), compile = 1.6µs (10%), paint = 343µs. Total framework = 16µs = 1% of frame budget. Love2D draw calls are the bottleneck.
 
-**Cache behavior**: verb "ui" shows 72% hit rate during animated playback (4174 calls, 3037 hits). Track rows that didn't change → cache hit → skip.
+**Cache behavior**: phase "ui" shows 93% reuse rate during animated playback (4174 calls, 3037 hits + 892 shared). Track rows that didn't change → cache hit or shared recording → skip handler entirely.
 
 ### 9.2 Text editor
 
@@ -1664,7 +1661,7 @@ Convention fails under pressure. Classification is observable via `pvm.report()`
 
 Keys are an escape hatch. They leak framework mechanics into domain code, are error-prone, and cannot be verified.
 
-Structure is already there — the ASDL, the interning, the verb dispatch. Every time you reach for a key, ask: "Can I express this as structure instead?" Usually you can.
+Structure is already there — the ASDL, the interning, the phase dispatch. Every time you reach for a key, ask: "Can I express this as structure instead?" Usually you can.
 
 ### 10.5 Why ASDL over ad hoc types
 
@@ -1761,15 +1758,16 @@ Codegen (loadstring'd functions with inlined constants and unrolled dispatch) pr
 □ Types marked unique for interning
 □ Edits produce new nodes with structural sharing (pvm.with)
 □ Boundary caches align with identity nouns
-□ verb for type-dispatched boundaries
-□ lower for type-agnostic boundaries
+□ phase for type-dispatched streaming boundaries
+□   handlers return triplets (pvm.once / pvm.children / pvm.concat2/3/all)
+□ lower for type-agnostic single-value boundaries
 ```
 
 ### Execution
 ```
-□ Paint: for-loop over Cmd array
-□ Hit test: reverse for-loop over same array
-□ State in the for-loop is push/pop stacks only
+□ Paint: pvm.each(phase(root), draw_fn) — pull-driven, lazy
+□ Hit test: pvm.drain(phase(root)) → reverse for-loop over materialized array
+□ State in the execution loop is push/pop stacks only
 □ No source-level semantics rediscovered during execution
 ```
 
@@ -1802,13 +1800,13 @@ THE FIVE CONCEPTS
     source ASDL
     Event ASDL
     Apply
-    boundaries (verb + lower, memoized on identity)
-    flat execution (for-loop over Cmd array)
+    boundaries (phase + lower, memoized on identity)
+    flat execution (pvm.each or for-loop over drained Cmd array)
 
 THE THREE LEVELS
     compilation: pure, structural, memoized
-    codegen: quote.lua, loadstring, inspectable
-    execution: for-loop, push/pop stacks, linear
+    codegen: quote.lua for ASDL constructors and custom hot paths
+    execution: pvm.each / for-loop, push/pop stacks, linear
 
 THE FLATTEN THEOREM
     tree in, flat out, for-loop forever
@@ -1823,10 +1821,10 @@ THE DEEPEST RULE
     the source ASDL is the architecture
 
 THE EXECUTION RULE
-    compilation produces flat command arrays
-    for-loops execute them
-    memoized boundaries skip unchanged subtrees
-    codegen makes the hot paths tight
+    phase/lower boundaries compile lazily via recording triplets
+    pvm.each or pvm.drain pulls the triplet chain
+    cache fills as side effect of full drain
+    unchanged subtrees hit seq_gen instantly
 ```
 
 > The pattern is: the user edits a program in a domain language, that

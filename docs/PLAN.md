@@ -1,3 +1,21 @@
+> **STATUS — April 2026**: This document is a historical migration plan.
+> The migration it describes is **complete**. `pvm.lua` is the current
+> implementation. The key change from what this plan anticipated:
+>
+> - `pvm2.verb_memo` / `pvm2.verb_iter` / `pvm2.verb_flat` are all replaced
+>   by the single primitive `pvm.phase` (recording-triplet boundary).
+> - Handlers return **triplets** `(g, p, c)`, not values.
+> - Caching is lazy: cache fills as a side effect of draining, not eagerly.
+> - `pvm.verb` no longer exists. `pvm.phase` is the boundary primitive.
+> - `pvm.lower` is unchanged (single-value identity cache).
+> - `COMPILER_PATTERN.md` and `PVM_GUIDE.md` have been updated to reflect
+>   the current implementation.
+>
+> The concept inventory (Part A) and design principles remain accurate.
+> The code examples in Part B outlines are superseded by the updated docs.
+
+---
+
 # Documentation Plan: Comprehensive Inventory & Migration Map
 
 ## Overview
