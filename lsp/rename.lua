@@ -33,7 +33,7 @@ function M.new(semantics_engine, adapter)
         end
 
         local sym = binding.symbol
-        if sym.kind == "builtin" then
+        if sym.kind == C.SymBuiltin then
             return C.RenameFail("cannot rename builtin '" .. sym.name .. "'")
         end
 
@@ -74,7 +74,7 @@ function M.new(semantics_engine, adapter)
 
         local binding = semantics_engine:symbol_for_anchor(file, anchor)
         if binding.kind ~= "AnchorSymbol" then return nil end
-        if binding.symbol.kind == "builtin" then return nil end
+        if binding.symbol.kind == C.SymBuiltin then return nil end
 
         -- Return the range of the anchor
         if adapter and adapter._lsp_range_for then

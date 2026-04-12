@@ -20,6 +20,43 @@ local SEVERITY = {
     ["unused-param"] = 4,
 }
 
+local function diag_code_name(v)
+    local k = tostring(v):match("^Lua%.([%w_]+)") or ""
+    if k == "DiagUndefinedGlobal" then return "undefined-global" end
+    if k == "DiagUnknownType" then return "unknown-type" end
+    if k == "DiagRedeclareLocal" then return "redeclare-local" end
+    if k == "DiagShadowingLocal" then return "shadowing-local" end
+    if k == "DiagShadowingGlobal" then return "shadowing-global" end
+    if k == "DiagUnusedParam" then return "unused-param" end
+    if k == "DiagUnusedLocal" then return "unused-local" end
+    return tostring(v)
+end
+
+local function symbol_kind_name(v)
+    local k = tostring(v):match("^Lua%.([%w_]+)") or ""
+    if k == "SymParam" then return "param" end
+    if k == "SymGlobal" then return "global" end
+    if k == "SymBuiltin" then return "builtin" end
+    if k == "SymTypeClass" then return "type-class" end
+    if k == "SymTypeAlias" then return "type-alias" end
+    if k == "SymTypeGeneric" then return "type-generic" end
+    if k == "SymTypeBuiltin" then return "type-builtin" end
+    return "local"
+end
+
+local function scope_kind_name(v)
+    local k = tostring(v):match("^Lua%.([%w_]+)") or ""
+    if k == "ScopeFunction" then return "function" end
+    if k == "ScopeIf" then return "if" end
+    if k == "ScopeElse" then return "else" end
+    if k == "ScopeWhile" then return "while" end
+    if k == "ScopeRepeat" then return "repeat" end
+    if k == "ScopeFor" then return "for" end
+    if k == "ScopeDo" then return "do" end
+    if k == "ScopeType" then return "type" end
+    return "file"
+end
+
 local function anchor_ref(C, v)
     if not v then return nil end
     if type(v) == "table" then
@@ -45,6 +82,17 @@ end
 
 local function mk_range(C, sl, sc, el, ec)
     return C.LspRange(C.LspPos(sl, sc), C.LspPos(el, ec))
+end
+
+local function anchor_kind_from_string(C, s)
+    if s == "def" then return C.AnchorKindDef end
+    if s == "use" then return C.AnchorKindUse end
+    if s == "unresolved" then return C.AnchorKindUnresolved end
+    if s == "type-class" then return C.AnchorKindTypeClass end
+    if s == "type-field" then return C.AnchorKindTypeField end
+    if s == "type-alias" then return C.AnchorKindTypeAlias end
+    if s == "type-generic" then return C.AnchorKindTypeGeneric end
+    return C.AnchorKindUse
 end
 
 function Adapter.new(engine, opts)
@@ -92,21 +140,24 @@ function Adapter.new(engine, opts)
             out[#out + 1] = C.AnchorEntry(anchor, kind, name,
                 lsp_range_for(C.LspRangeQuery(file, anchor)))
         end
+        local function add_s(anchor, kind_s, name)
+            add(anchor, anchor_kind_from_string(C, kind_s), name)
+        end
         local idx = self.engine:index(file)
-        for i = 1, #idx.defs do add(idx.defs[i].anchor, "def", idx.defs[i].name) end
-        for i = 1, #idx.uses do add(idx.uses[i].anchor, "use", idx.uses[i].name) end
-        for i = 1, #idx.unresolved do add(idx.unresolved[i].anchor, "unresolved", idx.unresolved[i].name) end
+        for i = 1, #idx.defs do add_s(idx.defs[i].anchor, "def", idx.defs[i].name) end
+        for i = 1, #idx.uses do add_s(idx.uses[i].anchor, "use", idx.uses[i].name) end
+        for i = 1, #idx.unresolved do add_s(idx.unresolved[i].anchor, "unresolved", idx.unresolved[i].name) end
 
         local env = self.engine.resolve_named_types(file)
         for i = 1, #env.classes do
             local cls = env.classes[i]
-            add(cls.anchor, "type-class", cls.name)
+            add_s(cls.anchor, "type-class", cls.name)
             for j = 1, #cls.fields do
-                add(cls.fields[j].anchor, "type-field", cls.name .. "." .. cls.fields[j].name)
+                add_s(cls.fields[j].anchor, "type-field", cls.name .. "." .. cls.fields[j].name)
             end
         end
-        for i = 1, #env.aliases do add(env.aliases[i].anchor, "type-alias", env.aliases[i].name) end
-        for i = 1, #env.generics do add(env.generics[i].anchor, "type-generic", env.generics[i].name) end
+        for i = 1, #env.aliases do add_s(env.aliases[i].anchor, "type-alias", env.aliases[i].name) end
+        for i = 1, #env.generics do add_s(env.generics[i].anchor, "type-generic", env.generics[i].name) end
 
         table.sort(out, function(a, b)
             local as, bs = a.range.start, b.range.start
@@ -120,7 +171,8 @@ function Adapter.new(engine, opts)
     local anchor_at_position = pvm.lower("lsp_anchor_at_position", function(q)
         local entries = all_anchor_entries(q.file).items
         local line, ch = q.position.line, q.position.character
-        local prefer = q.prefer_kind or ""
+        local prefer = q.prefer_kind
+        local has_prefer = q.has_prefer
         local best = nil
         for i = 1, #entries do
             local e = entries[i]
@@ -128,7 +180,7 @@ function Adapter.new(engine, opts)
             local hit = (line > rs.line or (line == rs.line and ch >= rs.character))
                 and (line < re.line or (line == re.line and ch <= re.character))
             if hit then
-                if prefer ~= "" and e.kind == prefer then
+                if has_prefer and e.kind == prefer then
                     return C.AnchorPickHit(e.anchor, e)
                 end
                 if not best then best = e end
@@ -144,9 +196,10 @@ function Adapter.new(engine, opts)
         local out = {}
         for i = 1, #src do
             local d = src[i]
+            local code = diag_code_name(d.code)
             out[i] = C.LspDiagnostic(
                 lsp_range_for(C.LspRangeQuery(file, d.anchor)),
-                SEVERITY[d.code] or 2, "lua-lsp-pvm", d.code, d.message)
+                SEVERITY[code] or 2, "lua-lsp-pvm", code, d.message)
         end
         return C.LspDiagnosticList(out)
     end)
@@ -161,7 +214,7 @@ function Adapter.new(engine, opts)
         local msg
         if h.kind == "HoverSymbol" then
             msg = string.format("`%s` (%s, scope=%s)\n\nuses: %d, defs: %d",
-                h.name, h.symbol_kind, h.scope, h.uses or 0, h.defs or 0)
+                h.name, symbol_kind_name(h.symbol_kind), scope_kind_name(h.scope), h.uses or 0, h.defs or 0)
         elseif h.kind == "HoverType" then
             msg = (h.fields or 0) > 0
                 and string.format("type `%s` (%s)\n\nfields: %d", h.name, h.detail, h.fields)
@@ -174,7 +227,7 @@ function Adapter.new(engine, opts)
         if subj.kind == "QueryAnchor" then
             range = lsp_range_for(C.LspRangeQuery(q.file, subj.anchor))
         end
-        return C.LspHoverHit(C.LspHover(C.LspMarkupContent("markdown", msg), range))
+        return C.LspHoverHit(C.LspHover(C.LspMarkupContent(C.MarkupMarkdown, msg), range))
     end)
 
     -- ── lsp_definition ─────────────────────────────────────
@@ -210,7 +263,8 @@ function Adapter.new(engine, opts)
         local refs = rr.refs or {}
         local out = {}
         for i = 1, #refs do
-            local kind = (refs[i].kind == "local" or refs[i].kind == "global" or refs[i].kind == "param") and 3 or 2
+            local sk = refs[i].kind
+            local kind = (sk == C.SymLocal or sk == C.SymGlobal or sk == C.SymParam) and 3 or 2
             out[i] = C.LspDocumentHighlight(
                 lsp_range_for(C.LspRangeQuery(q.file, refs[i].anchor)), kind)
         end
@@ -235,7 +289,13 @@ function Adapter:all_anchor_entries(file) return self._all_anchor_entries(file) 
 function Adapter:anchor_at_position(file, position, prefer_kind)
     local C = self.engine.C
     local pos = C.LspPos(position and position.line or 0, position and position.character or 0)
-    return self._anchor_at_position(C.LspPositionQuery(file, pos, prefer_kind or ""))
+    local has_prefer = prefer_kind ~= nil
+    local pk = C.AnchorKindUse
+    if has_prefer then
+        if type(prefer_kind) == "string" then pk = anchor_kind_from_string(C, prefer_kind)
+        else pk = prefer_kind end
+    end
+    return self._anchor_at_position(C.LspPositionQuery(file, pos, pk, has_prefer))
 end
 
 function Adapter:diagnostics(file) return self._lsp_diagnostics(file) end

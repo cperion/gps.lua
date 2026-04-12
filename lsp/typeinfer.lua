@@ -170,9 +170,49 @@ function M.new(semantics_engine)
         local env = semantics_engine.resolve_named_types(file)
         local typed = {}
 
-        -- Build a map: symbol_id → Item (for doc extraction)
-        -- We walk the file items and match declarations
-        local sym_item = {}  -- anchor_id → Item
+        -- Build declaration maps keyed by anchor id.
+        local sym_item = {}          -- anchor_id -> Item
+        local param_anchor_type = {} -- anchor_id -> TypeExpr
+        local class_member_type = {} -- class_name -> field/method_name -> TypeExpr
+
+        local function put_class_member(class_name, member, typ)
+            if not class_name or class_name == "" or not member or member == "" or not typ then return end
+            local tbl = class_member_type[class_name]
+            if not tbl then tbl = {}; class_member_type[class_name] = tbl end
+            if not tbl[member] or tbl[member].kind == "TUnknown" or tbl[member].kind == "TAny" then
+                tbl[member] = typ
+            end
+        end
+
+        local function terminal_name_from_expr(e)
+            if not e or type(e) ~= "table" then return nil end
+            if e.kind == "NameRef" then return e.name end
+            if e.kind == "Field" then return e.key end
+            return nil
+        end
+
+        local function bind_function_params(item, body)
+            local ptypes = doc_param_types(item)
+            for pi = 1, #body.params do
+                local p = body.params[pi]
+                local pid = tostring(p)
+                param_anchor_type[pid] = ptypes[p.name] or C.TAny()
+            end
+        end
+
+        local function func_type_from_item_stmt(item, stmt)
+            local body = stmt.body
+            local param_types = doc_param_types(item)
+            local ret_type = doc_return_type(item)
+            local params = {}
+            for p = 1, #body.params do
+                local pname = body.params[p].name
+                params[p] = param_types[pname] or C.TAny()
+            end
+            local returns = ret_type and { ret_type } or { C.TAny() }
+            return C.TFunc(C.FuncType(params, returns, body.vararg))
+        end
+
         for i = 1, #file.items do
             local item = file.items[i]
             local stmt = item.stmt
@@ -181,40 +221,215 @@ function M.new(semantics_engine)
             if sk == "LocalAssign" then
                 for j = 1, #stmt.names do
                     sym_item[tostring(stmt.names[j])] = item
+                    local v = stmt.values[j]
+                    if v and v.kind == "FunctionExpr" and v.body then
+                        bind_function_params(item, v.body)
+                    end
                 end
             elseif sk == "LocalFunction" then
                 sym_item[tostring(stmt)] = item
+                bind_function_params(item, stmt.body)
             elseif sk == "Function" then
                 if stmt.name then sym_item[tostring(stmt.name)] = item end
+                bind_function_params(item, stmt.body)
+
+                if stmt.name and (stmt.name.kind == "LMethod" or stmt.name.kind == "LField") then
+                    local class_name = terminal_name_from_expr(stmt.name.base)
+                    local member = (stmt.name.kind == "LMethod") and stmt.name.method or stmt.name.key
+                    put_class_member(class_name, member, func_type_from_item_stmt(item, stmt))
+                end
             end
+        end
+
+        local inferred_by_name = {}
+
+        local function remember(sym, typ)
+            if not sym or not typ then return end
+            if typ.kind == "TUnknown" then return end
+            local cur = inferred_by_name[sym.name]
+            if not cur or cur.kind == "TUnknown" or cur.kind == "TAny" then
+                inferred_by_name[sym.name] = typ
+            end
+        end
+
+        local function lookup_name_type(name)
+            local t = inferred_by_name[name]
+            if t then return t end
+            for i = 1, #typed do
+                local ts = typed[i]
+                if ts.symbol.name == name and ts.typ.kind ~= "TUnknown" then
+                    return ts.typ
+                end
+            end
+            return C.TUnknown()
+        end
+
+        local function named_from_type(t, out, seen)
+            if not t or type(t) ~= "table" then return end
+            local k = t.kind
+            if k == "TNamed" then
+                local n = t.name
+                if n and n ~= "" and not seen[n] then
+                    seen[n] = true
+                    out[#out + 1] = n
+                end
+                return
+            end
+            if k == "TOptional" then return named_from_type(t.inner, out, seen) end
+            if k == "TArray" then return named_from_type(t.item, out, seen) end
+            if k == "TMap" then
+                named_from_type(t.key, out, seen)
+                named_from_type(t.value, out, seen)
+                return
+            end
+            if k == "TTuple" then
+                for i = 1, #t.items do named_from_type(t.items[i], out, seen) end
+                return
+            end
+            if k == "TUnion" then
+                for i = 1, #t.parts do named_from_type(t.parts[i], out, seen) end
+                return
+            end
+            if k == "TTable" then
+                for i = 1, #t.fields do named_from_type(t.fields[i].typ, out, seen) end
+                return
+            end
+            if k == "TFunc" and t.sig then
+                for i = 1, #t.sig.params do named_from_type(t.sig.params[i], out, seen) end
+                for i = 1, #t.sig.returns do named_from_type(t.sig.returns[i], out, seen) end
+                return
+            end
+        end
+
+        local function alias_target(name)
+            for i = 1, #env.aliases do
+                local a = env.aliases[i]
+                if a.name == name then return a.typ end
+            end
+            return nil
+        end
+
+        local function class_node(name)
+            for i = 1, #env.classes do
+                if env.classes[i].name == name then return env.classes[i] end
+            end
+            return nil
+        end
+
+        local function class_field_type(class_name, field, seen_classes)
+            seen_classes = seen_classes or {}
+            if seen_classes[class_name] then return nil end
+            seen_classes[class_name] = true
+
+            local mem = class_member_type[class_name]
+            if mem and mem[field] then return mem[field] end
+
+            local c = class_node(class_name)
+            if not c then return nil end
+
+            for j = 1, #c.fields do
+                if c.fields[j].name == field then return c.fields[j].typ end
+            end
+
+            for j = 1, #c.extends do
+                local ex = c.extends[j]
+                if ex and ex.kind == "TNamed" and ex.name then
+                    local from_parent = class_field_type(ex.name, field, seen_classes)
+                    if from_parent then return from_parent end
+                end
+            end
+
+            return nil
+        end
+
+        local function resolve_named_field_type(t, field)
+            local names = {}
+            named_from_type(t, names, {})
+            local queue = {}
+            for i = 1, #names do queue[#queue + 1] = names[i] end
+            local seen_names = {}
+            local qi = 1
+            while qi <= #queue and qi <= 48 do
+                local nm = queue[qi]; qi = qi + 1
+                if not seen_names[nm] then
+                    seen_names[nm] = true
+                    local ft = class_field_type(nm, field)
+                    if ft then return ft end
+                    local at = alias_target(nm)
+                    if at then
+                        local extra = {}
+                        named_from_type(at, extra, {})
+                        for i = 1, #extra do queue[#queue + 1] = extra[i] end
+                    end
+                end
+            end
+            return nil
+        end
+
+        local function infer_from_expr(expr)
+            if not expr then return C.TUnknown() end
+            local t = type_of_expr(expr)
+            if t.kind ~= "TUnknown" then return t end
+
+            if expr.kind == "NameRef" then
+                return lookup_name_type(expr.name)
+            end
+
+            if expr.kind == "Field" and expr.base and expr.key then
+                local bt = infer_from_expr(expr.base)
+                local ft = resolve_named_field_type(bt, expr.key)
+                if ft then return ft end
+            end
+
+            if expr.kind == "Call" then
+                local ct = infer_from_expr(expr.callee)
+                if ct.kind == "TFunc" and ct.sig and #ct.sig.returns > 0 then
+                    return ct.sig.returns[1]
+                end
+            end
+
+            if expr.kind == "MethodCall" and expr.recv and expr.method then
+                local mt = resolve_named_field_type(infer_from_expr(expr.recv), expr.method)
+                if mt and mt.kind == "TFunc" and mt.sig and #mt.sig.returns > 0 then
+                    return mt.sig.returns[1]
+                end
+                -- fallback: method symbol by name in local scope
+                local fn = lookup_name_type(expr.method)
+                if fn.kind == "TFunc" and fn.sig and #fn.sig.returns > 0 then
+                    return fn.sig.returns[1]
+                end
+            end
+
+            return C.TUnknown()
         end
 
         for i = 1, #idx.symbols do
             local sym = idx.symbols[i]
             local typ = C.TUnknown()
+            local aid = sym.decl_anchor and sym.decl_anchor.id or ""
 
-            -- Try annotation first
-            local item = sym_item[sym.decl_anchor and sym.decl_anchor.id or ""]
+            if sym.kind == C.SymParam and param_anchor_type[aid] then
+                typ = param_anchor_type[aid]
+            end
+
+            local item = sym_item[aid]
             if item then
                 local doc_t = doc_type_for_name(item, sym.name)
                 if doc_t then
                     typ = doc_t
                 else
-                    -- Infer from initializer
                     local stmt = item.stmt
                     if stmt.kind == "LocalAssign" then
-                        -- Find which name index this symbol is
                         for j = 1, #stmt.names do
-                            if tostring(stmt.names[j]) == (sym.decl_anchor and sym.decl_anchor.id or "") then
+                            if tostring(stmt.names[j]) == aid then
                                 if stmt.values[j] then
-                                    typ = type_of_expr(stmt.values[j])
+                                    typ = infer_from_expr(stmt.values[j])
                                 end
                                 break
                             end
                         end
                     elseif stmt.kind == "LocalFunction" or stmt.kind == "Function" then
                         local body = stmt.body
-                        -- Check for @param/@return
                         local param_types = doc_param_types(item)
                         local ret_type = doc_return_type(item)
                         local params = {}
@@ -228,7 +443,6 @@ function M.new(semantics_engine)
                 end
             end
 
-            -- Check if it's a class
             if typ.kind == "TUnknown" or typ.kind == "TAny" then
                 for ci = 1, #env.classes do
                     if env.classes[ci].name == sym.name then
@@ -239,6 +453,7 @@ function M.new(semantics_engine)
             end
 
             typed[#typed + 1] = C.TypedSymbol(sym, typ)
+            remember(sym, typ)
         end
 
         return C.TypedIndex(typed)

@@ -13,6 +13,9 @@ local Complete   = require("lsp.complete")
 local DocSymbols = require("lsp.docsymbols")
 local SigHelp    = require("lsp.sighelp")
 local Rename     = require("lsp.rename")
+local Format     = require("lsp.format")
+local CodeAction = require("lsp.codeaction")
+local SemTokens  = require("lsp.semtokens")
 local Adapter    = require("lsp.adapter")
 local Server     = require("lsp.server")
 local JsonRpc    = require("lsp.jsonrpc")
@@ -44,6 +47,18 @@ function M.rename(sem_engine, adapter)
     return Rename.new(sem_engine, adapter)
 end
 
+function M.format(context)
+    return Format.new(context)
+end
+
+function M.codeaction(context)
+    return CodeAction.new(context)
+end
+
+function M.semtokens(sem_engine, lexer_engine, range_for)
+    return SemTokens.new(sem_engine, lexer_engine, range_for)
+end
+
 function M.adapter(engine, opts)
     return Adapter.new(engine, opts)
 end
@@ -54,6 +69,7 @@ function M.server(opts)
     local ctx = opts.context or M.context()
     local C = ctx.Lua
     local parser_engine = M.parser(ctx)
+    local lexer_engine = M.lexer(ctx)
     local sem = opts.engine or M.semantics(ctx)
 
     if not opts.parse then
@@ -110,13 +126,22 @@ function M.server(opts)
     local docsymbols_engine = M.docsymbols(sem)
     local sighelp_engine = M.sighelp(sem, type_engine)
     local rename_engine = M.rename(sem, core.adapter)
+    local format_engine = M.format(ctx)
+    local codeaction_engine = M.codeaction(ctx)
+    local semtokens_engine = M.semtokens(sem, lexer_engine, function(file, anchor)
+        return core:_range_for(file, anchor)
+    end)
 
     -- Attach extra engines to core for request handling
+    core._lexer_engine = lexer_engine
     core._type_engine = type_engine
     core._complete_engine = complete_engine
     core._docsymbols_engine = docsymbols_engine
     core._sighelp_engine = sighelp_engine
     core._rename_engine = rename_engine
+    core._format_engine = format_engine
+    core._codeaction_engine = codeaction_engine
+    core._semtokens_engine = semtokens_engine
 
     return core
 end
@@ -137,6 +162,9 @@ M.Complete = Complete
 M.DocSymbols = DocSymbols
 M.SigHelp = SigHelp
 M.Rename = Rename
+M.Format = Format
+M.CodeAction = CodeAction
+M.SemTokens = SemTokens
 M.Adapter = Adapter
 M.Server = Server
 M.JsonRpc = JsonRpc

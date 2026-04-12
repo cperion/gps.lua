@@ -28,7 +28,7 @@ Implemented now:
 Architecture:
 - app/domain semantics stay outside the library
 - library owns generic UI semantics only
-- DS resolution and semantic lowering are the main `pvm.lower(...)` boundaries
+- DS resolution and semantic lowering are the main scalar boundaries (`pvm.phase(name, fn)` + `pvm.one`, with `pvm.lower(...)` compatibility)
 - runtime execution stays reducer-based
 - flex layout is library-defined and CSS-inspired, but not a claim of full browser-flexbox parity
 - `ui/draw.lua`, `ui/hit.lua`, and `ui/measure.lua` intentionally share one internal flex kernel for basis resolution, line collection, and main-size solving so reducers stay consistent

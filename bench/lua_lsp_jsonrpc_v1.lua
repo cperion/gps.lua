@@ -345,7 +345,16 @@ local function default_capabilities(C)
         true,
         true,
         true,
-        C.LspDiagnosticProviderInfo(false, false)
+        C.LspDiagnosticProviderInfo(false, false),
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
     )
 end
 
@@ -364,6 +373,11 @@ local function capabilities_to_lua(c)
             interFileDependencies = c.diagnostic_provider.inter_file_dependencies,
             workspaceDiagnostics = c.diagnostic_provider.workspace_diagnostics,
         },
+        completionProvider = c.completion_provider and { triggerCharacters = { ".", ":" } } or nil,
+        documentSymbolProvider = c.document_symbol_provider,
+        renameProvider = c.rename_provider and { prepareProvider = true } or nil,
+        signatureHelpProvider = c.signature_help_provider and { triggerCharacters = { "(", "," } } or nil,
+        workspaceSymbolProvider = c.workspace_symbol_provider,
     }
 end
 

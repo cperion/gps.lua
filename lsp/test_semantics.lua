@@ -32,10 +32,19 @@ for i = 1, #diags1 do
     print("  ", diags1[i].code, diags1[i].message)
 end
 -- Should find: undefined global 'z', unused local 'y'
+local function code_name(c)
+    local k = tostring(c):match("^Lua%.([%w_]+)") or tostring(c)
+    if k == "DiagUndefinedGlobal" then return "undefined-global" end
+    if k == "DiagUnusedLocal" then return "unused-local" end
+    if k == "DiagUnusedParam" then return "unused-param" end
+    return k
+end
+
 local found_z, found_y = false, false
 for i = 1, #diags1 do
-    if diags1[i].code == "undefined-global" and diags1[i].name == "z" then found_z = true end
-    if diags1[i].code == "unused-local" and diags1[i].name == "y" then found_y = true end
+    local code = code_name(diags1[i].code)
+    if code == "undefined-global" and diags1[i].name == "z" then found_z = true end
+    if code == "unused-local" and diags1[i].name == "y" then found_y = true end
 end
 assert(found_z, "should find undefined global z")
 assert(found_y, "should find unused local y")

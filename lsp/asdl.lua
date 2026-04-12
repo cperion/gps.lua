@@ -38,11 +38,44 @@ module Lua {
     Token = (string kind, string value) unique
     AnchorRef = (string id) unique
 
-    NameOcc = OccDecl(string decl_kind, string name) unique
+    ScopeKind = ScopeFile
+              | ScopeFunction
+              | ScopeIf
+              | ScopeElse
+              | ScopeWhile
+              | ScopeRepeat
+              | ScopeFor
+              | ScopeDo
+              | ScopeType
+
+    DeclKind = DeclLocal
+             | DeclParam
+
+    SymbolKind = SymLocal
+               | SymParam
+               | SymGlobal
+               | SymBuiltin
+               | SymTypeClass
+               | SymTypeAlias
+               | SymTypeGeneric
+               | SymTypeBuiltin
+
+    AnchorRole = RoleDef
+               | RoleUse
+
+    DiagnosticCode = DiagUndefinedGlobal
+                   | DiagUnknownType
+                   | DiagRedeclareLocal
+                   | DiagShadowingLocal
+                   | DiagShadowingGlobal
+                   | DiagUnusedLocal
+                   | DiagUnusedParam
+
+    NameOcc = OccDecl(Lua.DeclKind decl_kind, string name) unique
             | OccRef(string name) unique
             | OccWrite(string name) unique
-            | OccScopeEnter(string scope) unique
-            | OccScopeExit(string scope) unique
+            | OccScopeEnter(Lua.ScopeKind scope) unique
+            | OccScopeExit(Lua.ScopeKind scope) unique
 
     File  = (string uri, Lua.Item* items) unique
     Item  = (Lua.DocBlock* docs, Lua.Stmt stmt) unique
@@ -144,19 +177,19 @@ module Lua {
              | DCast(Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
              | DMeta(string name, string text, Lua.AnchorRef anchor) unique
 
-    ScopeEvent = ScopeEnter(string scope, Lua.AnchorRef anchor) unique
-               | ScopeExit(string scope, Lua.AnchorRef anchor) unique
-               | ScopeDeclLocal(string decl_kind, string name, Lua.AnchorRef anchor) unique
+    ScopeEvent = ScopeEnter(Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
+               | ScopeExit(Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
+               | ScopeDeclLocal(Lua.DeclKind decl_kind, string name, Lua.AnchorRef anchor) unique
                | ScopeDeclGlobal(string name, Lua.AnchorRef anchor) unique
                | ScopeRef(string name, Lua.AnchorRef anchor) unique
                | ScopeWrite(string name, Lua.AnchorRef anchor) unique
     ScopeEventList = (Lua.ScopeEvent* items) unique
 
-    ScopeLocalState = (string name, string decl_kind, number used, Lua.AnchorRef anchor) unique
-    ScopeDiagFrame  = (string scope, Lua.ScopeLocalState* locals) unique
+    ScopeLocalState = (string name, Lua.DeclKind decl_kind, number used, Lua.AnchorRef anchor) unique
+    ScopeDiagFrame  = (Lua.ScopeKind scope, Lua.ScopeLocalState* locals) unique
 
     ScopeSymbolBinding = (string name, Lua.Symbol symbol) unique
-    ScopeSymbolFrame   = (string scope, string id, Lua.ScopeSymbolBinding* locals) unique
+    ScopeSymbolFrame   = (Lua.ScopeKind scope, string id, Lua.ScopeSymbolBinding* locals) unique
 
     TypeClassField = (string name, Lua.TypeExpr typ, boolean optional, Lua.AnchorRef anchor) unique
     TypeClass  = (string name, Lua.TypeExpr* extends, Lua.TypeClassField* fields, Lua.AnchorRef anchor) unique
@@ -164,13 +197,13 @@ module Lua {
     TypeGeneric = (string name, Lua.TypeExpr* bounds, Lua.AnchorRef anchor) unique
     TypeEnv    = (Lua.TypeClass* classes, Lua.TypeAlias* aliases, Lua.TypeGeneric* generics) unique
 
-    Symbol     = (string id, string kind, string name, string scope, string scope_id, Lua.AnchorRef decl_anchor) unique
-    Occurrence = (string symbol_id, string name, string kind, Lua.AnchorRef anchor) unique
+    Symbol     = (string id, Lua.SymbolKind kind, string name, Lua.ScopeKind scope, string scope_id, Lua.AnchorRef decl_anchor) unique
+    Occurrence = (string symbol_id, string name, Lua.SymbolKind kind, Lua.AnchorRef anchor) unique
     OccurrenceList = (Lua.Occurrence* items) unique
     Unresolved = (string name, Lua.AnchorRef anchor) unique
     SymbolIndex = (Lua.Symbol* symbols, Lua.Occurrence* defs, Lua.Occurrence* uses, Lua.Unresolved* unresolved) unique
 
-    AnchorBinding = AnchorSymbol(Lua.Symbol symbol, string role) unique
+    AnchorBinding = AnchorSymbol(Lua.Symbol symbol, Lua.AnchorRole role) unique
                   | AnchorUnresolved(string name) unique
                   | AnchorMissing
 
@@ -180,7 +213,7 @@ module Lua {
                | TypeBuiltinTarget(string name) unique
                | TypeTargetMissing
 
-    DefinitionMeta = DefMetaSymbol(string role, Lua.Symbol symbol, Lua.Occurrence* defs) unique
+    DefinitionMeta = DefMetaSymbol(Lua.AnchorRole role, Lua.Symbol symbol, Lua.Occurrence* defs) unique
                    | DefMetaType(Lua.TypeTarget target) unique
                    | DefMetaUnresolved(string name) unique
                    | DefMetaMissing
@@ -190,7 +223,7 @@ module Lua {
 
     ReferenceResult = (Lua.Occurrence* refs) unique
 
-    HoverInfo = HoverSymbol(string role, string name, string symbol_kind, string scope, number defs, number uses, Lua.TypeExpr typ) unique
+    HoverInfo = HoverSymbol(Lua.AnchorRole role, string name, Lua.SymbolKind symbol_kind, Lua.ScopeKind scope, number defs, number uses, Lua.TypeExpr typ) unique
               | HoverType(string name, string detail, number fields) unique
               | HoverUnresolved(string name, string detail) unique
               | HoverMissing
@@ -204,7 +237,7 @@ module Lua {
     RefQuery      = (Lua.File file, Lua.QuerySubject subject, boolean include_declaration) unique
     TypeNameQuery = (Lua.File file, string name) unique
 
-    Diagnostic    = (string code, string message, string name, string scope, Lua.AnchorRef anchor) unique
+    Diagnostic    = (Lua.DiagnosticCode code, string message, string name, Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
     DiagnosticSet = (Lua.Diagnostic* items) unique
 
     TypedSymbol = (Lua.Symbol symbol, Lua.TypeExpr typ) unique
@@ -219,13 +252,21 @@ module Lua {
 
     ParamLabel    = (string label) unique
     SignatureInfo = (string label, Lua.ParamLabel* params, number active_param) unique
+    SignatureEntry = (string name, Lua.SignatureInfo* signatures) unique
+    SignatureCatalog = (Lua.SignatureEntry* items) unique
     SignatureHelp = (Lua.SignatureInfo* signatures, number active_signature) unique
     SignatureQuery = (Lua.File file, Lua.LspPos position) unique
+    SignatureLookupQuery = (Lua.File file, string callee, number active_param) unique
+
+    LspFormattingOptions = (number tab_size, boolean insert_spaces, boolean trim_trailing_ws, boolean insert_final_newline) unique
+    FormatQuery  = (Lua.File file, Lua.LspFormattingOptions options, Lua.LspRange range, boolean has_range) unique
+    FormatResult = (string text, Lua.LspRange range, boolean has_range) unique
 
     RenameEdit   = (Lua.AnchorRef anchor, Lua.LspRange range, string new_text) unique
     RenameResult = RenameOk(Lua.RenameEdit* edits) unique
                  | RenameFail(string reason) unique
     RenameQuery  = (Lua.File file, Lua.AnchorRef anchor, string new_name) unique
+    CodeActionQuery = (Lua.File file, string uri, Lua.LspRange range, Lua.LspDiagnostic* diagnostics) unique
 
     LspPos   = (number line, number character) unique
     LspRange = (Lua.LspPos start, Lua.LspPos stop) unique
@@ -239,9 +280,17 @@ module Lua {
     ServerDocLookup = ServerDocHit(Lua.ServerDoc doc) unique
                     | ServerDocMiss
 
-    AnchorEntry     = (Lua.AnchorRef anchor, string kind, string name, Lua.LspRange range) unique
+    AnchorEntryKind = AnchorKindDef
+                    | AnchorKindUse
+                    | AnchorKindUnresolved
+                    | AnchorKindTypeClass
+                    | AnchorKindTypeField
+                    | AnchorKindTypeAlias
+                    | AnchorKindTypeGeneric
+
+    AnchorEntry     = (Lua.AnchorRef anchor, Lua.AnchorEntryKind kind, string name, Lua.LspRange range) unique
     AnchorEntryList = (Lua.AnchorEntry* items) unique
-    LspPositionQuery = (Lua.File file, Lua.LspPos position, string prefer_kind) unique
+    LspPositionQuery = (Lua.File file, Lua.LspPos position, Lua.AnchorEntryKind prefer_kind, boolean has_prefer) unique
     AnchorPick = AnchorPickHit(Lua.AnchorRef anchor, Lua.AnchorEntry entry) unique
                | AnchorPickMiss
 
@@ -249,15 +298,21 @@ module Lua {
     LspLocationList = (Lua.LspLocation* items) unique
 
     LspDiagnosticProviderInfo = (boolean inter_file_dependencies, boolean workspace_diagnostics) unique
-    LspCapabilities = (number text_document_sync, boolean hover_provider, boolean definition_provider, boolean references_provider, boolean document_highlight_provider, Lua.LspDiagnosticProviderInfo diagnostic_provider, boolean completion_provider, boolean document_symbol_provider, boolean rename_provider, boolean signature_help_provider) unique
+    LspCapabilities = (number text_document_sync, boolean hover_provider, boolean definition_provider, boolean references_provider, boolean document_highlight_provider, Lua.LspDiagnosticProviderInfo diagnostic_provider, boolean completion_provider, boolean document_symbol_provider, boolean rename_provider, boolean signature_help_provider, boolean workspace_symbol_provider, boolean code_action_provider, boolean semantic_tokens_provider, boolean inlay_hint_provider, boolean formatting_provider) unique
     LspServerInfo   = (string name, string version) unique
     LspInitializeResult = (Lua.LspCapabilities capabilities, Lua.LspServerInfo server_info) unique
 
+    LspDiagnosticReportKind = DiagReportFull
+                            | DiagReportUnchanged
+
     LspDiagnostic       = (Lua.LspRange range, number severity, string source, string code, string message) unique
     LspDiagnosticList   = (Lua.LspDiagnostic* items) unique
-    LspDiagnosticReport = (string kind, Lua.LspDiagnostic* items, string uri, number version) unique
+    LspDiagnosticReport = (Lua.LspDiagnosticReportKind kind, Lua.LspDiagnostic* items, string uri, number version) unique
 
-    LspMarkupContent = (string kind, string value) unique
+    LspMarkupKind = MarkupPlainText
+                  | MarkupMarkdown
+
+    LspMarkupContent = (Lua.LspMarkupKind kind, string value) unique
     LspHover = (Lua.LspMarkupContent contents, Lua.LspRange range) unique
     LspHoverResult = LspHoverHit(Lua.LspHover value) unique
                    | LspHoverMiss
@@ -265,37 +320,131 @@ module Lua {
     LspDocumentHighlight     = (Lua.LspRange range, number kind) unique
     LspDocumentHighlightList = (Lua.LspDocumentHighlight* items) unique
 
-    LspCompletionItem = (string label, number kind, string detail, string sort_text, string insert_text) unique
+    LspCompletionItem = (string label, number kind, string detail, string sort_text, string insert_text, string documentation) unique
     LspCompletionList = (Lua.LspCompletionItem* items, boolean is_incomplete) unique
 
     LspDocumentSymbol     = (string name, string detail, number kind, Lua.LspRange range, Lua.LspRange selection_range, Lua.LspDocumentSymbol* children) unique
     LspDocumentSymbolList = (Lua.LspDocumentSymbol* items) unique
 
+    LspWorkspaceSymbol     = (string name, number kind, string uri, Lua.LspRange range, string container_name) unique
+    LspWorkspaceSymbolList = (Lua.LspWorkspaceSymbol* items) unique
+
     LspSignatureInfo = (string label, Lua.LspMarkupContent documentation, Lua.LspRange* param_ranges) unique
     LspSignatureHelp = (Lua.LspSignatureInfo* signatures, number active_signature, number active_parameter) unique
 
-    LspTextEdit     = (Lua.LspRange range, string new_text) unique
+    LspTextEdit      = (Lua.LspRange range, string new_text) unique
+    LspTextEditList  = (Lua.LspTextEdit* items) unique
     LspWorkspaceEdit = (Lua.LspTextEdit* edits, string uri) unique
+
+    LspFoldingRangeKind = FoldComment
+                        | FoldRegion
+                        | FoldImports
+    LspFoldingRange = (number start_line, number start_character, number end_line, number end_character, Lua.LspFoldingRangeKind kind) unique
+    LspFoldingRangeList = (Lua.LspFoldingRange* items) unique
+
+    LspSelectionRange = (Lua.LspRange range, Lua.LspRange* parents) unique
+    LspSelectionRangeList = (Lua.LspSelectionRange* items) unique
+
+    LspCodeLens = (Lua.LspRange range, string command_title, string command_id) unique
+    LspCodeLensList = (Lua.LspCodeLens* items) unique
+
+    LspColor = (number red, number green, number blue, number alpha) unique
+    LspColorInfo = (Lua.LspRange range, Lua.LspColor color) unique
+    LspColorInfoList = (Lua.LspColorInfo* items) unique
+
+    LspCodeActionKind = CodeActionQuickFix
+                      | CodeActionRefactor
+                      | CodeActionSource
+    LspCodeAction     = (string title, Lua.LspCodeActionKind kind, Lua.LspWorkspaceEdit edit) unique
+    LspCodeActionList = (Lua.LspCodeAction* items) unique
+
+    LspSemanticTokenType = SemTokNamespace
+                         | SemTokType
+                         | SemTokClass
+                         | SemTokEnum
+                         | SemTokInterface
+                         | SemTokStruct
+                         | SemTokTypeParameter
+                         | SemTokParameter
+                         | SemTokVariable
+                         | SemTokProperty
+                         | SemTokEnumMember
+                         | SemTokEvent
+                         | SemTokFunction
+                         | SemTokMethod
+                         | SemTokMacro
+                         | SemTokKeyword
+                         | SemTokModifier
+                         | SemTokComment
+                         | SemTokString
+                         | SemTokNumber
+                         | SemTokRegexp
+                         | SemTokOperator
+                         | SemTokDecorator
+    LspSemanticTokenModifier = SemTokDeclaration
+                             | SemTokDefinition
+                             | SemTokReadonly
+                             | SemTokStatic
+                             | SemTokDeprecated
+                             | SemTokAbstract
+                             | SemTokAsync
+                             | SemTokModification
+                             | SemTokDocumentation
+                             | SemTokDefaultLibrary
+                             | SemTokGlobal
+    LspSemanticTokenSpan     = (number line, number start, number length, Lua.LspSemanticTokenType token_type, Lua.LspSemanticTokenModifier* token_modifiers) unique
+    LspSemanticTokenSpanList = (Lua.LspSemanticTokenSpan* items) unique
+    LspSemanticTokenQuery    = (Lua.File file, string uri, string text) unique
+    LspSemanticTokens = (number* data) unique
+
+    LspInlayHintKind = InlayType
+                     | InlayParameter
+    LspInlayHint     = (Lua.LspPos position, string label, Lua.LspInlayHintKind kind) unique
+    LspInlayHintList = (Lua.LspInlayHint* items) unique
+
+    LspWorkspaceDiagnosticKind = WsDiagFull
+                               | WsDiagUnchanged
+
+    LspWorkspaceDiagnosticItem = (string uri, number version, Lua.LspWorkspaceDiagnosticKind kind, Lua.LspDiagnostic* items) unique
+    LspWorkspaceDiagnostic = (Lua.LspWorkspaceDiagnosticItem* items) unique
 
     LspDocIdentifier  = (string uri) unique
     LspDocItem        = (string uri, number version, string text) unique
     LspVersionedDoc   = (string uri, number version) unique
-    LspTextChange     = (string text) unique
+    LspTextChange     = (string text, Lua.LspRange range, boolean has_range) unique
     LspReferenceContext = (boolean include_declaration) unique
 
     LspRequest = ReqDidOpen(Lua.LspDocItem doc) unique
                | ReqDidChange(Lua.LspVersionedDoc doc, Lua.LspTextChange* changes) unique
                | ReqDidClose(Lua.LspDocIdentifier doc) unique
+               | ReqDidSave(Lua.LspDocIdentifier doc) unique
                | ReqHover(Lua.LspDocIdentifier doc, Lua.LspPos position, Lua.QuerySubject subject) unique
                | ReqDefinition(Lua.LspDocIdentifier doc, Lua.LspPos position, Lua.QuerySubject subject) unique
+               | ReqDeclaration(Lua.LspDocIdentifier doc, Lua.LspPos position, Lua.QuerySubject subject) unique
+               | ReqImplementation(Lua.LspDocIdentifier doc, Lua.LspPos position, Lua.QuerySubject subject) unique
+               | ReqTypeDefinition(Lua.LspDocIdentifier doc, Lua.LspPos position, Lua.QuerySubject subject) unique
                | ReqReferences(Lua.LspDocIdentifier doc, Lua.LspPos position, Lua.QuerySubject subject, Lua.LspReferenceContext context) unique
                | ReqDocumentHighlight(Lua.LspDocIdentifier doc, Lua.LspPos position, Lua.QuerySubject subject) unique
                | ReqDiagnostic(Lua.LspDocIdentifier doc) unique
                | ReqCompletion(Lua.LspDocIdentifier doc, Lua.LspPos position) unique
+               | ReqCompletionResolve(Lua.LspCompletionItem item) unique
                | ReqDocumentSymbol(Lua.LspDocIdentifier doc) unique
                | ReqSignatureHelp(Lua.LspDocIdentifier doc, Lua.LspPos position) unique
                | ReqRename(Lua.LspDocIdentifier doc, Lua.LspPos position, string new_name) unique
                | ReqPrepareRename(Lua.LspDocIdentifier doc, Lua.LspPos position) unique
+               | ReqCodeAction(Lua.LspDocIdentifier doc, Lua.LspRange range) unique
+               | ReqCodeActionResolve(Lua.LspCodeAction action) unique
+               | ReqSemanticTokensFull(Lua.LspDocIdentifier doc) unique
+               | ReqSemanticTokensRange(Lua.LspDocIdentifier doc, Lua.LspRange range) unique
+               | ReqInlayHint(Lua.LspDocIdentifier doc, Lua.LspRange range) unique
+               | ReqFormatting(Lua.LspDocIdentifier doc, Lua.LspFormattingOptions options, Lua.LspRange range, boolean has_range) unique
+               | ReqFoldingRange(Lua.LspDocIdentifier doc) unique
+               | ReqSelectionRange(Lua.LspDocIdentifier doc, Lua.LspPos* positions) unique
+               | ReqCodeLens(Lua.LspDocIdentifier doc) unique
+               | ReqDocumentColor(Lua.LspDocIdentifier doc) unique
+               | ReqWorkspaceSymbol(string query) unique
+               | ReqWorkspaceDiagnostic
+               | ReqExecuteCommand(string command, string* arguments) unique
                | ReqInvalid(string reason) unique
 
     LspAnchorQuery = (Lua.File file, Lua.AnchorRef anchor, boolean include_declaration) unique
@@ -312,10 +461,23 @@ module Lua {
                | PayloadDocumentHighlightList(Lua.LspDocumentHighlightList value) unique
                | PayloadPublishDiagnostics(Lua.LspDiagnosticReport value) unique
                | PayloadCompletionList(Lua.LspCompletionList value) unique
+               | PayloadCompletionItem(Lua.LspCompletionItem value) unique
                | PayloadDocumentSymbolList(Lua.LspDocumentSymbolList value) unique
                | PayloadSignatureHelp(Lua.LspSignatureHelp value) unique
                | PayloadWorkspaceEdit(Lua.LspWorkspaceEdit value) unique
                | PayloadRange(Lua.LspRange value) unique
+               | PayloadCodeActionList(Lua.LspCodeActionList value) unique
+               | PayloadCodeAction(Lua.LspCodeAction value) unique
+               | PayloadSemanticTokens(Lua.LspSemanticTokens value) unique
+               | PayloadInlayHintList(Lua.LspInlayHintList value) unique
+               | PayloadTextEditList(Lua.LspTextEditList value) unique
+               | PayloadFoldingRangeList(Lua.LspFoldingRangeList value) unique
+               | PayloadSelectionRangeList(Lua.LspSelectionRangeList value) unique
+               | PayloadCodeLensList(Lua.LspCodeLensList value) unique
+               | PayloadColorInfoList(Lua.LspColorInfoList value) unique
+               | PayloadWorkspaceSymbolList(Lua.LspWorkspaceSymbolList value) unique
+               | PayloadWorkspaceDiagnostic(Lua.LspWorkspaceDiagnostic value) unique
+               | PayloadExecuteResult(string value) unique
 
     RpcIncoming = RpcInInitialize(Lua.RpcId id) unique
                 | RpcInInitialized

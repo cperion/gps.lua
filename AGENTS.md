@@ -18,7 +18,7 @@ memoized, lazy transformation from one ASDL layer to the next.
 ## The six files at root
 
 ```
-pvm.lua          — the ONE boundary primitive (phase) + lower + drain/each/fold +
+pvm.lua          — the ONE boundary primitive (phase) + one + drain/each/fold +
                    once/children/concat + seq + report
 triplet.lua      — iterator algebra (map/filter/flatmap/zip/scan/...) used inside handlers
 quote.lua        — hygienic codegen via loadstring (used by asdl_context for interning tries)
@@ -39,11 +39,11 @@ pvm.lua → triplet.lua
 
 ---
 
-## pvm — the two boundary primitives
+## pvm — one boundary primitive
 
-### `pvm.phase(name, handlers)` — streaming boundary
+### `pvm.phase(name, handlers)` — type-dispatched streaming boundary
 
-The ONE primary boundary primitive. Handlers dispatch by ASDL type and return
+The primary boundary primitive. Handlers dispatch by ASDL type and return
 a **triplet** `(g, p, c)`, not a value.
 
 ```lua
@@ -64,22 +64,27 @@ Three-way cache per call:
 
 Method form: `pvm.phase` installs `node:name()` on each handled type.
 
-### `pvm.lower(name, fn)` — single-value boundary
+### `pvm.phase(name, fn)` — scalar boundary as lazy single-element stream
 
-For boundaries that produce **one value** per node (a solved layout, a scheduled
-plan). Returns the value directly, not a triplet.
+For boundaries that compute one value per node, define phase directly with a function:
+
+```lua
+local solve_phase = pvm.phase("solve", function(tree)
+    return layout_solver(tree)
+end)
+local result = pvm.one(solve_phase(node))
+```
+
+### `pvm.lower(name, fn)` — compatibility wrapper
+
+`pvm.lower` remains as sugar for legacy call sites:
 
 ```lua
 local solve = pvm.lower("solve", function(tree)
     return layout_solver(tree)
 end)
-local result = solve(node)   -- cached by node identity
+-- equivalent to pvm.one(pvm.phase("solve", fn)(node))
 ```
-
-### Rule: phase vs lower
-
-- Handler produces **multiple elements** (commands, tokens, nodes) → `phase`
-- Handler produces **one thing** → `lower`
 
 ---
 
@@ -104,26 +109,28 @@ work and you'll get a confusing runtime error.
 
 ---
 
-## Terminals — how to consume a triplet
+## Consumption — native `for` first, terminals second
 
-Nothing evaluates until you call a terminal.
+Nothing evaluates until a consumer pulls from the triplet.
 
 ```lua
--- Materialize to array (use when you need to iterate twice, e.g. hit-test)
+-- Canonical executor: Lua generic for (gen, param, state)
+for _, cmd in phase(root) do
+    draw(cmd)
+end
+
+-- Materialize to array (iterate twice, e.g. hit-test)
 local cmds = pvm.drain(phase(root))
 
 -- Append to existing array (sink optimization)
 pvm.drain_into(phase(root), out)
 
--- Side-effectful consumption without array (painting, audio output)
-pvm.each(phase(root), function(cmd) draw(cmd) end)
-
--- Reduce to single value
+-- Reduce to single value contract
 local total = pvm.fold(phase(root), 0, function(acc, cmd) return acc + cmd.w end)
+local solved = pvm.one(solve_phase(root))
 ```
 
-Cache fills as a side effect of full drain. If you `pvm.each` to completion,
-the cache commits. Next call to `phase(same_node)` is a seq hit.
+Cache fills as a side effect of full exhaustion. Next call to `phase(same_node)` is a seq hit.
 
 ---
 
@@ -166,14 +173,14 @@ cmd.kind == K_RECT            -- pointer comparison, fast
 ## The live loop
 
 ```
-poll → apply → phase(source) → drain/each → execute
+poll → apply → phase(source) → for/drain → execute
 ```
 
 - **poll**: read input
 - **apply**: pure reducer `(source_asdl, event) → source_asdl`
 - **phase(source)**: returns a triplet, nothing evaluates
-- **drain/each**: pulls through the chain; misses run handlers; caches fill
-- **execute**: the callback (draw calls, audio, etc.)
+- **for/drain**: pulls through the chain; misses run handlers; caches fill
+- **execute**: draw/audio/backend calls
 
 On the next frame: unchanged nodes return `seq_gen` instantly. Only changed
 subtrees run handlers. This is structural incrementality — not bolted on.
@@ -218,9 +225,9 @@ Typical three-layer stack:
 Layer 0: App.*     — domain vocabulary (what the user edits)
   ↓ pvm.phase
 Layer 1: UI.*      — layout/structure vocabulary
-  ↓ pvm.lower or layout walk
+  ↓ pvm.phase(name, fn) + pvm.one (or `pvm.lower` compatibility)
 Layer 2: View.Cmd  — flat command array (uniform product type + Kind singleton)
-  ↓ pvm.each / for-loop
+  ↓ native for-loop (or pvm.each/drain terminals)
 Execution
 ```
 
@@ -235,7 +242,7 @@ A full UI library built on pvm. Key files:
 
 - `ui/asdl.lua` — all ASDL schemas (Interact, Layout, DS, SemUI, UI, Facts,
   Paint, Msg)
-- `ui/lower.lua` — `SemUI → UI` lowering via `pvm.lower`
+- `ui/lower.lua` — `SemUI → UI` lowering (currently via `pvm.lower`, compatible with scalar phase form)
 - `ui/ds.lua` — design system: theme/surface → resolved style packs
 - `ui/measure.lua` — measurement reducer
 - `ui/hit.lua` — hit-testing reducer
@@ -246,8 +253,9 @@ A full UI library built on pvm. Key files:
 - `ui/demo/` — Love2D showcase with DAW project ASDL
 
 Architecture: app/domain semantics stay outside the library. The library owns
-generic UI semantics only. DS resolution and semantic lowering are the main
-`pvm.lower(...)` boundaries. Reducers (measure/hit/draw) run over `UI.*` nodes.
+generic UI semantics only. DS resolution and semantic lowering are scalar
+boundaries (implemented with `pvm.lower(...)` today, equivalent to
+`pvm.phase(name, fn)` + `pvm.one`). Reducers (measure/hit/draw) run over `UI.*` nodes.
 
 ---
 
@@ -281,7 +289,7 @@ See `bench/RESULTS.md` for numbers.
 | Mutate an interned node's fields | Use `pvm.with(node, overrides)` |
 | Use string dispatch `if kind == "rect"` | Use sum types + phase dispatch |
 | Create closures inside a handler per call | Define phase at module scope |
-| Mix layout and projection in one handler | Split into phase + lower |
+| Mix layout and projection in one handler | Split into boundaries (phase + scalar phase/one) |
 | Use a sum type for the flat Cmd type | Use one product type + Kind singleton |
 | Build intermediate trees that persist to execution | Flatten to Cmd array |
 | Call `pvm.report` with one boundary and ignore result | Check `reuse_ratio`, not just `hit_ratio` |

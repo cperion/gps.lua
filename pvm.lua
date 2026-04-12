@@ -28,8 +28,10 @@
 --   pvm.with(node, overrides)  structural update preserving sharing
 --   pvm.T                      triplet algebra module
 --
---   pvm.phase(name, handlers)  the ONE boundary primitive
---   pvm.lower(name, fn)        identity-cached value boundary
+--   pvm.phase(name, handlers)  streaming boundary (dispatch table)
+--   pvm.phase(name, fn)        scalar boundary as lazy single-element stream
+--   pvm.one(g, p, c)           terminal: consume exactly one element
+--   pvm.lower(name, fn)        compatibility wrapper over phase + one
 --   pvm.drain(g, p, c)         canonical terminal: materialize → array
 --   pvm.drain_into(g, p, c, out)  terminal optimization for append-only sinks
 --   pvm.report(phases)         cache behavior diagnostics
@@ -187,13 +189,18 @@ local REC_DONE    = 7
 local REC_G       = 8
 local REC_P       = 9
 local REC_C       = 10
+local REC_PACKED  = 11
 
 local function finish_recording(entry)
 	if entry[REC_DONE] then
 		return
 	end
 	entry[REC_DONE] = true
-	entry[REC_CACHE][entry[REC_NODE]] = entry[REC_BUF]
+	if entry[REC_PACKED] then
+		entry[REC_CACHE][entry[REC_NODE]] = { array = entry[REC_BUF], n = entry[REC_N] }
+	else
+		entry[REC_CACHE][entry[REC_NODE]] = entry[REC_BUF]
+	end
 	entry[REC_PENDING][entry[REC_NODE]] = nil
 end
 
@@ -273,13 +280,34 @@ end
 --
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.phase(name, handlers)
-	if type(handlers) ~= "table" then
-		error("pvm.phase: handlers must be a table", 2)
-	end
+local VALUE_FN = 1
+local VALUE_NODE = 2
+local VALUE_READY = 3
+local VALUE_DATA = 4
 
-	-- build dispatch table: metatable/class → handler function
-	local dispatch = normalize_handlers(handlers)
+local function value_once_gen(s, emitted)
+	if emitted ~= 0 then
+		return nil
+	end
+	if not s[VALUE_READY] then
+		s[VALUE_DATA] = s[VALUE_FN](s[VALUE_NODE])
+		s[VALUE_READY] = true
+	end
+	return 1, s[VALUE_DATA]
+end
+
+function pvm.phase(name, handlers_or_fn)
+	local dispatch = nil
+	local value_fn = nil
+
+	local handlers_t = type(handlers_or_fn)
+	if handlers_t == "table" then
+		dispatch = normalize_handlers(handlers_or_fn)
+	elseif handlers_t == "function" then
+		value_fn = handlers_or_fn
+	else
+		error("pvm.phase: second argument must be handlers table or value function", 2)
+	end
 
 	local cache = setmetatable({}, { __mode = "k" })
 	local pending = setmetatable({}, { __mode = "k" })
@@ -293,6 +321,9 @@ function pvm.phase(name, handlers)
 		local hit = cache[node]
 		if hit ~= nil then
 			stats.hits = stats.hits + 1
+			if hit.array ~= nil and hit.n ~= nil then
+				return seq_n_gen, hit, 0
+			end
 			return seq_gen, hit, 0
 		end
 
@@ -303,14 +334,18 @@ function pvm.phase(name, handlers)
 			return recording_gen, inflight, 0
 		end
 
-		-- miss: dispatch
-		local mt = getmetatable(node)
-		local handler = dispatch[mt]
-		if not handler then
-			error("pvm.phase '" .. name .. "': no handler for " .. tostring(mt and mt.kind or type(node)), 2)
+		local g, p, c
+		if value_fn ~= nil then
+			g, p, c = value_once_gen, { value_fn, node, false, nil }, 0
+		else
+			-- miss: dispatch
+			local mt = getmetatable(node)
+			local handler = dispatch[mt]
+			if not handler then
+				error("pvm.phase '" .. name .. "': no handler for " .. tostring(mt and mt.kind or type(node)), 2)
+			end
+			g, p, c = handler(node)
 		end
-
-		local g, p, c = handler(node)
 
 		-- if handler returned nil, treat as empty production
 		if g == nil then
@@ -330,14 +365,17 @@ function pvm.phase(name, handlers)
 			g,
 			p,
 			c,
+			value_fn ~= nil,
 		}
 		pending[node] = entry
 		return recording_gen, entry, 0
 	end
 
 	-- inject method on handler classes so nodes can call node:phase_name()
-	for cls, _ in pairs(dispatch) do
-		rawset(cls, name, call)
+	if dispatch ~= nil then
+		for cls, _ in pairs(dispatch) do
+			rawset(cls, name, call)
+		end
 	end
 
 	-- the boundary object
@@ -371,8 +409,10 @@ function pvm.phase(name, handlers)
 		stats.hits = 0
 		stats.shared = 0
 		-- re-inject methods since cache ref changed
-		for cls, _ in pairs(dispatch) do
-			rawset(cls, name, call)
+		if dispatch ~= nil then
+			for cls, _ in pairs(dispatch) do
+				rawset(cls, name, call)
+			end
 		end
 	end
 
@@ -402,70 +442,70 @@ function pvm.phase(name, handlers)
 end
 
 -- ══════════════════════════════════════════════════════════════
---  LOWER — identity-cached value boundary
+--  LOWER — compatibility wrapper over phase + one
 --
---  For cases where the output is not a stream of elements
---  but a single computed value (a machine, a scheduled plan,
---  a solved layout). Same identity caching, but returns a
---  value instead of a triplet.
+--  Keep existing call sites working while converging on
+--  a single public boundary concept (`pvm.phase`).
 --
---  Usage:
+--    local solve_phase = pvm.phase("solve", fn)
+--    local solved = pvm.one(solve_phase(node))
 --
---    local solve = pvm.lower("solve", function(tree)
---        return layout_solver(tree)
---    end)
---
---    local solved = solve(bound_tree)  -- cached by identity
---
+--  `pvm.lower` now preserves old ergonomics (`solve(node)`)
+--  by wrapping that pattern.
 -- ══════════════════════════════════════════════════════════════
 
-function pvm.lower(name, fn)
-	local cache = setmetatable({}, { __mode = "k" })
-	local stats = { name = name, calls = 0, hits = 0 }
-
-	local function call(node)
-		stats.calls = stats.calls + 1
-		local hit = cache[node]
-		if hit ~= nil then
-			stats.hits = stats.hits + 1
-			return hit
-		end
-		local result = fn(node)
-		cache[node] = result
-		return result
+local function cached_scalar_value(cached)
+	if cached == nil then
+		return nil
 	end
+	if cached.array ~= nil and cached.n ~= nil then
+		if cached.n == 0 then
+			return nil
+		end
+		return cached.array[1]
+	end
+	return cached[1]
+end
+
+function pvm.lower(name, fn)
+	local scalar_phase = pvm.phase(name, fn)
 
 	local boundary = {}
 	boundary.name = name
+	boundary.__phase = scalar_phase
+
 	boundary.__call = function(_, node, ...)
 		if select("#", ...) ~= 0 then
 			error("pvm.lower '" .. tostring(name) .. "': extra args are not supported", 2)
 		end
-		return call(node)
+		return pvm.one(scalar_phase(node))
 	end
 
 	function boundary:stats()
-		return stats
+		return scalar_phase:stats()
 	end
+
 	function boundary:hit_ratio()
-		if stats.calls == 0 then
-			return 1.0
-		end
-		return stats.hits / stats.calls
+		return scalar_phase:hit_ratio()
 	end
+
+	function boundary:reuse_ratio()
+		return scalar_phase:reuse_ratio()
+	end
+
 	function boundary:reset()
-		cache = setmetatable({}, { __mode = "k" })
-		stats.calls = 0
-		stats.hits = 0
+		scalar_phase:reset()
 	end
+
 	function boundary:cached(node)
-		return cache[node]
+		return cached_scalar_value(scalar_phase:cached(node))
 	end
+
 	function boundary:warm(node, ...)
 		if select("#", ...) ~= 0 then
 			error("pvm.lower '" .. tostring(name) .. "': extra args are not supported", 2)
 		end
-		return call(node)
+		return cached_scalar_value(scalar_phase:warm(node))
 	end
 
 	return setmetatable(boundary, boundary)
@@ -677,6 +717,67 @@ function pvm.fold(g, p, c, init, fn)
 		acc = fn(acc, val)
 	end
 	return acc
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  ONE — consume exactly one element from a triplet
+--
+--  Useful for scalar boundaries expressed as phases.
+--  Errors if the stream is empty or has more than one element.
+-- ══════════════════════════════════════════════════════════════
+
+function pvm.one(g, p, c)
+	if g == nil then
+		error("pvm.one: expected exactly 1 element, got 0", 2)
+	end
+	if g == seq_gen then
+		local i = c + 1
+		local n = #p
+		if i > n then
+			error("pvm.one: expected exactly 1 element, got 0", 2)
+		end
+		if i < n then
+			error("pvm.one: expected exactly 1 element, got more", 2)
+		end
+		return p[i]
+	end
+	if g == seq_n_gen then
+		local i = c + 1
+		local n = p.n
+		if i > n then
+			error("pvm.one: expected exactly 1 element, got 0", 2)
+		end
+		if i < n then
+			error("pvm.one: expected exactly 1 element, got more", 2)
+		end
+		return p.array[i]
+	end
+	if g == recording_gen then
+		local i = c + 1
+		if i > p[REC_N] then
+			if not advance_recording(p) then
+				error("pvm.one: expected exactly 1 element, got 0", 2)
+			end
+		end
+		local value = p[REC_BUF][i]
+		if i < p[REC_N] then
+			error("pvm.one: expected exactly 1 element, got more", 2)
+		end
+		if advance_recording(p) then
+			error("pvm.one: expected exactly 1 element, got more", 2)
+		end
+		return value
+	end
+
+	local c1, v1 = g(p, c)
+	if c1 == nil then
+		error("pvm.one: expected exactly 1 element, got 0", 2)
+	end
+	local c2 = g(p, c1)
+	if c2 ~= nil then
+		error("pvm.one: expected exactly 1 element, got more", 2)
+	end
+	return v1
 end
 
 -- ══════════════════════════════════════════════════════════════

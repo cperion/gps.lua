@@ -29,14 +29,14 @@ The mechanism is a **recording-triplet phase boundary**:
   miss was already recording. They share the same recording entry. No
   duplicate evaluation.
 
-The outermost `pvm.drain` or `pvm.each` is the only loop. Adjacent misses
-fuse automatically because their triplets nest — one drain pulls through the
-entire chain as a single pass that LuaJIT can trace.
+The outermost consumer (`for _, v in phase(node) do ... end`, `pvm.drain`, or
+`pvm.each`) is the only loop. Adjacent misses fuse automatically because their
+triplets nest — one pull pass flows through the entire chain that LuaJIT can trace.
 
 The compiler doesn't produce machines. The compiler **is** machines, all the
 way down. `(gen, param, ctrl)` is not an abstraction over execution — it is
 execution factored into its three irreducible roles. Every phase boundary
-returns a triplet. Every triplet is a machine. `pvm.drain` runs them all.
+returns a triplet. Every triplet is a machine. Lua's native generic `for` runs it.
 
 ---
 
@@ -65,13 +65,18 @@ pvm.phase(name, handlers)       → boundary
 -- miss → recording_gen wrapping handler's triplet; commits on drain
 boundary(node)  → g, p, c      -- call form
 node:name()     → g, p, c      -- method form
+
+pvm.phase(name, fn)             → boundary
+-- fn: function(node) → value
+-- value is exposed as a lazy single-element stream
+-- consume with pvm.one(boundary(node))
 ```
 
-### Lower boundary — single-value cache
+### Lower boundary — compatibility wrapper
 
 ```lua
 pvm.lower(name, fn)             → boundary
--- fn: function(node) → value  (one cached value per node identity)
+-- convenience wrapper over: pvm.one(pvm.phase(name, fn)(node))
 boundary(node)  → value
 ```
 
@@ -104,13 +109,18 @@ pvm.concat_all(trips)                    → g, p, c   -- N triplets: {{g,p,c},.
 pvm.children(phase_fn, array, n?)        → g, p, c   -- map phase over children
 ```
 
-### Terminals — force evaluation
+### Consumption helpers (native `for` also works)
+
+`for _, v in phase(node) do ... end` is the canonical executor because pvm returns
+Lua-native iterators (`gen, param, state`). The helpers below are convenience
+terminals.
 
 ```lua
 pvm.drain(g, p, c)          → table     -- materialize all values to array
 pvm.drain_into(g, p, c, out)→ out       -- append to existing array
 pvm.each(g, p, c, fn)       → nil       -- call fn(value) for each element
 pvm.fold(g, p, c, init, fn) → acc       -- reduce to single value
+pvm.one(g, p, c)            → value     -- require exactly one element
 ```
 
 ### Diagnostics
@@ -175,19 +185,19 @@ local root = T.App.Row({
     T.App.Button("rec",   48, 30, 0xffcc4400),
 })
 
--- 4. Execute: drain the triplet chain
+-- 4. Execute: native Lua generic for over the triplet
 -- First call: handlers run, recording fills, caches commit
-pvm.each(lower(root), function(cmd)
+for _, cmd in lower(root) do
     local k = cmd.kind
     if k == K_RECT then
         -- draw cmd.x, cmd.y, cmd.w, cmd.h, cmd.rgba8
     end
-end)
+end
 
 -- Second call: all nodes hit cache → seq_gen, zero handler work
-pvm.each(lower(root), function(cmd)
+for _, cmd in lower(root) do
     -- same commands, no handlers called
-end)
+end
 
 -- Edit: only the changed button misses; the rest hit instantly
 local new_root = pvm.with(root, {
@@ -207,7 +217,7 @@ print(pvm.report_string({ lower }))
 ## The live loop
 
 ```text
-poll → apply → phase(source) → drain/each → execute
+poll → apply → phase(source) → for/drain/each → execute
 ```
 
 **poll** — read input from outside world
@@ -216,9 +226,9 @@ poll → apply → phase(source) → drain/each → execute
 
 **phase(source)** — return a triplet chain; nothing evaluates yet
 
-**drain/each** — pull through the chain; misses run handlers; caches fill
+**for/drain/each** — pull through the chain; misses run handlers; caches fill
 
-**execute** — the for-loop inside `pvm.each` issues draw calls, fills buffers
+**execute** — your loop body issues draw calls, fills buffers, etc.
 
 On the next frame: unchanged nodes return `seq_gen` (instant). Only changed
 subtrees run handlers. Incrementality is structural, not bolted on.
@@ -228,8 +238,8 @@ subtrees run handlers. Incrementality is structural, not bolted on.
 ## File map
 
 ```
-pvm.lua              — the centerpiece: phase boundaries, lower, drain, each, fold,
-                        once, children, concat, seq, report
+pvm.lua              — the centerpiece: phase boundaries, one, lower (compat),
+                        drain, each, fold, once, children, concat, seq, report
 triplet.lua          — iterator algebra: map/filter/take/flatmap/zip/scan/...
 quote.lua            — hygienic codegen for ASDL constructor interning tries
 
@@ -327,7 +337,7 @@ pvm takes that decomposition one layer deeper:
 Every `pvm.phase` boundary returns a triplet — a machine that runs lazily as
 the consumer pulls. Caching is a side effect of full consumption, not an
 explicit act. Adjacent phase calls fuse because their machines nest
-transparently. The outermost drain is the only loop that runs.
+transparently. The outermost consumer loop is the only loop that runs.
 
 The long-form argument for why this decomposition matters — and what it means
 for every domain from audio to UI to parsers — lives in the

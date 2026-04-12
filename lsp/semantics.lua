@@ -41,7 +41,19 @@ local BUILTIN_GLOBALS = {
     math = true, string = true, table = true, coroutine = true,
     io = true, os = true, debug = true, package = true, utf8 = true,
     arg = true, bit = true, ffi = true, jit = true,  -- LuaJIT
+
+    -- Common host/test globals (pragmatic defaults)
+    vim = true, love = true,
+    describe = true, it = true, before_each = true, after_each = true,
+    before_all = true, after_all = true, pending = true,
 }
+
+local EXTRA_GLOBALS = os.getenv("PVM_LSP_GLOBALS")
+if EXTRA_GLOBALS and EXTRA_GLOBALS ~= "" then
+    for g in EXTRA_GLOBALS:gmatch("[^,%s]+") do
+        BUILTIN_GLOBALS[g] = true
+    end
+end
 
 local BUILTIN_TYPES = {
     any = true, unknown = true,
@@ -117,6 +129,61 @@ function M.new(ctx)
     ctx = ctx or ASDL.context()
     local C = ctx.Lua
 
+    local function decl_kind_name(k)
+        local kk = tostring(k):match("^Lua%.([%w_]+)") or ""
+        if kk == "DeclParam" then return "param" end
+        return "local"
+    end
+
+    local function symbol_kind_name(k)
+        local kk = tostring(k):match("^Lua%.([%w_]+)") or ""
+        if kk == "SymParam" then return "param" end
+        if kk == "SymGlobal" then return "global" end
+        if kk == "SymBuiltin" then return "builtin" end
+        if kk == "SymTypeClass" then return "type-class" end
+        if kk == "SymTypeAlias" then return "type-alias" end
+        if kk == "SymTypeGeneric" then return "type-generic" end
+        if kk == "SymTypeBuiltin" then return "type-builtin" end
+        return "local"
+    end
+
+    local function diag_code_name(c)
+        local kk = tostring(c):match("^Lua%.([%w_]+)") or ""
+        if kk == "DiagUndefinedGlobal" then return "undefined-global" end
+        if kk == "DiagUnknownType" then return "unknown-type" end
+        if kk == "DiagRedeclareLocal" then return "redeclare-local" end
+        if kk == "DiagShadowingLocal" then return "shadowing-local" end
+        if kk == "DiagShadowingGlobal" then return "shadowing-global" end
+        if kk == "DiagUnusedParam" then return "unused-param" end
+        return "unused-local"
+    end
+
+    local function scope_kind_name(s)
+        local kk = tostring(s):match("^Lua%.([%w_]+)") or ""
+        if kk == "ScopeFunction" then return "function" end
+        if kk == "ScopeIf" then return "if" end
+        if kk == "ScopeElse" then return "else" end
+        if kk == "ScopeWhile" then return "while" end
+        if kk == "ScopeRepeat" then return "repeat" end
+        if kk == "ScopeFor" then return "for" end
+        if kk == "ScopeDo" then return "do" end
+        if kk == "ScopeType" then return "type" end
+        return "file"
+    end
+
+    local function symbol_kind_from_decl(dk)
+        if dk == C.DeclParam then return C.SymParam end
+        return C.SymLocal
+    end
+
+    local function type_target_symbol_kind(tt)
+        if tt.kind == "TypeClassTarget" then return C.SymTypeClass end
+        if tt.kind == "TypeAliasTarget" then return C.SymTypeAlias end
+        if tt.kind == "TypeGenericTarget" then return C.SymTypeGeneric end
+        if tt.kind == "TypeBuiltinTarget" then return C.SymTypeBuiltin end
+        return C.SymTypeBuiltin
+    end
+
     -- ── collect_doc_types phase ────────────────────────────
     local collect_doc_types
     collect_doc_types = pvm.phase("collect_doc_types", {
@@ -169,9 +236,9 @@ function M.new(ctx)
     local scope_events
     scope_events = pvm.phase("scope_events", {
         [C.File] = function(n)
-            local g1, p1, c1 = pvm.once(C.ScopeEnter("file", anchor_ref(C, n)))
+            local g1, p1, c1 = pvm.once(C.ScopeEnter(C.ScopeFile, anchor_ref(C, n)))
             local g2, p2, c2 = pvm.children(scope_events, n.items)
-            local g3, p3, c3 = pvm.once(C.ScopeExit("file", anchor_ref(C, n)))
+            local g3, p3, c3 = pvm.once(C.ScopeExit(C.ScopeFile, anchor_ref(C, n)))
             return pvm.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
         end,
 
@@ -185,12 +252,12 @@ function M.new(ctx)
 
         [C.FuncBody] = function(n)
             local trips = {}
-            append_trip(trips, pvm.once(C.ScopeEnter("function", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeEnter(C.ScopeFunction, anchor_ref(C, n))))
             for i = 1, #n.params do
-                append_trip(trips, pvm.once(C.ScopeDeclLocal("param", n.params[i].name, anchor_ref(C, n.params[i]))))
+                append_trip(trips, pvm.once(C.ScopeDeclLocal(C.DeclParam, n.params[i].name, anchor_ref(C, n.params[i]))))
             end
             append_trip(trips, scope_events(n.body))
-            append_trip(trips, pvm.once(C.ScopeExit("function", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeExit(C.ScopeFunction, anchor_ref(C, n))))
             return pvm.concat_all(trips)
         end,
 
@@ -204,7 +271,7 @@ function M.new(ctx)
             local trips = {}
             for i = 1, #n.values do append_trip(trips, scope_events(n.values[i])) end
             for i = 1, #n.names do
-                append_trip(trips, pvm.once(C.ScopeDeclLocal("local", n.names[i].value, anchor_ref(C, n.names[i]))))
+                append_trip(trips, pvm.once(C.ScopeDeclLocal(C.DeclLocal, n.names[i].value, anchor_ref(C, n.names[i]))))
             end
             return pvm.concat_all(trips)
         end,
@@ -229,7 +296,7 @@ function M.new(ctx)
         end,
 
         [C.LocalFunction] = function(n)
-            local g1, p1, c1 = pvm.once(C.ScopeDeclLocal("local", n.name, anchor_ref(C, n)))
+            local g1, p1, c1 = pvm.once(C.ScopeDeclLocal(C.DeclLocal, n.name, anchor_ref(C, n)))
             local g2, p2, c2 = scope_events(n.body)
             return pvm.concat2(g1, p1, c1, g2, p2, c2)
         end,
@@ -265,14 +332,14 @@ function M.new(ctx)
             for i = 1, #n.arms do
                 local arm = n.arms[i]
                 append_trip(trips, scope_events(arm.cond))
-                append_trip(trips, pvm.once(C.ScopeEnter("if", anchor_ref(C, arm))))
+                append_trip(trips, pvm.once(C.ScopeEnter(C.ScopeIf, anchor_ref(C, arm))))
                 append_trip(trips, scope_events(arm.body))
-                append_trip(trips, pvm.once(C.ScopeExit("if", anchor_ref(C, arm))))
+                append_trip(trips, pvm.once(C.ScopeExit(C.ScopeIf, anchor_ref(C, arm))))
             end
             if n.else_block then
-                append_trip(trips, pvm.once(C.ScopeEnter("else", anchor_ref(C, n.else_block))))
+                append_trip(trips, pvm.once(C.ScopeEnter(C.ScopeElse, anchor_ref(C, n.else_block))))
                 append_trip(trips, scope_events(n.else_block))
-                append_trip(trips, pvm.once(C.ScopeExit("else", anchor_ref(C, n.else_block))))
+                append_trip(trips, pvm.once(C.ScopeExit(C.ScopeElse, anchor_ref(C, n.else_block))))
             end
             return pvm.concat_all(trips)
         end,
@@ -280,18 +347,18 @@ function M.new(ctx)
         [C.While] = function(n)
             local trips = {}
             append_trip(trips, scope_events(n.cond))
-            append_trip(trips, pvm.once(C.ScopeEnter("while", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeEnter(C.ScopeWhile, anchor_ref(C, n))))
             append_trip(trips, scope_events(n.body))
-            append_trip(trips, pvm.once(C.ScopeExit("while", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeExit(C.ScopeWhile, anchor_ref(C, n))))
             return pvm.concat_all(trips)
         end,
 
         [C.Repeat] = function(n)
             local trips = {}
-            append_trip(trips, pvm.once(C.ScopeEnter("repeat", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeEnter(C.ScopeRepeat, anchor_ref(C, n))))
             append_trip(trips, scope_events(n.body))
             append_trip(trips, scope_events(n.cond))
-            append_trip(trips, pvm.once(C.ScopeExit("repeat", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeExit(C.ScopeRepeat, anchor_ref(C, n))))
             return pvm.concat_all(trips)
         end,
 
@@ -300,29 +367,29 @@ function M.new(ctx)
             append_trip(trips, scope_events(n.init))
             append_trip(trips, scope_events(n.limit))
             append_trip(trips, scope_events(n.step))
-            append_trip(trips, pvm.once(C.ScopeEnter("for", anchor_ref(C, n))))
-            append_trip(trips, pvm.once(C.ScopeDeclLocal("local", n.name, anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeEnter(C.ScopeFor, anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeDeclLocal(C.DeclLocal, n.name, anchor_ref(C, n))))
             append_trip(trips, scope_events(n.body))
-            append_trip(trips, pvm.once(C.ScopeExit("for", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeExit(C.ScopeFor, anchor_ref(C, n))))
             return pvm.concat_all(trips)
         end,
 
         [C.ForIn] = function(n)
             local trips = {}
             for i = 1, #n.iter do append_trip(trips, scope_events(n.iter[i])) end
-            append_trip(trips, pvm.once(C.ScopeEnter("for", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeEnter(C.ScopeFor, anchor_ref(C, n))))
             for i = 1, #n.names do
-                append_trip(trips, pvm.once(C.ScopeDeclLocal("local", n.names[i].value, anchor_ref(C, n.names[i]))))
+                append_trip(trips, pvm.once(C.ScopeDeclLocal(C.DeclLocal, n.names[i].value, anchor_ref(C, n.names[i]))))
             end
             append_trip(trips, scope_events(n.body))
-            append_trip(trips, pvm.once(C.ScopeExit("for", anchor_ref(C, n))))
+            append_trip(trips, pvm.once(C.ScopeExit(C.ScopeFor, anchor_ref(C, n))))
             return pvm.concat_all(trips)
         end,
 
         [C.Do] = function(n)
-            local g1, p1, c1 = pvm.once(C.ScopeEnter("do", anchor_ref(C, n)))
+            local g1, p1, c1 = pvm.once(C.ScopeEnter(C.ScopeDo, anchor_ref(C, n)))
             local g2, p2, c2 = scope_events(n.body)
-            local g3, p3, c3 = pvm.once(C.ScopeExit("do", anchor_ref(C, n)))
+            local g3, p3, c3 = pvm.once(C.ScopeExit(C.ScopeDo, anchor_ref(C, n)))
             return pvm.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
         end,
 
@@ -479,14 +546,13 @@ function M.new(ctx)
     local item_scope_events = pvm.lower("item_scope_events", function(item)
         local out, n = {}, 0
         local function emit(ev) n = n + 1; out[n] = ev end
-        local aref = anchor_ref(C, item)
 
         local walk_expr, walk_stmt, walk_body, walk_block
 
         function walk_expr(e)
             if not e then return end
             local k = e.kind
-            if k == "NameRef" then emit(C.ScopeRef(e.name, aref))
+            if k == "NameRef" then emit(C.ScopeRef(e.name, anchor_ref(C, e)))
             elseif k == "Field" then walk_expr(e.base)
             elseif k == "Index" then walk_expr(e.base); walk_expr(e.key)
             elseif k == "Call" then
@@ -510,7 +576,7 @@ function M.new(ctx)
         end
 
         local function walk_lvalue(lv)
-            if lv.kind == "LName" then emit(C.ScopeWrite(lv.name, aref))
+            if lv.kind == "LName" then emit(C.ScopeWrite(lv.name, anchor_ref(C, lv)))
             elseif lv.kind == "LField" then walk_expr(lv.base)
             elseif lv.kind == "LIndex" then walk_expr(lv.base); walk_expr(lv.key)
             elseif lv.kind == "LMethod" then walk_expr(lv.base) end
@@ -521,12 +587,12 @@ function M.new(ctx)
         end
 
         function walk_body(body)
-            emit(C.ScopeEnter("function", aref))
+            emit(C.ScopeEnter(C.ScopeFunction, anchor_ref(C, body)))
             for i = 1, #body.params do
-                emit(C.ScopeDeclLocal("param", body.params[i].name, aref))
+                emit(C.ScopeDeclLocal(C.DeclParam, body.params[i].name, anchor_ref(C, body.params[i])))
             end
             walk_block(body.body)
-            emit(C.ScopeExit("function", aref))
+            emit(C.ScopeExit(C.ScopeFunction, anchor_ref(C, body)))
         end
 
         function walk_stmt(s)
@@ -534,15 +600,15 @@ function M.new(ctx)
             local k = s.kind
             if k == "LocalAssign" then
                 for i = 1, #s.values do walk_expr(s.values[i]) end
-                for i = 1, #s.names do emit(C.ScopeDeclLocal("local", s.names[i].value, aref)) end
+                for i = 1, #s.names do emit(C.ScopeDeclLocal(C.DeclLocal, s.names[i].value, anchor_ref(C, s.names[i]))) end
             elseif k == "Assign" then
                 for i = 1, #s.rhs do walk_expr(s.rhs[i]) end
                 for i = 1, #s.lhs do walk_lvalue(s.lhs[i]) end
             elseif k == "LocalFunction" then
-                emit(C.ScopeDeclLocal("local", s.name, aref))
+                emit(C.ScopeDeclLocal(C.DeclLocal, s.name, anchor_ref(C, s)))
                 walk_body(s.body)
             elseif k == "Function" then
-                if s.name.kind == "LName" then emit(C.ScopeWrite(s.name.name, aref))
+                if s.name.kind == "LName" then emit(C.ScopeWrite(s.name.name, anchor_ref(C, s.name)))
                 elseif s.name.kind == "LField" then walk_expr(s.name.base)
                 elseif s.name.kind == "LIndex" then walk_expr(s.name.base); walk_expr(s.name.key)
                 elseif s.name.kind == "LMethod" then walk_expr(s.name.base) end
@@ -555,41 +621,41 @@ function M.new(ctx)
             elseif k == "If" then
                 for i = 1, #s.arms do
                     walk_expr(s.arms[i].cond)
-                    emit(C.ScopeEnter("if", aref))
+                    emit(C.ScopeEnter(C.ScopeIf, anchor_ref(C, s.arms[i])))
                     walk_block(s.arms[i].body)
-                    emit(C.ScopeExit("if", aref))
+                    emit(C.ScopeExit(C.ScopeIf, anchor_ref(C, s.arms[i])))
                 end
                 if s.else_block then
-                    emit(C.ScopeEnter("else", aref))
+                    emit(C.ScopeEnter(C.ScopeElse, anchor_ref(C, s.else_block)))
                     walk_block(s.else_block)
-                    emit(C.ScopeExit("else", aref))
+                    emit(C.ScopeExit(C.ScopeElse, anchor_ref(C, s.else_block)))
                 end
             elseif k == "While" then
                 walk_expr(s.cond)
-                emit(C.ScopeEnter("while", aref))
+                emit(C.ScopeEnter(C.ScopeWhile, anchor_ref(C, s)))
                 walk_block(s.body)
-                emit(C.ScopeExit("while", aref))
+                emit(C.ScopeExit(C.ScopeWhile, anchor_ref(C, s)))
             elseif k == "Repeat" then
-                emit(C.ScopeEnter("repeat", aref))
+                emit(C.ScopeEnter(C.ScopeRepeat, anchor_ref(C, s)))
                 walk_block(s.body)
                 walk_expr(s.cond)
-                emit(C.ScopeExit("repeat", aref))
+                emit(C.ScopeExit(C.ScopeRepeat, anchor_ref(C, s)))
             elseif k == "ForNum" then
                 walk_expr(s.init); walk_expr(s.limit); walk_expr(s.step)
-                emit(C.ScopeEnter("for", aref))
-                emit(C.ScopeDeclLocal("local", s.name, aref))
+                emit(C.ScopeEnter(C.ScopeFor, anchor_ref(C, s)))
+                emit(C.ScopeDeclLocal(C.DeclLocal, s.name, anchor_ref(C, s)))
                 walk_block(s.body)
-                emit(C.ScopeExit("for", aref))
+                emit(C.ScopeExit(C.ScopeFor, anchor_ref(C, s)))
             elseif k == "ForIn" then
                 for i = 1, #s.iter do walk_expr(s.iter[i]) end
-                emit(C.ScopeEnter("for", aref))
-                for i = 1, #s.names do emit(C.ScopeDeclLocal("local", s.names[i].value, aref)) end
+                emit(C.ScopeEnter(C.ScopeFor, anchor_ref(C, s)))
+                for i = 1, #s.names do emit(C.ScopeDeclLocal(C.DeclLocal, s.names[i].value, anchor_ref(C, s.names[i]))) end
                 walk_block(s.body)
-                emit(C.ScopeExit("for", aref))
+                emit(C.ScopeExit(C.ScopeFor, anchor_ref(C, s)))
             elseif k == "Do" then
-                emit(C.ScopeEnter("do", aref))
+                emit(C.ScopeEnter(C.ScopeDo, anchor_ref(C, s)))
                 walk_block(s.body)
-                emit(C.ScopeExit("do", aref))
+                emit(C.ScopeExit(C.ScopeDo, anchor_ref(C, s)))
             end
         end
 
@@ -603,14 +669,14 @@ function M.new(ctx)
 
     local file_scope_events = pvm.lower("file_scope_events", function(file)
         local out, n = {}, 0
-        n = n + 1; out[n] = C.ScopeEnter("file", anchor_ref(C, file))
+        n = n + 1; out[n] = C.ScopeEnter(C.ScopeFile, anchor_ref(C, file))
 
         for i = 1, #file.items do
             local ev = item_scope_events(file.items[i]).items
             for j = 1, #ev do n = n + 1; out[n] = ev[j] end
         end
 
-        n = n + 1; out[n] = C.ScopeExit("file", anchor_ref(C, file))
+        n = n + 1; out[n] = C.ScopeExit(C.ScopeFile, anchor_ref(C, file))
         return C.ScopeEventList(out)
     end)
 
@@ -654,7 +720,7 @@ function M.new(ctx)
 
         local function add_diag(code, message, name, scope_kind, anchor)
             n = n + 1
-            out[n] = C.Diagnostic(code, message, name or "", scope_kind or "", anchor_ref(C, anchor or file))
+            out[n] = C.Diagnostic(code, message, name or "", scope_kind or C.ScopeFile, anchor_ref(C, anchor or file))
         end
 
         local function pop_scope()
@@ -664,8 +730,9 @@ function M.new(ctx)
             for i = 1, #scope.locals do
                 local info = scope.locals[i]
                 if info.used == 0 and info.name ~= "_" and info.name:sub(1, 1) ~= "_" then
-                    local code = (info.decl_kind == "param") and "unused-param" or "unused-local"
-                    add_diag(code, code:gsub("-", " ") .. " '" .. info.name .. "'",
+                    local code = (info.decl_kind == C.DeclParam) and C.DiagUnusedParam or C.DiagUnusedLocal
+                    local cname = diag_code_name(code)
+                    add_diag(code, cname:gsub("-", " ") .. " '" .. info.name .. "'",
                         info.name, scope.scope, info.anchor)
                 end
             end
@@ -675,7 +742,7 @@ function M.new(ctx)
             local scope = current_scope()
             if not scope then return end
             if find_local_in_frame(scope, name) then
-                add_diag("redeclare-local", "local '" .. name .. "' redeclared in same scope",
+                add_diag(C.DiagRedeclareLocal, "local '" .. name .. "' redeclared in same scope",
                     name, scope.scope, anchor)
                 return
             end
@@ -684,10 +751,10 @@ function M.new(ctx)
                 if find_local_in_frame(scopes[i], name) then outer_hit = true; break end
             end
             if outer_hit then
-                add_diag("shadowing-local", "local '" .. name .. "' shadows outer local",
+                add_diag(C.DiagShadowingLocal, "local '" .. name .. "' shadows outer local",
                     name, scope.scope, anchor)
             elseif BUILTIN_GLOBALS[name] or contains_name(global_declared, name) then
-                add_diag("shadowing-global", "local '" .. name .. "' shadows global",
+                add_diag(C.DiagShadowingGlobal, "local '" .. name .. "' shadows global",
                     name, scope.scope, anchor)
             end
             local locals = {}
@@ -707,8 +774,8 @@ function M.new(ctx)
             if not contains_name(seen_undef, name) then
                 add_name_unique(seen_undef, name)
                 local scope = current_scope()
-                add_diag("undefined-global", "undefined global '" .. name .. "'",
-                    name, scope and scope.scope or "?", anchor)
+                add_diag(C.DiagUndefinedGlobal, "undefined global '" .. name .. "'",
+                    name, scope and scope.scope or C.ScopeFile, anchor)
             end
         end
 
@@ -717,7 +784,7 @@ function M.new(ctx)
             local ek = e.kind
             if     ek == "ScopeEnter"      then push_scope(e.scope)
             elseif ek == "ScopeExit"       then pop_scope()
-            elseif ek == "ScopeDeclLocal"  then declare_local(e.name, e.decl_kind or "local", e.anchor)
+            elseif ek == "ScopeDeclLocal"  then declare_local(e.name, e.decl_kind or C.DeclLocal, e.anchor)
             elseif ek == "ScopeDeclGlobal" then add_name_unique(global_declared, e.name)
             elseif ek == "ScopeWrite"      then
                 if not find_local(e.name) then add_name_unique(global_declared, e.name) end
@@ -760,7 +827,7 @@ function M.new(ctx)
 
         local function push_scope(kind, anchor)
             scope_seq = scope_seq + 1
-            local id = kind .. ":" .. tostring(anchor or file) .. ":" .. tostring(scope_seq)
+            local id = scope_kind_name(kind) .. ":" .. tostring(anchor or file) .. ":" .. tostring(scope_seq)
             scopes[#scopes + 1] = C.ScopeSymbolFrame(kind, id, {})
         end
 
@@ -803,7 +870,7 @@ function M.new(ctx)
         local function ensure_builtin(name)
             local hit = find_global(name)
             if hit then return hit end
-            local sym = add_symbol("builtin:" .. name, "builtin", name, "file", "file",
+            local sym = add_symbol("builtin:" .. name, C.SymBuiltin, name, C.ScopeFile, "file",
                 anchor_ref(C, "builtin:" .. name))
             globals[#globals + 1] = sym
             return sym
@@ -813,7 +880,7 @@ function M.new(ctx)
             local hit = find_global(name)
             if hit then return hit end
             local danchor = anchor_ref(C, anchor or ("global:" .. name))
-            local sym = add_symbol("global:" .. name, "global", name, "file", "file", danchor)
+            local sym = add_symbol("global:" .. name, C.SymGlobal, name, C.ScopeFile, "file", danchor)
             globals[#globals + 1] = sym
             add_def(sym, danchor)
             return sym
@@ -823,7 +890,8 @@ function M.new(ctx)
             local scope = current_scope()
             if not scope then return nil end
             local danchor = anchor_ref(C, anchor or (scope.id .. ":" .. name))
-            local sym = add_symbol(danchor.id, decl_kind, name, scope.scope, scope.id, danchor)
+            local sk = symbol_kind_from_decl(decl_kind)
+            local sym = add_symbol(danchor.id, sk, name, scope.scope, scope.id, danchor)
             scopes[#scopes] = set_local(scope, name, sym)
             add_def(sym, danchor)
             return sym
@@ -848,7 +916,7 @@ function M.new(ctx)
             local ek = e.kind
             if     ek == "ScopeEnter"      then push_scope(e.scope, e.anchor)
             elseif ek == "ScopeExit"       then pop_scope()
-            elseif ek == "ScopeDeclLocal"  then declare_local(e.name, e.decl_kind or "local", e.anchor)
+            elseif ek == "ScopeDeclLocal"  then declare_local(e.name, e.decl_kind or C.DeclLocal, e.anchor)
             elseif ek == "ScopeDeclGlobal" then ensure_global(e.name, e.anchor)
             elseif ek == "ScopeRef"        then ref_name(e.name, e.anchor)
             elseif ek == "ScopeWrite"      then write_name(e.name, e.anchor)
@@ -879,8 +947,8 @@ function M.new(ctx)
         local function emit_unknown(tname, owner, anchor)
             if contains_name(known, tname) or contains_name(seen, tname) then return end
             add_name_unique(seen, tname)
-            add(C.Diagnostic("unknown-type",
-                "unknown type '" .. tname .. "' in " .. owner, tname, "type", anchor))
+            add(C.Diagnostic(C.DiagUnknownType,
+                "unknown type '" .. tname .. "' in " .. owner, tname, C.ScopeType, anchor))
         end
 
         for i = 1, #env.classes do
@@ -952,13 +1020,13 @@ function M.new(ctx)
         for i = 1, #idx.defs do
             if idx.defs[i].anchor == target then
                 local sym = symbol_by_id(idx, idx.defs[i].symbol_id)
-                if sym then return C.AnchorSymbol(sym, "def") end
+                if sym then return C.AnchorSymbol(sym, C.RoleDef) end
             end
         end
         for i = 1, #idx.uses do
             if idx.uses[i].anchor == target then
                 local sym = symbol_by_id(idx, idx.uses[i].symbol_id)
-                if sym then return C.AnchorSymbol(sym, "use") end
+                if sym then return C.AnchorSymbol(sym, C.RoleUse) end
             end
         end
         for i = 1, #idx.unresolved do
@@ -1017,7 +1085,7 @@ function M.new(ctx)
             local tt = type_target(C.TypeNameQuery(q.file, q.subject.name))
             if q.include_declaration and tt.kind ~= "TypeTargetMissing" and tt.anchor then
                 refs[#refs + 1] = C.Occurrence("type:" .. type_target_kind(tt) .. ":" .. tt.name,
-                    tt.name, type_target_kind(tt), tt.anchor)
+                    tt.name, type_target_symbol_kind(tt), tt.anchor)
             end
             return C.ReferenceResult(refs)
         end

@@ -38,20 +38,11 @@ function M.new(semantics_engine, type_engine)
     local C = semantics_engine.C
 
     local function kind_for_symbol(sym)
-        if sym.kind == "local" then return KIND.Variable end
-        if sym.kind == "param" then return KIND.Variable end
-        if sym.kind == "global" then return KIND.Variable end
-        if sym.kind == "builtin" then return KIND.Function end
-        return KIND.Variable
-    end
-
-    local function kind_for_type(typ)
-        if not typ then return KIND.Variable end
-        local k = typ.kind
-        if k == "TFunc" then return KIND.Function end
-        if k == "TTable" then return KIND.Struct end
-        if k == "TArray" then return KIND.Variable end
-        if k == "TNamed" then return KIND.Class end
+        if sym.kind == C.SymBuiltin then return KIND.Function end
+        if sym.kind == C.SymTypeClass then return KIND.Class end
+        if sym.kind == C.SymTypeAlias or sym.kind == C.SymTypeGeneric or sym.kind == C.SymTypeBuiltin then
+            return KIND.TypeParameter
+        end
         return KIND.Variable
     end
 
@@ -96,7 +87,7 @@ function M.new(semantics_engine, type_engine)
             local detail = type_detail(sym.id)
             local k = kind_for_symbol(sym)
             -- Boost locals over globals
-            local sort = (sym.kind == "local" or sym.kind == "param") and "1" or "2"
+            local sort = (sym.kind == C.SymLocal or sym.kind == C.SymParam) and "1" or "2"
             add(sym.name, k, detail, sort)
         end
 

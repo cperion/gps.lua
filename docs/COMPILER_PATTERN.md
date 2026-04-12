@@ -99,7 +99,7 @@ But user nouns:
 
 ### 1.5 The hard part
 
-The framework primitives — ASDL, phase, lower, with, for-loop execution — are tools. They do not tell you what to model. They do not tell you what the source language should be. They do not tell you where knowledge is consumed, what lower forms are honest, or how many layers you actually need.
+The framework primitives — ASDL, phase, one, with, for-loop execution — are tools. They do not tell you what to model. They do not tell you what the source language should be. They do not tell you where knowledge is consumed, what lower forms are honest, or how many layers you actually need.
 
 That is the hard part.
 
@@ -162,13 +162,13 @@ That purity is what makes:
 - memoization coherent — same input → same output → skip
 - tests trivial — construct input, call apply, assert output
 
-### 2.4 Boundaries (phase + lower)
+### 2.4 Boundaries (phase)
 
 A boundary is a memoized transformation from one representation to another.
 
-There are two kinds:
+Publicly, pvm has one boundary concept: **phase**.
 
-**phase** — a type-dispatched streaming boundary. Each sum type variant gets its own handler. The boundary dispatches by the node's type, wraps the handler's output in a recording triplet, and caches the result (as a flat array) on first full drain.
+**phase (handlers form)** — type-dispatched streaming boundary. Each sum type variant gets its own handler. The boundary dispatches by the node's type, wraps the handler's output in a recording triplet, and caches the result on first full drain.
 
 ```lua
 local widget_to_cmds = pvm.phase("ui", {
@@ -177,24 +177,24 @@ local widget_to_cmds = pvm.phase("ui", {
     [T.App.Meter]     = function(self) ... return pvm.once(Rct(self.tag, ...)) end,
 })
 
--- widget:ui() → (g, p, c) triplet. Drain it to materialize values.
--- Same widget pointer → seq_gen hit → skip the entire handler. Zero work.
-pvm.each(widget_to_cmds(root), function(cmd) paint(cmd) end)
+for _, cmd in widget_to_cmds(root) do paint(cmd) end
 ```
 
-**lower** — an identity-cached value boundary. No type dispatch. One function, caches a single value per node identity.
+**phase (function form)** — scalar boundary encoded as a lazy single-element stream.
 
 ```lua
-local solve = pvm.lower("solve", function(root)
-    return layout_solver(root)   -- returns one value, cached on root's identity
+local solve_phase = pvm.phase("solve", function(root)
+    return layout_solver(root)
 end)
+
+local solved = pvm.one(solve_phase(root))
 ```
 
-Both are memoized. Both skip work when the input is unchanged. The difference: `phase` dispatches by type and produces a **stream** of values (triplet); `lower` caches a **single value** (a solved layout, a scheduled plan).
+`pvm.lower(name, fn)` remains available as compatibility sugar for the second form.
 
 A boundary consumes unresolved knowledge. A real boundary answers a real question:
 - what commands does this widget produce? (phase)
-- what solved layout does this tree require? (lower)
+- what solved layout does this tree require? (scalar phase + `pvm.one`)
 - what does this name resolve to? (phase)
 
 A boundary is not just "another pass." It is a reduction of ambiguity.
@@ -261,7 +261,7 @@ This is incremental compilation as a direct consequence of architecture, not a b
 The loop makes hot swap natural rather than exotic:
 - old source compiled to a Cmd array
 - a new event changes the source
-- affected subtrees recompile (phase/lower caches skip unchanged parts)
+- affected subtrees recompile (phase caches skip unchanged parts; scalar boundaries use phase+one)
 - a new Cmd array is produced
 - the for-loop runs the new array
 
@@ -332,7 +332,7 @@ It includes:
 - Event ASDL
 - Apply
 - phase boundaries (type-dispatched recording-triplet transforms)
-- lower boundaries (identity-cached function transforms)
+- scalar phase boundaries (`pvm.phase(name, fn)` + `pvm.one`) for single-value transforms
 - layout computation
 - structural error collection
 
@@ -420,7 +420,7 @@ In pvm, the entire realization story is:
 
 1. **phase** dispatches by `getmetatable(node)` — a plain table lookup. On miss, the handler's triplet is wrapped in a recording that commits to cache on full drain. No loadstring. No generated dispatch.
 
-2. **lower** wraps a function with an identity cache. On miss, calls the function and stores the result. Also no loadstring.
+2. **scalar phase** (`pvm.phase(name, fn)`) wraps a function result as a single lazy element and caches it by identity via the same recording machinery.
 
 3. **ASDL constructors** generate interning functions via loadstring. Unrolled trie walks with no loops, no `select()`. This IS the codegen-level work.
 
@@ -430,13 +430,13 @@ That's it. No proto language. No artifact families. No binding schemas. No insta
 
 The insight from the old proto/realization vocabulary is preserved in a single sentence:
 
-> Machine meaning must become executable form. In pvm, that form is a recording-triplet phase boundary that lazily fills a flat Cmd array, executed by `pvm.each` or a for-loop.
+> Machine meaning must become executable form. In pvm, that form is a recording-triplet phase boundary, executed by native `for` (or helper terminals like `pvm.each`/`pvm.drain`).
 
 ### 3.6 When the three levels compress
 
 Not every application needs all three levels to be visible:
 
-**Small apps** (calculator, simple tool): Compilation + execution only. No codegen needed. `pvm.phase` and `pvm.lower` work without code generation — plain metatable lookups and closure caches.
+**Small apps** (calculator, simple tool): Compilation + execution only. No codegen needed. `pvm.phase` (handlers or function form) works without code generation — plain metatable lookups and closure caches.
 
 **Medium apps** (track editor, document editor): ASDL constructor codegen for hot interning. The generated trie-walk functions present LuaJIT with unrolled, monomorphic code to trace.
 
@@ -464,7 +464,7 @@ Mixing these error families leads to bad design.
 
 Compilation-level tests look like:
 - construct ASDL input
-- call phase / lower / apply
+- call phase / one / apply (or `pvm.lower` compatibility)
 - assert output
 
 Codegen-level tests look like:
@@ -571,7 +571,7 @@ This means: if you find yourself needing complex mutable state during execution,
 
 The rule that tells you how many layers you need:
 
-> Every level of structural recursion in your domain requires one ASDL layer. Each layer's output is consumed by the next layer's phase/lower boundary. The final layer is flat.
+> Every level of structural recursion in your domain requires one ASDL layer. Each layer's output is consumed by the next layer's phase boundary (handlers or scalar function form). The final layer is flat.
 
 In the track editor (ui5):
 
@@ -975,7 +975,7 @@ The method:
 2. List all the decisions that need to be resolved
 3. Order them by dependency
 4. Group decisions that must happen together (coupling)
-5. Each group becomes a phase/lower boundary
+5. Each group becomes a phase boundary (streaming handlers or scalar function form)
 
 The counting rule from §4.6 tells you how many layers:
 - Count recursive types → that many layers + one flat layer
@@ -1309,7 +1309,7 @@ In the pattern: pure functions. Construct ASDL input, call function, assert outp
 
 Hand-rolled code caches, one-off registries, closure caches with unclear invalidation.
 
-In the pattern: phase and lower are the ONLY caches. They are structural, automatic, and inspectable via `pvm.report_string()`.
+In the pattern: phase boundaries are the ONLY caches. They are structural, automatic, and inspectable via `pvm.report_string()`.
 
 ### 7.9 The general principle
 
@@ -1335,7 +1335,7 @@ It moves complexity to places where it is more explicit, more local, and more me
 Once the pattern simplifies a codebase, there is a temptation to reintroduce the old furniture by habit:
 - adding a state manager where Source ASDL + Apply suffices
 - adding an observer bus where Event ASDL + Apply suffices
-- adding invalidation flags where identity + phase/lower suffices
+- adding invalidation flags where identity + phase caches suffice
 - adding a service container where a resolution phase suffices
 - adding a virtual DOM where ASDL interning suffices
 
@@ -1760,12 +1760,12 @@ Codegen (loadstring'd functions with inlined constants and unrolled dispatch) pr
 □ Boundary caches align with identity nouns
 □ phase for type-dispatched streaming boundaries
 □   handlers return triplets (pvm.once / pvm.children / pvm.concat2/3/all)
-□ lower for type-agnostic single-value boundaries
+□ scalar boundaries use pvm.phase(name, fn) + pvm.one (pvm.lower is compatibility sugar)
 ```
 
 ### Execution
 ```
-□ Paint: pvm.each(phase(root), draw_fn) — pull-driven, lazy
+□ Paint: for _, cmd in phase(root) do draw_fn(cmd) end — pull-driven, lazy
 □ Hit test: pvm.drain(phase(root)) → reverse for-loop over materialized array
 □ State in the execution loop is push/pop stacks only
 □ No source-level semantics rediscovered during execution
@@ -1800,8 +1800,8 @@ THE FIVE CONCEPTS
     source ASDL
     Event ASDL
     Apply
-    boundaries (phase + lower, memoized on identity)
-    flat execution (pvm.each or for-loop over drained Cmd array)
+    boundaries (phase, memoized on identity; scalar via phase+one)
+    flat execution (native for-loop; or pvm.each / pvm.drain helpers)
 
 THE THREE LEVELS
     compilation: pure, structural, memoized
@@ -1821,7 +1821,7 @@ THE DEEPEST RULE
     the source ASDL is the architecture
 
 THE EXECUTION RULE
-    phase/lower boundaries compile lazily via recording triplets
+    phase boundaries compile lazily via recording triplets (scalar via phase+one)
     pvm.each or pvm.drain pulls the triplet chain
     cache fills as side effect of full drain
     unchanged subtrees hit seq_gen instantly

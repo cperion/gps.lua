@@ -42,14 +42,16 @@ sliders, scrolling, hit testing, and a transport bar.
 
 ## Chapter 1: What pvm Is
 
-pvm is not a framework. It is a vocabulary — five primitives and nothing else:
+pvm is not a framework. It is a small vocabulary:
 
 | Primitive | What it does |
 |-----------|-------------|
 | `pvm.context()` | Creates an ASDL context for defining types |
 | `pvm.with(node, overrides)` | Structural update preserving sharing |
-| `pvm.phase(name, handlers)` | Recording-triplet boundary: the ONE boundary primitive |
-| `pvm.lower(name, fn)` | Identity-cached value boundary |
+| `pvm.phase(name, handlers)` | Recording-triplet boundary (type-dispatched streaming form) |
+| `pvm.phase(name, fn)` | Scalar boundary as lazy single-element stream |
+| `pvm.one(g, p, c)` | Consume exactly one element (scalar contract) |
+| `pvm.lower(name, fn)` | Compatibility wrapper over `phase(name, fn)` + `one` |
 | `pvm.drain(g, p, c)` | Materialize a triplet chain into a flat array |
 | `pvm.drain_into(g, p, c, out)` | Append a triplet chain into an existing array |
 | `pvm.each(g, p, c, fn)` | Execute a callback for each element |
@@ -114,8 +116,8 @@ print(pvm.report_string({translate}))
 -- translate                 calls=2  hits=1  shared=0  reuse=50.0%
 ```
 
-That is pvm. Five primitives. No magic. No auto-wiring. You declare types,
-construct values, define boundaries, and inspect cache behavior.
+That is pvm. One boundary concept (`phase`) plus small helper terminals. No magic.
+No auto-wiring. You declare types, construct values, define boundaries, and inspect cache behavior.
 
 ---
 
@@ -436,65 +438,72 @@ pvm.report_string({ widget_to_cmds, compile_layout })
   layout                   calls=120   hits=118   shared=0     reuse=98.3%
 ```
 
-### phase vs lower
+### phase forms (streaming and scalar)
 
-Use **phase** when the handler produces a **stream** — zero or more elements
-via `pvm.once`, `pvm.children`, or `pvm.concat2/3/all`. The cache holds an
-array. Hits return `seq_gen` over it.
+Use **`pvm.phase(name, handlers)`** when boundary output is a stream — zero or
+more elements via `pvm.once`, `pvm.children`, or `pvm.concat2/3/all`.
+The cache holds an array. Hits return `seq_gen`/`seq_n_gen`.
 
-Use **lower** when the handler produces a **single value** — a solved layout,
-a compiled plan, a measurement. The cache holds that value directly.
+Use **`pvm.phase(name, fn)` + `pvm.one(...)`** when boundary output is a single
+value — a solved layout, compiled plan, measurement, etc.
 
 ```lua
--- phase: streaming boundary (many output elements per node)
-pvm.phase("lower", { [T.App.Button] = function(n) return pvm.once(Cmd(n)) end })
+-- phase: streaming boundary (many outputs per node)
+pvm.phase("render", { [T.App.Button] = function(n) return pvm.once(Cmd(n)) end })
 
--- lower: single-value boundary (one output per node)
-pvm.lower("solve", function(tree) return layout_solver(tree) end)
+-- scalar phase: one output per node
+local solve_phase = pvm.phase("solve", function(tree)
+    return layout_solver(tree)
+end)
+local solved = pvm.one(solve_phase(tree))
+
+-- compatibility sugar (still supported)
+local solve = pvm.lower("solve", function(tree) return layout_solver(tree) end)
 ```
 
 ---
 
-## Chapter 5: lower — Identity-Cached Function Boundaries
+## Chapter 5: Scalar boundaries (`pvm.phase(name, fn)` + `pvm.one`)
 
-`pvm.lower` wraps a function with an identity cache. Same input → cached output.
+A scalar boundary is just phase in function form. Same input identity → cached scalar result.
 
 ### Basic usage
 
 ```lua
-local compile = pvm.lower("layout", function(root)
+local layout_phase = pvm.phase("layout", function(root)
     local out = {}
     root:place(0, 0, 800, 600, out)
     return out
 end)
 
-local cmds = compile(ui_tree)   -- runs layout, caches result
-local cmds2 = compile(ui_tree)  -- same tree → cache hit → instant
+local cmds = pvm.one(layout_phase(ui_tree))   -- runs layout, caches result
+local cmds2 = pvm.one(layout_phase(ui_tree))  -- same tree → cache hit → instant
 ```
 
 ### Stats and diagnostics
 
 ```lua
-local stats = compile:stats()
-print(stats.name, stats.calls, stats.hits)
-
--- Hit ratio shorthand:
-print(compile:hit_ratio())    -- e.g. 0.98 (98%)
+local stats = layout_phase:stats()
+print(stats.name, stats.calls, stats.hits, stats.shared)
+print(layout_phase:hit_ratio())
+print(layout_phase:reuse_ratio())
 
 -- Inspect what is cached for a node (nil if not yet cached):
-local cached = compile:cached(some_node)
+local cached = layout_phase:cached(some_node)
 
 -- Force pre-population (warm the cache eagerly):
-compile:warm(some_node)
+layout_phase:warm(some_node)
 ```
 
 Use `pvm.report_string` to format multiple boundaries together:
 
 ```lua
-print(pvm.report_string({ layout_boundary, solve_boundary }))
+print(pvm.report_string({ layout_phase, solve_phase }))
 --   layout                   calls=120   hits=118   shared=0     reuse=98.3%
 --   solve                    calls=44    hits=43    shared=0     reuse=97.7%
 ```
+
+`pvm.lower(name, fn)` is equivalent convenience for legacy call sites.
 
 ---
 
@@ -696,15 +705,18 @@ end
 Containers (Clip, Transform) emit push before children and pop after.
 Leaves (Rect, Text) emit a single command.
 
-The layout walk fills a flat array imperatively. A phase boundary wraps
-the walk, returning the result as a triplet via `pvm.seq`:
+The layout walk fills a flat array imperatively. A scalar phase boundary can
+cache that array directly (consume with `pvm.one`):
 
 ```lua
-local compile = pvm.lower("compile", function(root_ui_node)
+local compile_phase = pvm.phase("compile", function(root_ui_node)
     local out = {}
     root_ui_node:place(0, 0, win_w, win_h, out)
-    return out    -- lower caches this array on root_ui_node's identity
+    return out    -- cached as scalar phase result on root_ui_node identity
 end)
+local compile = function(root_ui_node)
+    return pvm.one(compile_phase(root_ui_node))
+end
 
 -- Or, as a phase returning a triplet:
 local render = pvm.phase("render", {
@@ -716,8 +728,8 @@ local render = pvm.phase("render", {
     end,
 })
 
--- Execution: pull-driven, cache fills on drain
-pvm.each(render(root), function(cmd) paint(cmd) end)
+-- Execution: pull-driven, cache fills on exhaustion
+for _, cmd in render(root) do paint(cmd) end
 ```
 
 The layout walk stays imperative (`:place()` appending to `out`). The phase
@@ -1461,8 +1473,9 @@ The reuse ratio IS the architecture quality metric. If one small edit causes
 many full misses, the ASDL boundaries are too coarse, structural sharing
 is broken, or identity is unstable.
 
-For `pvm.lower` boundaries (single-value, no `shared`), the hit ratio alone
-is the metric: `hits / calls`.
+For scalar phase boundaries (`pvm.phase(name, fn)` + `pvm.one`), `shared` is
+usually 0 in single-consumer scenarios, so `hit_ratio` often tracks quality.
+In shared-consumer scenarios, still prefer `reuse_ratio`.
 
 ## Chapter 27: Codegen Inspection
 
@@ -1478,7 +1491,7 @@ its generated source on the type's metatable and can be inspected for debugging:
 no generated source to inspect. The dispatch is a single table read followed
 by a function call: simple, predictable, and JIT-friendly.
 
-`pvm.lower` similarly uses a plain closure cache — no codegen.
+Scalar phase form (`pvm.phase(name, fn)`) similarly uses plain Lua closures and recording cache machinery — no codegen.
 
 For custom hot-path generation (specialized inner loops, shader compilation,
 audio kernel generation), use `quote.lua` directly:
@@ -1504,7 +1517,7 @@ Read `q:source()` to inspect it.
 | ASDL constructor (with ASDL fields) | 25 ns | 0 ns |
 | phase dispatch (seq hit, no handler) | ~1 ns | — |
 | phase dispatch (recording, handler runs) | handler cost | — |
-| lower (cache hit) | 0.9 ns | — |
+| scalar phase + one (cache hit) | ~lower-equivalent | — |
 | Full ui5 frame (build + compile) | 16 µs | — |
 
 ### JSON benchmark (real-world)
@@ -1591,7 +1604,7 @@ Before writing any boundary code:
 ```text
 □ All types marked unique
 □ Edits via pvm.with() (preserves structural sharing)
-□ phase/lower boundaries at identity nouns
+□ phase boundaries at identity nouns (streaming or scalar form)
 □ Changed subtree is small relative to whole
 □ pvm.report_string() shows >70% reuse rate
 ```
@@ -1640,14 +1653,14 @@ Convergence: new features are additive (one variant + one handler).
 ```text
 □ phase for type-dispatched streaming boundaries
 □   handlers return triplets (pvm.once / pvm.children / pvm.concat2/3/all)
-□ lower for type-agnostic single-value boundaries
+□ scalar boundaries: pvm.phase(name, fn) + pvm.one (pvm.lower optional sugar)
 □ Cache on identity (not manual keys)
 □ pvm.report_string() checked regularly
 ```
 
 ### Execution
 ```text
-□ Paint: pvm.each(phase(root), draw_fn) — pull-driven, lazy
+□ Paint: for _, cmd in phase(root) do draw_fn(cmd) end — pull-driven, lazy
 □ Hit: pvm.drain(phase(root)) → reverse for-loop over materialized array
 □ No source-level semantics rediscovered during execution
 □ State in the execution loop is push/pop stacks only
@@ -1663,8 +1676,8 @@ Convergence: new features are additive (one variant + one handler).
 | Mutating interned nodes | Mysterious cross-tree bugs | Use pvm.with() |
 | Polymorphic Cmd types | Trace aborts in for-loop | Uniform product + Kind singleton |
 | Deep nesting at execution | No flattening, trees reach the for-loop | Flatten to Cmd array via pvm.drain/each |
-| Monolithic boundary | One handler does layout AND projection | Split into phase + lower |
-| Missing boundary | No caching, full recompute every frame | Add phase/lower at identity nouns |
+| Monolithic boundary | One handler does layout AND projection | Split into boundaries (phase + scalar phase/one) |
+| Missing boundary | No caching, full recompute every frame | Add phase boundaries at identity nouns |
 | Eager handler (returns value not triplet) | Cache never fills, no composition | Return pvm.once(v) not v |
 
 ---
@@ -1702,30 +1715,34 @@ T:Define(schema_string)                → T (chainable)
 -- ── Structural update ─────────────────────────────────────────────────
 pvm.with(node, {field=value, ...})     → new interned node
 
--- ── Phase boundary (streaming, type-dispatched) ───────────────────────
+-- ── Phase boundary (one concept, two forms) ───────────────────────────
 pvm.phase(name, handlers)              → boundary
   -- handlers: { [ASDLType] = function(node) → (g, p, c) }
   -- Installs node:name() method on each handled type.
-  -- On hit:     returns seq_gen over cached array (zero work)
+  -- On hit:     returns seq_gen/seq_n_gen over cached output (zero work)
   -- On shared:  returns recording_gen shared with in-flight consumer
   -- On miss:    dispatches handler, wraps triplet in recording_gen
   --             cache commits as side effect of full drain
   boundary(node)           → g, p, c    -- call form
   node:name()              → g, p, c    -- method form
 
--- ── Lower boundary (single-value, type-agnostic) ──────────────────────
-pvm.lower(name, fn)                    → boundary
+pvm.phase(name, fn)                    → boundary
   -- fn: function(node) → value
-  -- Caches one value per node identity. Returns value directly (not triplet).
+  -- Exposes value as a lazy single-element stream (triplet).
+  -- consume with pvm.one(boundary(node)).
+
+-- ── Scalar convenience wrapper (compatibility) ────────────────────────
+pvm.lower(name, fn)                    → boundary
+  -- Equivalent to pvm.one(pvm.phase(name, fn)(node))
   boundary(node)           → value
 
--- ── Boundary methods (both phase and lower) ───────────────────────────
-boundary:stats()           → { name, calls, hits, shared? }
+-- ── Boundary methods ───────────────────────────────────────────────────
+boundary:stats()           → { name, calls, hits, shared }
 boundary:hit_ratio()       → number         -- hits / calls
-boundary:reuse_ratio()     → number         -- (hits + shared) / calls (phase only)
+boundary:reuse_ratio()     → number         -- (hits + shared) / calls
 boundary:reset()           → nil            -- clear cache and stats
 boundary:cached(node)      → value or nil   -- inspect cache without populating
-boundary:warm(node)        → value or array -- pre-populate (phase: drains; lower: calls)
+boundary:warm(node)        → value or array -- pre-populate
 
 -- ── Triplet constructors ───────────────────────────────────────────────
 pvm.once(value)                        → g, p, c   -- single-element triplet
@@ -1739,11 +1756,13 @@ pvm.concat3(g1,p1,c1, ..., g3,p3,c3)  → g, p, c   -- concat three triplets
 pvm.concat_all(trips)                  → g, p, c   -- concat N triplets (array of {g,p,c})
 pvm.children(phase_fn, array, n?)      → g, p, c   -- map phase over children, lazy concat
 
--- ── Triplet terminals ─────────────────────────────────────────────────
+-- ── Triplet terminals / helpers ───────────────────────────────────────
+-- Native executor is Lua generic for: for _, v in triplet do ... end
 pvm.drain(g, p, c)                     → table     -- materialize all values to array
 pvm.drain_into(g, p, c, out)           → out       -- append all values to existing array
 pvm.each(g, p, c, fn)                  → nil       -- call fn(value) for each element
 pvm.fold(g, p, c, init, fn)            → acc       -- reduce: acc = fn(acc, value)
+pvm.one(g, p, c)                       → value     -- require exactly one element
 
 -- ── Triplet algebra (pvm.T = triplet.lua) ─────────────────────────────
 pvm.T.map(f, g, p, c)                  → g, p, c
@@ -1878,8 +1897,8 @@ q:compile("=chunk_name")             -- → function, source_string
 **ASDL** — Abstract Syntax Description Language. Defines typed, interned
 algebraic data types.
 
-**Boundary** — A memoized transformation. `pvm.phase` (type-dispatched streaming,
-returns triplet) or `pvm.lower` (identity-cached single value).
+**Boundary** — A memoized transformation in pvm. Publicly this is `pvm.phase`
+(streaming handlers form, or scalar function form).
 
 **Cmd** — The flat command record. One product type with Kind singleton tag.
 
@@ -1889,17 +1908,16 @@ returns triplet) or `pvm.lower` (identity-cached single value).
 
 **Kind** — Singleton sum type used as a tag in the uniform Cmd product type.
 
-**Lower** — Identity-cached single-value boundary. `pvm.lower(name, fn)`. The function
-receives a node and returns one value (not a triplet). Use for solved layouts,
-scheduled plans, or any boundary that produces exactly one output per node.
+**Lower** — Compatibility sugar for scalar boundaries. `pvm.lower(name, fn)` is
+equivalent to defining `pvm.phase(name, fn)` and consuming with `pvm.one(...)`.
 
 **Structural sharing** — Unchanged subtrees keep identity across edits via `pvm.with()`.
 
 **Unique** — ASDL modifier enabling structural interning.
 
-**Phase** — Type-dispatched recording-triplet boundary. `pvm.phase(name, handlers)`.
-Handlers dispatch by ASDL type and return a triplet `(g, p, c)`. Cache fills lazily
-as a side effect of draining. Installs `node:name()` method on each handled type.
+**Phase** — Recording-triplet boundary. `pvm.phase(name, handlers)` for type-dispatched
+streams, or `pvm.phase(name, fn)` for scalar single-element streams. Cache fills lazily
+as a side effect of draining/exhaustion. Handlers form installs `node:name()` methods.
 
 **Recording triplet** — The miss-path result of a `pvm.phase` call. A
 `(recording_gen, entry, 0)` triplet that lazily evaluates the handler's output,

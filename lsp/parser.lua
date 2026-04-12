@@ -573,66 +573,95 @@ function M.new(ctx)
         local function parse_doc_comment(text)
             local tags = {}
 
-            -- ---@class Name
-            local cls = text:match("%-%-%-@class%s+([%w_%.]+)")
+            local primitive = {
+                number = C.TNumber(), string = C.TString(), boolean = C.TBoolean(),
+                ["nil"] = C.TNil(), any = C.TAny(),
+            }
+
+            local function trim(s)
+                return (s or ""):match("^%s*(.-)%s*$")
+            end
+
+            local function parse_doc_type(s)
+                s = trim(s)
+                if s == "" then return C.TAny() end
+
+                local parts = {}
+                for raw in s:gmatch("[^|]+") do
+                    local p = trim(raw)
+                    local optional = false
+                    if p:sub(-1) == "?" then
+                        optional = true
+                        p = p:sub(1, -2)
+                    end
+
+                    local arr = 0
+                    while p:sub(-2) == "[]" do
+                        arr = arr + 1
+                        p = p:sub(1, -3)
+                    end
+
+                    local t = primitive[p] or C.TNamed(p)
+                    for _ = 1, arr do t = C.TArray(t) end
+                    if optional then t = C.TOptional(t) end
+                    parts[#parts + 1] = t
+                end
+
+                if #parts == 0 then return C.TAny() end
+                if #parts == 1 then return parts[1] end
+                return C.TUnion(parts)
+            end
+
+            -- ---@class Name[: Base, Base2]
+            local cls, extends = text:match("%-%-%-@class%s+([%w_%.]+)%s*:%s*(.+)")
+            if cls then
+                local ex = {}
+                for e in tostring(extends or ""):gmatch("[^,]+") do
+                    ex[#ex + 1] = parse_doc_type(e)
+                end
+                tags[#tags + 1] = C.ClassTag(cls, ex)
+                return tags
+            end
+            cls = text:match("%-%-%-@class%s+([%w_%.]+)")
             if cls then
                 tags[#tags + 1] = C.ClassTag(cls, {})
                 return tags
             end
 
-            -- ---@field name type
-            local fname, ftype, fopt = text:match("%-%-%-@field%s+([%w_]+)%s+([%w_%.%|]+)(.*)")
+            -- ---@field name[?] type
+            local fname, fopt_name, ftype = text:match("%-%-%-@field%s+([%w_]+)(%??)%s+([%w_%.%[%]%|%?]+)")
             if fname then
-                local optional = fopt and fopt:match("%?") and true or false
-                local typ = ({
-                    number = C.TNumber(), string = C.TString(), boolean = C.TBoolean(),
-                    ["nil"] = C.TNil(), any = C.TAny(),
-                })[ftype] or C.TNamed(ftype)
+                local typ = parse_doc_type(ftype)
+                local optional = (fopt_name == "?")
                 tags[#tags + 1] = C.FieldTag(fname, typ, optional)
                 return tags
             end
 
             -- ---@param name type
-            local pname, ptype = text:match("%-%-%-@param%s+([%w_]+)%s+([%w_%.%|]+)")
+            local pname, ptype = text:match("%-%-%-@param%s+([%w_]+)%s+([%w_%.%[%]%|%?]+)")
             if pname then
-                local typ = ({
-                    number = C.TNumber(), string = C.TString(), boolean = C.TBoolean(),
-                    ["nil"] = C.TNil(), any = C.TAny(),
-                })[ptype] or C.TNamed(ptype)
-                tags[#tags + 1] = C.ParamTag(pname, typ)
+                tags[#tags + 1] = C.ParamTag(pname, parse_doc_type(ptype))
                 return tags
             end
 
             -- ---@return type
-            local rtype = text:match("%-%-%-@return%s+([%w_%.%|]+)")
+            local rtype = text:match("%-%-%-@return%s+([%w_%.%[%]%|%?]+)")
             if rtype then
-                local typ = ({
-                    number = C.TNumber(), string = C.TString(), boolean = C.TBoolean(),
-                    ["nil"] = C.TNil(), any = C.TAny(),
-                })[rtype] or C.TNamed(rtype)
-                tags[#tags + 1] = C.ReturnTag({ typ })
+                tags[#tags + 1] = C.ReturnTag({ parse_doc_type(rtype) })
                 return tags
             end
 
             -- ---@alias name type
-            local aname, atype = text:match("%-%-%-@alias%s+([%w_%.]+)%s+([%w_%.%|]+)")
+            local aname, atype = text:match("%-%-%-@alias%s+([%w_%.]+)%s+([%w_%.%[%]%|%?]+)")
             if aname then
-                local typ = ({
-                    number = C.TNumber(), string = C.TString(), boolean = C.TBoolean(),
-                    ["nil"] = C.TNil(), any = C.TAny(),
-                })[atype] or C.TNamed(atype or "any")
-                tags[#tags + 1] = C.AliasTag(aname, typ)
+                tags[#tags + 1] = C.AliasTag(aname, parse_doc_type(atype))
                 return tags
             end
 
             -- ---@type type
-            local ttype = text:match("%-%-%-@type%s+([%w_%.%|]+)")
+            local ttype = text:match("%-%-%-@type%s+([%w_%.%[%]%|%?]+)")
             if ttype then
-                local typ = ({
-                    number = C.TNumber(), string = C.TString(), boolean = C.TBoolean(),
-                    ["nil"] = C.TNil(), any = C.TAny(),
-                })[ttype] or C.TNamed(ttype)
-                tags[#tags + 1] = C.TypeTag(typ)
+                tags[#tags + 1] = C.TypeTag(parse_doc_type(ttype))
                 return tags
             end
 
@@ -644,10 +673,9 @@ function M.new(ctx)
             end
 
             -- ---@cast expr type
-            local ctype = text:match("%-%-%-@cast%s+%w+%s+([%w_%.%|]+)")
+            local ctype = text:match("%-%-%-@cast%s+%w+%s+([%w_%.%[%]%|%?]+)")
             if ctype then
-                local typ = C.TNamed(ctype)
-                tags[#tags + 1] = C.CastTag(typ)
+                tags[#tags + 1] = C.CastTag(parse_doc_type(ctype))
                 return tags
             end
 
@@ -711,13 +739,16 @@ function M.new(ctx)
                 for i = 1, #block.items do walk_stmt(block.items[i].stmt) end
             end
 
-            function walk_body(body)
-                emit(C.OccScopeEnter("function"))
+            function walk_body(body, implicit_self)
+                emit(C.OccScopeEnter(C.ScopeFunction))
+                if implicit_self then
+                    emit(C.OccDecl(C.DeclParam, "self"))
+                end
                 for i = 1, #body.params do
-                    emit(C.OccDecl("param", body.params[i].name))
+                    emit(C.OccDecl(C.DeclParam, body.params[i].name))
                 end
                 walk_block(body.body)
-                emit(C.OccScopeExit("function"))
+                emit(C.OccScopeExit(C.ScopeFunction))
             end
 
             function walk_stmt(s)
@@ -725,21 +756,24 @@ function M.new(ctx)
                 local k = s.kind
                 if k == "LocalAssign" then
                     for i = 1, #s.values do walk_expr(s.values[i]) end
-                    for i = 1, #s.names do emit(C.OccDecl("local", s.names[i].value)) end
+                    for i = 1, #s.names do emit(C.OccDecl(C.DeclLocal, s.names[i].value)) end
                 elseif k == "Assign" then
                     for i = 1, #s.rhs do walk_expr(s.rhs[i]) end
                     for i = 1, #s.lhs do walk_lvalue(s.lhs[i]) end
                 elseif k == "LocalFunction" then
-                    emit(C.OccDecl("local", s.name))
+                    emit(C.OccDecl(C.DeclLocal, s.name))
                     walk_body(s.body)
                 elseif k == "Function" then
+                    local implicit_self = false
                     if s.name.kind == "LName" then
                         emit(C.OccWrite(s.name.name))
                     elseif s.name.kind == "LField" then walk_expr(s.name.base)
                     elseif s.name.kind == "LIndex" then walk_expr(s.name.base); walk_expr(s.name.key)
-                    elseif s.name.kind == "LMethod" then walk_expr(s.name.base)
+                    elseif s.name.kind == "LMethod" then
+                        walk_expr(s.name.base)
+                        implicit_self = true
                     end
-                    walk_body(s.body)
+                    walk_body(s.body, implicit_self)
                 elseif k == "Return" then
                     for i = 1, #s.values do walk_expr(s.values[i]) end
                 elseif k == "CallStmt" then
@@ -748,41 +782,41 @@ function M.new(ctx)
                 elseif k == "If" then
                     for i = 1, #s.arms do
                         walk_expr(s.arms[i].cond)
-                        emit(C.OccScopeEnter("if"))
+                        emit(C.OccScopeEnter(C.ScopeIf))
                         walk_block(s.arms[i].body)
-                        emit(C.OccScopeExit("if"))
+                        emit(C.OccScopeExit(C.ScopeIf))
                     end
                     if s.else_block then
-                        emit(C.OccScopeEnter("else"))
+                        emit(C.OccScopeEnter(C.ScopeElse))
                         walk_block(s.else_block)
-                        emit(C.OccScopeExit("else"))
+                        emit(C.OccScopeExit(C.ScopeElse))
                     end
                 elseif k == "While" then
                     walk_expr(s.cond)
-                    emit(C.OccScopeEnter("while"))
+                    emit(C.OccScopeEnter(C.ScopeWhile))
                     walk_block(s.body)
-                    emit(C.OccScopeExit("while"))
+                    emit(C.OccScopeExit(C.ScopeWhile))
                 elseif k == "Repeat" then
-                    emit(C.OccScopeEnter("repeat"))
+                    emit(C.OccScopeEnter(C.ScopeRepeat))
                     walk_block(s.body)
                     walk_expr(s.cond)
-                    emit(C.OccScopeExit("repeat"))
+                    emit(C.OccScopeExit(C.ScopeRepeat))
                 elseif k == "ForNum" then
                     walk_expr(s.init); walk_expr(s.limit); walk_expr(s.step)
-                    emit(C.OccScopeEnter("for"))
-                    emit(C.OccDecl("local", s.name))
+                    emit(C.OccScopeEnter(C.ScopeFor))
+                    emit(C.OccDecl(C.DeclLocal, s.name))
                     walk_block(s.body)
-                    emit(C.OccScopeExit("for"))
+                    emit(C.OccScopeExit(C.ScopeFor))
                 elseif k == "ForIn" then
                     for i = 1, #s.iter do walk_expr(s.iter[i]) end
-                    emit(C.OccScopeEnter("for"))
-                    for i = 1, #s.names do emit(C.OccDecl("local", s.names[i].value)) end
+                    emit(C.OccScopeEnter(C.ScopeFor))
+                    for i = 1, #s.names do emit(C.OccDecl(C.DeclLocal, s.names[i].value)) end
                     walk_block(s.body)
-                    emit(C.OccScopeExit("for"))
+                    emit(C.OccScopeExit(C.ScopeFor))
                 elseif k == "Do" then
-                    emit(C.OccScopeEnter("do"))
+                    emit(C.OccScopeEnter(C.ScopeDo))
                     walk_block(s.body)
-                    emit(C.OccScopeExit("do"))
+                    emit(C.OccScopeExit(C.ScopeDo))
                 end
                 -- Break, Goto, Label → nothing scope-relevant
             end

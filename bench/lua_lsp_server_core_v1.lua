@@ -231,14 +231,15 @@ function Core:request_from_lsp(method, params)
     if method == "textDocument/didChange" then
         local changes = {}
         local raw = params.contentChanges
+        local dummy = C.LspRange(C.LspPos(0, 0), C.LspPos(0, 0))
         if type(raw) == "table" then
             for i = 1, #raw do
-                changes[#changes + 1] = C.LspTextChange(tostring(raw[i] and raw[i].text or ""))
+                changes[#changes + 1] = C.LspTextChange(tostring(raw[i] and raw[i].text or ""), dummy, false)
             end
         end
         if #changes == 0 then
             local t = text_from_params(params)
-            if t ~= nil then changes[1] = C.LspTextChange(t) end
+            if t ~= nil then changes[1] = C.LspTextChange(t, dummy, false) end
         end
         return C.ReqDidChange(C.LspVersionedDoc(uri, version_from_params(params) or 0), changes)
     end

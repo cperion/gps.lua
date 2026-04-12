@@ -12,6 +12,9 @@ local ServerCore = require("lsp.server")
 
 local M = {}
 
+-- Explicit JSON null sentinel (so object keys can carry null values)
+local JSON_NULL = {}
+
 -- ══════════════════════════════════════════════════════════════
 --  Minimal JSON codec (sufficient for JSON-RPC/LSP payloads)
 -- ══════════════════════════════════════════════════════════════
@@ -49,6 +52,7 @@ local function encode_string(s)
 end
 
 local function json_encode(v)
+    if v == JSON_NULL then return "null" end
     local tv = type(v)
     if tv == "nil" then return "null" end
     if tv == "boolean" then return v and "true" or "false" end
@@ -87,6 +91,29 @@ local function json_encode(v)
     end
 
     error("json encode: unsupported type " .. tv)
+end
+
+local function utf8_encode_cp(cp)
+    if cp < 0x80 then
+        return string.char(cp)
+    elseif cp < 0x800 then
+        return string.char(
+            0xC0 + math.floor(cp / 0x40),
+            0x80 + (cp % 0x40)
+        )
+    elseif cp < 0x10000 then
+        return string.char(
+            0xE0 + math.floor(cp / 0x1000),
+            0x80 + (math.floor(cp / 0x40) % 0x40),
+            0x80 + (cp % 0x40)
+        )
+    end
+    return string.char(
+        0xF0 + math.floor(cp / 0x40000),
+        0x80 + (math.floor(cp / 0x1000) % 0x40),
+        0x80 + (math.floor(cp / 0x40) % 0x40),
+        0x80 + (cp % 0x40)
+    )
 end
 
 local function json_decode(s)
@@ -136,11 +163,8 @@ local function json_decode(s)
                         err("invalid unicode escape")
                     end
                     local cp = tonumber(hex, 16)
-                    if cp < 0x80 then
-                        o = o + 1; out[o] = string.char(cp)
-                    else
-                        o = o + 1; out[o] = utf8.char(cp)
-                    end
+                    o = o + 1
+                    out[o] = utf8_encode_cp(cp)
                     i = i + 6
                 else
                     err("invalid escape")
@@ -340,16 +364,21 @@ end
 
 local function default_capabilities(C)
     return C.LspCapabilities(
-        1,      -- text_document_sync
+        2,      -- text_document_sync (incremental)
         true,   -- hover_provider
         true,   -- definition_provider
         true,   -- references_provider
         true,   -- document_highlight_provider
-        C.LspDiagnosticProviderInfo(false, false),
+        C.LspDiagnosticProviderInfo(false, true),
         true,   -- completion_provider
         true,   -- document_symbol_provider
         true,   -- rename_provider
-        true    -- signature_help_provider
+        true,   -- signature_help_provider
+        true,   -- workspace_symbol_provider
+        true,   -- code_action_provider
+        true,   -- semantic_tokens_provider
+        true,   -- inlay_hint_provider
+        true    -- formatting_provider
     )
 end
 
@@ -359,25 +388,70 @@ end
 
 local function capabilities_to_lua(c)
     return {
-        textDocumentSync = c.text_document_sync,
+        textDocumentSync = {
+            openClose = true,
+            change = c.text_document_sync,
+            save = { includeText = false },
+        },
         hoverProvider = c.hover_provider,
         definitionProvider = c.definition_provider,
+        declarationProvider = true,
+        implementationProvider = true,
+        typeDefinitionProvider = true,
         referencesProvider = c.references_provider,
         documentHighlightProvider = c.document_highlight_provider,
         diagnosticProvider = {
             interFileDependencies = c.diagnostic_provider.inter_file_dependencies,
             workspaceDiagnostics = c.diagnostic_provider.workspace_diagnostics,
         },
-        completionProvider = c.completion_provider and { triggerCharacters = { ".", ":" } } or nil,
+        completionProvider = c.completion_provider and {
+            triggerCharacters = { ".", ":", "(", "'", "\"", "[", ",", "#", "*", "@", "|", "=", "-", "{", " ", "+", "?" },
+            resolveProvider = true,
+        } or nil,
         documentSymbolProvider = c.document_symbol_provider,
         renameProvider = c.rename_provider and { prepareProvider = true } or nil,
         signatureHelpProvider = c.signature_help_provider and { triggerCharacters = { "(", "," } } or nil,
+        codeActionProvider = c.code_action_provider and {
+            codeActionKinds = { "", "quickfix", "refactor.rewrite", "refactor.extract", "source" },
+            resolveProvider = true,
+        } or nil,
+        semanticTokensProvider = c.semantic_tokens_provider and {
+            legend = {
+                tokenTypes = {
+                    "namespace", "type", "class", "enum", "interface", "struct", "typeParameter",
+                    "parameter", "variable", "property", "enumMember", "event", "function", "method",
+                    "macro", "keyword", "modifier", "comment", "string", "number", "regexp", "operator", "decorator"
+                },
+                tokenModifiers = {
+                    "declaration", "definition", "readonly", "static", "deprecated",
+                    "abstract", "async", "modification", "documentation", "defaultLibrary", "global"
+                },
+            },
+            full = true,
+            range = true,
+        } or nil,
+        inlayHintProvider = c.inlay_hint_provider and { resolveProvider = false } or nil,
+        documentFormattingProvider = c.formatting_provider,
+        documentRangeFormattingProvider = c.formatting_provider,
+        documentOnTypeFormattingProvider = c.formatting_provider and { firstTriggerCharacter = "\n" } or nil,
+        foldingRangeProvider = true,
+        selectionRangeProvider = true,
+        codeLensProvider = { resolveProvider = false },
+        colorProvider = true,
+        executeCommandProvider = {
+            commands = { "lua.removeSpace", "lua.solve", "lua.jsonToLua", "lua.setConfig", "lua.getConfig", "lua.autoRequire" },
+        },
+        workspaceSymbolProvider = c.workspace_symbol_provider,
+        offsetEncoding = "utf-16",
+        workspace = {
+            workspaceFolders = { supported = true, changeNotifications = true },
+        },
     }
 end
 
 local function payload_to_lua(core, payload)
     local k = tostring(payload):match("^Lua%.([%w_]+)%(")
-    if k == "PayloadNull" then return nil end
+    if k == "PayloadNull" then return JSON_NULL end
     if k == "PayloadInitialize" then
         local v = payload.value
         return {
@@ -389,11 +463,29 @@ local function payload_to_lua(core, payload)
     if k == "PayloadHoverResult" then return core:to_lsp(payload.value) end
     if k == "PayloadLocationList" then return core:to_lsp(payload.value) end
     if k == "PayloadDocumentHighlightList" then return core:to_lsp(payload.value) end
+    if k == "PayloadCompletionList" then return core:to_lsp(payload.value) end
+    if k == "PayloadCompletionItem" then return core:to_lsp(payload.value) end
+    if k == "PayloadDocumentSymbolList" then return core:to_lsp(payload.value) end
+    if k == "PayloadSignatureHelp" then return core:to_lsp(payload.value) end
+    if k == "PayloadWorkspaceEdit" then return core:to_lsp(payload.value) end
+    if k == "PayloadRange" then return core:to_lsp(payload.value) end
+    if k == "PayloadCodeActionList" then return core:to_lsp(payload.value) end
+    if k == "PayloadCodeAction" then return core:to_lsp(payload.value) end
+    if k == "PayloadSemanticTokens" then return core:to_lsp(payload.value) end
+    if k == "PayloadInlayHintList" then return core:to_lsp(payload.value) end
+    if k == "PayloadTextEditList" then return core:to_lsp(payload.value) end
+    if k == "PayloadFoldingRangeList" then return core:to_lsp(payload.value) end
+    if k == "PayloadSelectionRangeList" then return core:to_lsp(payload.value) end
+    if k == "PayloadCodeLensList" then return core:to_lsp(payload.value) end
+    if k == "PayloadColorInfoList" then return core:to_lsp(payload.value) end
+    if k == "PayloadWorkspaceSymbolList" then return core:to_lsp(payload.value) end
+    if k == "PayloadWorkspaceDiagnostic" then return core:to_lsp(payload.value) end
+    if k == "PayloadExecuteResult" then return payload.value end
     if k == "PayloadPublishDiagnostics" then
         local d = core:to_lsp(payload.value)
         return { uri = d.uri, diagnostics = d.items or {}, version = d.version }
     end
-    return nil
+    return JSON_NULL
 end
 
 local function outgoing_to_lua(core, out)
@@ -457,7 +549,7 @@ function M.new(opts)
         core = opts.core or ServerCore.new(opts),
         initialized = false,
         shutdown = false,
-        publish_on_change = (opts.publish_on_change ~= false),
+        publish_on_change = (opts.publish_on_change == true),
     }
 
     local C = self.core.engine.C
@@ -470,12 +562,12 @@ function M.new(opts)
 
     local function maybe_publish(req)
         if not self.publish_on_change then return nil end
-        if req.kind == "ReqDidOpen" or req.kind == "ReqDidChange" then
+        if req.kind == "ReqDidOpen" or req.kind == "ReqDidChange" or req.kind == "ReqDidSave" then
             local d = self.core:diagnostic(C.ReqDiagnostic(C.LspDocIdentifier(req.doc.uri)))
             return C.RpcOutNotification("textDocument/publishDiagnostics", C.PayloadPublishDiagnostics(d))
         end
         if req.kind == "ReqDidClose" then
-            local d = C.LspDiagnosticReport("full", {}, req.doc.uri, 0)
+            local d = C.LspDiagnosticReport(C.DiagReportFull, {}, req.doc.uri, 0)
             return C.RpcOutNotification("textDocument/publishDiagnostics", C.PayloadPublishDiagnostics(d))
         end
         return nil
@@ -521,7 +613,9 @@ function M.new(opts)
 
         if self.shutdown then
             if ik == "RpcInLspRequest" then
-                return outgoing_to_lua(self.core, C.RpcOutError(incoming.id, -32600, "Server already shut down", ""))
+                -- Be lenient for clients that still send trailing requests between
+                -- shutdown and exit; avoid noisy user-facing errors.
+                return outgoing_to_lua(self.core, C.RpcOutResult(incoming.id, C.PayloadNull()))
             end
             return nil
         end
@@ -551,12 +645,63 @@ function M.new(opts)
         local payload = C.PayloadNull()
         if rk == "ReqHover" then
             payload = C.PayloadHoverResult(result_or_err)
-        elseif rk == "ReqDefinition" or rk == "ReqReferences" then
+        elseif rk == "ReqDefinition" or rk == "ReqDeclaration" or rk == "ReqImplementation"
+            or rk == "ReqTypeDefinition" or rk == "ReqReferences" then
             payload = C.PayloadLocationList(result_or_err)
         elseif rk == "ReqDocumentHighlight" then
             payload = C.PayloadDocumentHighlightList(result_or_err)
         elseif rk == "ReqDiagnostic" then
             payload = C.PayloadDiagnosticReport(result_or_err)
+        elseif rk == "ReqCompletion" then
+            payload = C.PayloadCompletionList(result_or_err)
+        elseif rk == "ReqCompletionResolve" then
+            payload = C.PayloadCompletionItem(result_or_err)
+        elseif rk == "ReqDocumentSymbol" then
+            payload = C.PayloadDocumentSymbolList(result_or_err)
+        elseif rk == "ReqSignatureHelp" then
+            payload = C.PayloadSignatureHelp(result_or_err)
+        elseif rk == "ReqRename" then
+            if result_or_err and result_or_err.kind == "LspWorkspaceEdit" then
+                payload = C.PayloadWorkspaceEdit(result_or_err)
+            elseif result_or_err and result_or_err.kind == "RenameOk" then
+                local edits = {}
+                for i = 1, #result_or_err.edits do
+                    edits[i] = C.LspTextEdit(result_or_err.edits[i].range, result_or_err.edits[i].new_text)
+                end
+                payload = C.PayloadWorkspaceEdit(C.LspWorkspaceEdit(edits, req.doc and req.doc.uri or ""))
+            else
+                payload = C.PayloadNull()
+            end
+        elseif rk == "ReqPrepareRename" then
+            if result_or_err and result_or_err.kind == "LspRange" then
+                payload = C.PayloadRange(result_or_err)
+            else
+                payload = C.PayloadNull()
+            end
+        elseif rk == "ReqCodeAction" then
+            payload = C.PayloadCodeActionList(result_or_err)
+        elseif rk == "ReqCodeActionResolve" then
+            payload = C.PayloadCodeAction(result_or_err)
+        elseif rk == "ReqSemanticTokensFull" or rk == "ReqSemanticTokensRange" then
+            payload = C.PayloadSemanticTokens(result_or_err)
+        elseif rk == "ReqInlayHint" then
+            payload = C.PayloadInlayHintList(result_or_err)
+        elseif rk == "ReqFormatting" then
+            payload = C.PayloadTextEditList(result_or_err)
+        elseif rk == "ReqFoldingRange" then
+            payload = C.PayloadFoldingRangeList(result_or_err)
+        elseif rk == "ReqSelectionRange" then
+            payload = C.PayloadSelectionRangeList(result_or_err)
+        elseif rk == "ReqCodeLens" then
+            payload = C.PayloadCodeLensList(result_or_err)
+        elseif rk == "ReqDocumentColor" then
+            payload = C.PayloadColorInfoList(result_or_err)
+        elseif rk == "ReqWorkspaceSymbol" then
+            payload = C.PayloadWorkspaceSymbolList(result_or_err)
+        elseif rk == "ReqWorkspaceDiagnostic" then
+            payload = C.PayloadWorkspaceDiagnostic(result_or_err)
+        elseif rk == "ReqExecuteCommand" then
+            payload = C.PayloadExecuteResult(tostring(result_or_err or ""))
         end
 
         return outgoing_to_lua(self.core, C.RpcOutResult(incoming.id, payload))
