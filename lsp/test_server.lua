@@ -381,6 +381,32 @@ local action_resolved = core:to_lsp(core:handle("codeAction/resolve", first_acti
 print("codeAction resolve title:", action_resolved and action_resolved.title or "")
 assert(action_resolved and action_resolved.title, "codeAction/resolve should echo action")
 
+local action_doc_changes = core:to_lsp(core:handle("codeAction/resolve", {
+    title = "docChanges",
+    kind = "quickfix",
+    edit = {
+        documentChanges = {
+            {
+                textDocument = { uri = uri_feat, version = 2 },
+                edits = {
+                    {
+                        range = {
+                            start = { line = 0, character = 0 },
+                            ["end"] = { line = 0, character = 0 },
+                        },
+                        newText = "-- note\n",
+                    }
+                },
+            }
+        }
+    }
+}))
+assert(action_doc_changes and action_doc_changes.edit
+    and action_doc_changes.edit.changes
+    and action_doc_changes.edit.changes[uri_feat]
+    and #action_doc_changes.edit.changes[uri_feat] == 1,
+    "codeAction/resolve should accept documentChanges fallback")
+
 core:handle("textDocument/didSave", {
     textDocument = { uri = uri_feat },
 })

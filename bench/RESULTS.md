@@ -1,5 +1,10 @@
 # Benchmark: mgps vs clay.h
 
+> Historical note: this file documents the older `mgps` comparison harness.
+> For the current `ui/` stack, see `bench/UI_VS_CLAY.md` and run
+> `luajit bench/ui_clay_compare.lua all`.
+
+
 **Date**: 2026-04-01
 **Platform**: x86_64 Linux (Fedora), LuaJIT 2.1.1767980792, GCC -O2
 **Clay version**: 0.14 (single-header C)

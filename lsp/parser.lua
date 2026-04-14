@@ -42,21 +42,49 @@ function M.new(ctx)
         local anchor_n = 0
 
         -- ── Token access ───────────────────────────────────
-        local function peek()  return tokens[pos] end
+        local function raw_peek() return tokens[pos] end
+        local function raw_peek_kind()
+            local t = tokens[pos]
+            return t and t.kind or "<eof>"
+        end
+        local function raw_advance()
+            local t = tokens[pos]
+            pos = pos + 1
+            return t
+        end
+
+        local function skip_comments()
+            while true do
+                local t = tokens[pos]
+                if not t or t.kind ~= "<comment>" then break end
+                -- Keep doc comments for parse_block to attach to the next item.
+                if type(t.value) == "string" and t.value:match("^%-%-%-@") then break end
+                pos = pos + 1
+            end
+        end
+
+        local function peek()
+            skip_comments()
+            return tokens[pos]
+        end
         local function peek_kind()
+            skip_comments()
             local t = tokens[pos]
             return t and t.kind or "<eof>"
         end
         local function peek_value()
+            skip_comments()
             local t = tokens[pos]
             return t and t.value or ""
         end
         local function advance()
+            skip_comments()
             local t = tokens[pos]
             pos = pos + 1
             return t
         end
         local function expect(kind)
+            skip_comments()
             local t = tokens[pos]
             if not t or t.kind ~= kind then
                 error(string.format("parse error at token %d: expected '%s', got '%s'",
@@ -66,6 +94,7 @@ function M.new(ctx)
             return t
         end
         local function check(kind)
+            skip_comments()
             local t = tokens[pos]
             return t and t.kind == kind
         end
@@ -833,7 +862,7 @@ function M.new(ctx)
             local pending_tags = {}
 
             while true do
-                local k = peek_kind()
+                local k = raw_peek_kind()
                 -- Block terminators
                 if k == "end" or k == "else" or k == "elseif" or k == "until" or k == "<eof>" then
                     break
@@ -841,12 +870,13 @@ function M.new(ctx)
 
                 -- Doc comments
                 if k == "<comment>" then
-                    local t = advance()
+                    local at = pos
+                    local t = raw_advance()
                     if t.value:match("^%-%-%-@") then
                         local tags = parse_doc_comment(t.value)
                         for j = 1, #tags do
                             local tag = tags[j]
-                            mark_range(tag, pos - 1)
+                            mark_range(tag, at)
                             pending_tags[#pending_tags + 1] = tag
                         end
                     end
@@ -861,7 +891,7 @@ function M.new(ctx)
                         items[#items + 1] = C.Item(docs, stmt)
                     elseif not ok then
                         -- Error recovery: skip token
-                        advance()
+                        raw_advance()
                     end
                 end
             end

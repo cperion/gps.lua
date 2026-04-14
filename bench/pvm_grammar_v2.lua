@@ -143,7 +143,7 @@ local function make_expr(seed, depth, n_rules)
         local m = seed % 4
         if m == 0 then return Tok("T" .. tostring(seed % 31)) end
         if m == 1 then return Lit("l" .. tostring(seed % 17)) end
-        if m == 2 then return Num() end
+        if m == 2 then return Num end
         return Ref("R" .. tostring((seed % n_rules) + 1))
     end
 
@@ -200,11 +200,11 @@ end
 
 local function adapt_archive_expr(e)
     local k = e.kind
-    if k == "Empty" then return Empty() end
+    if k == "Empty" then return Empty end
     if k == "Tok" then return Tok(e.name) end
     if k == "Lit" then return Lit(e.text) end
-    if k == "Num" then return Num() end
-    if k == "Str" then return Str() end
+    if k == "Num" then return Num end
+    if k == "Str" then return Str end
     if k == "Ref" then return Ref(e.name) end
 
     if k == "Seq" then
@@ -305,7 +305,7 @@ local function make_archive_arith_grammar()
                 })),
             })),
             G.Grammar.Rule("atom", G.Grammar.Choice({
-                G.Grammar.Num(),
+                G.Grammar.Num,
                 G.Grammar.Between(G.Grammar.Lit("("), G.Grammar.Ref("expr"), G.Grammar.Lit(")")),
             })),
         }, "expr")
@@ -356,11 +356,11 @@ norm_expr = pvm.lower("g2.norm_expr", function(node)
         local item = norm_expr(node.item)
         local sep = norm_expr(node.sep)
         local tail = ZeroOrMore(Seq({ sep, item }))
-        return Choice({ Seq({ item, tail }), Empty() })
+        return Choice({ Seq({ item, tail }), Empty })
     end
 
     if k == "Optional" then
-        return Choice({ norm_expr(node.body), Empty() })
+        return Choice({ norm_expr(node.body), Empty })
     end
 
     if k == "OneOrMore" then
@@ -396,7 +396,7 @@ norm_expr = pvm.lower("g2.norm_expr", function(node)
             end
         end
 
-        if n == 0 then return Empty() end
+        if n == 0 then return Empty end
         if n == 1 then return kept[1] end
         if not changed then return node end
         return Seq(kept)
@@ -427,7 +427,7 @@ norm_expr = pvm.lower("g2.norm_expr", function(node)
             end
         end
 
-        if n == 0 then return Empty() end
+        if n == 0 then return Empty end
         if n == 1 then return dedup[1] end
         if not changed then return node end
         return Choice(dedup)
@@ -799,7 +799,7 @@ emit_expr_words = pvm.phase("g2.emit_expr_words", {
         -- usually gone after normalization
         local item = n.item
         local sep = n.sep
-        local rewritten = Choice({ Seq({ item, ZeroOrMore(Seq({ sep, item })) }), Empty() })
+        local rewritten = Choice({ Seq({ item, ZeroOrMore(Seq({ sep, item })) }), Empty })
         return emit_expr_words(rewritten)
     end,
 

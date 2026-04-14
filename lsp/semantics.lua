@@ -129,24 +129,6 @@ function M.new(ctx)
     ctx = ctx or ASDL.context()
     local C = ctx.Lua
 
-    local function decl_kind_name(k)
-        local kk = tostring(k):match("^Lua%.([%w_]+)") or ""
-        if kk == "DeclParam" then return "param" end
-        return "local"
-    end
-
-    local function symbol_kind_name(k)
-        local kk = tostring(k):match("^Lua%.([%w_]+)") or ""
-        if kk == "SymParam" then return "param" end
-        if kk == "SymGlobal" then return "global" end
-        if kk == "SymBuiltin" then return "builtin" end
-        if kk == "SymTypeClass" then return "type-class" end
-        if kk == "SymTypeAlias" then return "type-alias" end
-        if kk == "SymTypeGeneric" then return "type-generic" end
-        if kk == "SymTypeBuiltin" then return "type-builtin" end
-        return "local"
-    end
-
     local function diag_code_name(c)
         local kk = tostring(c):match("^Lua%.([%w_]+)") or ""
         if kk == "DiagUndefinedGlobal" then return "undefined-global" end
@@ -586,8 +568,11 @@ function M.new(ctx)
             for i = 1, #block.items do walk_stmt(block.items[i].stmt) end
         end
 
-        function walk_body(body)
+        function walk_body(body, implicit_self)
             emit(C.ScopeEnter(C.ScopeFunction, anchor_ref(C, body)))
+            if implicit_self then
+                emit(C.ScopeDeclLocal(C.DeclParam, "self", anchor_ref(C, body)))
+            end
             for i = 1, #body.params do
                 emit(C.ScopeDeclLocal(C.DeclParam, body.params[i].name, anchor_ref(C, body.params[i])))
             end
@@ -608,11 +593,12 @@ function M.new(ctx)
                 emit(C.ScopeDeclLocal(C.DeclLocal, s.name, anchor_ref(C, s)))
                 walk_body(s.body)
             elseif k == "Function" then
+                local implicit_self = false
                 if s.name.kind == "LName" then emit(C.ScopeWrite(s.name.name, anchor_ref(C, s.name)))
                 elseif s.name.kind == "LField" then walk_expr(s.name.base)
                 elseif s.name.kind == "LIndex" then walk_expr(s.name.base); walk_expr(s.name.key)
-                elseif s.name.kind == "LMethod" then walk_expr(s.name.base) end
-                walk_body(s.body)
+                elseif s.name.kind == "LMethod" then walk_expr(s.name.base); implicit_self = true end
+                walk_body(s.body, implicit_self)
             elseif k == "Return" then
                 for i = 1, #s.values do walk_expr(s.values[i]) end
             elseif k == "CallStmt" then
@@ -729,7 +715,8 @@ function M.new(ctx)
             scopes[#scopes] = nil
             for i = 1, #scope.locals do
                 local info = scope.locals[i]
-                if info.used == 0 and info.name ~= "_" and info.name:sub(1, 1) ~= "_" then
+                if info.used == 0 and info.name ~= "_" and info.name:sub(1, 1) ~= "_"
+                    and not (info.decl_kind == C.DeclParam and info.name == "self") then
                     local code = (info.decl_kind == C.DeclParam) and C.DiagUnusedParam or C.DiagUnusedLocal
                     local cname = diag_code_name(code)
                     add_diag(code, cname:gsub("-", " ") .. " '" .. info.name .. "'",

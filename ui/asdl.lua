@@ -1,602 +1,735 @@
--- ui/asdl.lua
---
--- Fresh UI library schema, designed for a pvm3-era architecture.
---
--- Architectural layers:
---   Interact  — runtime interaction phases used by styling and session logic
---   Layout    — shared geometry / layout / text-policy vocabulary
---   DS        — design system: themes, surfaces, rules, resolved style packs
---   Runtime   — generic runtime refs for late-bound paint data
---   SemUI     — authored generic UI semantics (surfaces, identity, interaction)
---   UI        — lowered concrete UI tree with resolved styles
---   Facts     — typed measurement / placement facts
---   Paint     — generic custom paint tree + optional flat paint IR
---   Msg       — typed generic UI messages/events
---
--- Notes:
---   - The design-system model keeps the strongest idea from the old uilib:
---       surface + focus + flags -> fully resolved style packs.
---   - Pointer phase is not part of the DS query because resolution precomputes
---     all four pointer variants into packs.
---   - SemUI is the authored layer. UI is the lowered concrete layer.
---   - View/compile IR is intentionally absent; reducers over UI are intended to
---     be canonical, with flat IR only as an optional later product.
---   - Virtualized / source-driven collections are intentionally left out of the
---     core schema for now; they likely want a dedicated source/window algebra
---     above SemUI rather than a naive Node* field here.
-
 local pvm = require("pvm")
 
 local M = {}
-local T = pvm.context()
-M.T = T
 
--- ─────────────────────────────────────────────────────────────
--- Interact
--- ─────────────────────────────────────────────────────────────
+function M.Define(T)
+    T:Define [[
+        module Core {
+            Id = NoId
+               | IdValue(string value) unique
+        }
 
-T:Define [[
-    module Interact {
-        Pointer = Idle | Hovered | Pressed | Dragging
-        Focus = Blurred | Focused
-    }
-]]
+        module Env {
+            Breakpoint = Sm | Md | Lg | Xl | X2l
+            Scheme = Light | Dark
+            Motion = MotionSafe | MotionReduce
+            Density = D1x | D2x | D3x
 
--- ─────────────────────────────────────────────────────────────
--- Layout
--- Shared layout / geometry / text-policy vocabulary.
--- SemUI and UI both refer to these types.
--- ─────────────────────────────────────────────────────────────
+            Class = (Env.Breakpoint bp,
+                     Env.Scheme scheme,
+                     Env.Motion motion,
+                     Env.Density density) unique
+        }
 
-T:Define [[
-    module Layout {
-        Axis = AxisRow | AxisRowReverse | AxisCol | AxisColReverse
+        module Style {
+            Space = S0 | S0_5 | S1 | S1_5 | S2 | S2_5 | S3 | S3_5
+                  | S4 | S5 | S6 | S7 | S8 | S9 | S10 | S11 | S12
+                  | S14 | S16 | S20 | S24 | S28 | S32 | S36 | S40
+                  | S44 | S48 | S52 | S56 | S60 | S64 | S72 | S80
+                  | S96 | SPx
 
-        ScrollAxis = ScrollX | ScrollY | ScrollBoth
+            Fraction = F1_2 | F1_3 | F2_3
+                     | F1_4 | F2_4 | F3_4
+                     | F1_5 | F2_5 | F3_5 | F4_5
+                     | F1_6 | F2_6 | F3_6 | F4_6 | F5_6
+                     | FFull
 
-        FlexWrap = WrapNoWrap | WrapWrap | WrapWrapReverse
+            ColorScale = Slate | Gray | Zinc | Neutral | Stone
+                       | Red | Orange | Amber | Yellow | Lime | Green
+                       | Emerald | Teal | Cyan | Sky | Blue | Indigo
+                       | Violet | Purple | Fuchsia | Pink | Rose
+                       | White | Black | Transparent
 
-        MainAlign = MainStart | MainEnd | MainCenter
-                  | MainSpaceBetween | MainSpaceAround | MainSpaceEvenly
+            Shade = S50 | S100 | S200 | S300 | S400
+                  | S500 | S600 | S700 | S800 | S900 | S950
 
-        CrossAlign = CrossAuto | CrossStart | CrossEnd
-                   | CrossCenter | CrossStretch | CrossBaseline
+            ColorRef = Palette(Style.ColorScale scale, Style.Shade shade) unique
+                     | WhiteRef
+                     | BlackRef
+                     | TransparentRef
 
-        ContentAlign = ContentStart | ContentEnd | ContentCenter
-                     | ContentStretch
-                     | ContentSpaceBetween | ContentSpaceAround | ContentSpaceEvenly
+            Radius = R0 | RSm | RBase | RMd | RLg | RXl | R2xl | R3xl | RFull
+            BorderW = BW0 | BW1 | BW2 | BW4 | BW8
 
-        Size = SizeAuto | SizePx(number px) unique | SizePercent(number ratio) unique | SizeContent
+            Opacity = O0 | O5 | O10 | O20 | O25 | O30 | O40 | O50
+                    | O60 | O70 | O75 | O80 | O90 | O95 | O100
 
-        Basis = BasisAuto | BasisPx(number px) unique
-              | BasisPercent(number ratio) unique | BasisContent
+            FontSize = TxtXs | TxtSm | TxtBase | TxtLg | TxtXl
+                     | Txt2xl | Txt3xl | Txt4xl | Txt5xl | Txt6xl
 
-        Min = NoMin | MinPx(number px) unique
-        Max = NoMax | MaxPx(number px) unique
+            FontWeight = Thin | ExtraLight | Light | Normal | Medium
+                       | Semibold | Bold | ExtraBold | WeightBlack
 
-        TextWrap = TextNoWrap | TextWordWrap | TextCharWrap
-        TextAlign = TextStart | TextCenter | TextEnd | TextJustify
-        Overflow = OverflowVisible | OverflowClip | OverflowEllipsis
+            TextAlign = TLeft | TCenter | TRight | TJustify
 
-        LineHeight = LineHeightAuto
-                   | LineHeightPx(number px) unique
-                   | LineHeightScale(number scale) unique
+            Leading = LeadingNone | LeadingTight | LeadingSnug
+                    | LeadingNormal | LeadingRelaxed | LeadingLoose
 
-        LineLimit = UnlimitedLines | MaxLines(number count) unique
+            Tracking = TrackingTighter | TrackingTight | TrackingNormal
+                     | TrackingWide | TrackingWider | TrackingWidest
 
-        Insets = (number l, number t, number r, number b) unique
+            Cursor = CursorDefault | CursorPointer | CursorText
+                   | CursorMove | CursorGrab | CursorGrabbing
+                   | CursorNotAllowed
 
-        Box = (Layout.Size w, Layout.Size h,
-               Layout.Min min_w, Layout.Min min_h,
-               Layout.Max max_w, Layout.Max max_h) unique
-    }
-]]
+            ScrollAxis = ScrollX | ScrollY | ScrollBoth
 
--- ─────────────────────────────────────────────────────────────
--- DS — design system
---
--- Fresh-start changes from old uilib:
---   - flags are now open-ended tokens instead of a fixed enum.
---   - paint, metric, and text rules are split explicitly.
---   - the resolved result is structured, not one giant bag.
--- ─────────────────────────────────────────────────────────────
+            Overflow = OverflowVisible | OverflowHidden | OverflowScroll | OverflowAuto
 
-T:Define [[
-    module DS {
-        Flag = (string name) unique
+            Display = DisplayFlow | DisplayFlex | DisplayGrid
+            Axis = AxisRow | AxisCol
+            Wrap = WrapOff | WrapOn
 
-        PSel = AnyPointer
-             | WhenPointer(Interact.Pointer pointer)
+            Justify = JustifyStart | JustifyCenter | JustifyEnd
+                    | JustifyBetween | JustifyAround | JustifyEvenly
 
-        FSel = AnyFocus
-             | WhenFocus(Interact.Focus focus)
+            Items = ItemsStart | ItemsCenter | ItemsEnd | ItemsStretch | ItemsBaseline
+            Self = SelfAuto | SelfStart | SelfCenter | SelfEnd | SelfStretch | SelfBaseline
 
-        GSel = AnyFlags
-             | RequireFlags(DS.Flag* required)
+            Length = LAuto
+                   | LHug
+                   | LFill
+                   | LFixed(number px) unique
+                   | LFrac(Style.Fraction value) unique
 
-        PaintSel = (DS.PSel pointer,
-                    DS.FSel focus,
-                    DS.GSel flags) unique
+            Basis = BAuto
+                  | BHug
+                  | BFixed(number px) unique
+                  | BFrac(Style.Fraction value) unique
 
-        StateSel = (DS.FSel focus,
-                    DS.GSel flags) unique
+            Track = TAuto
+                  | TFr(number fr) unique
+                  | TFixed(number px) unique
+                  | TMinMax(number min_px, number max_px) unique
 
-        ColorVal = ColorTok(string name) unique
-                 | ColorLit(number rgba8) unique
+            BpCond = AnyBp | SmUp | MdUp | LgUp | XlUp | X2lUp
+            SchemeCond = AnyScheme | LightOnly | DarkOnly
+            MotionCond = AnyMotion | MotionSafeOnly | MotionReduceOnly
 
-        SpaceVal = SpaceTok(string name) unique
-                 | SpaceLit(number px) unique
+            Cond = (Style.BpCond bp,
+                    Style.SchemeCond scheme,
+                    Style.MotionCond motion) unique
 
-        ScaleVal = ScaleLit(number n) unique
+            Atom = ADisplay(Style.Display value) unique
+                 | AAxis(Style.Axis value) unique
+                 | AWrap(Style.Wrap value) unique
+                 | AJustify(Style.Justify value) unique
+                 | AItems(Style.Items value) unique
+                 | ASelf(Style.Self value) unique
 
-        FontVal = FontTok(string name) unique
-                | FontLit(number font_id) unique
+                 | AGap(Style.Space value) unique
+                 | AGapX(Style.Space value) unique
+                 | AGapY(Style.Space value) unique
 
-        PaintDecl = SetBg(DS.ColorVal val) unique
-                  | SetFg(DS.ColorVal val) unique
-                  | SetBorder(DS.ColorVal val) unique
-                  | SetAccent(DS.ColorVal val) unique
-                  | SetRadius(DS.SpaceVal val) unique
-                  | SetOpacity(DS.ScaleVal val) unique
+                 | APad(Style.Space value) unique
+                 | APadX(Style.Space value) unique
+                 | APadY(Style.Space value) unique
+                 | APadTop(Style.Space value) unique
+                 | APadRight(Style.Space value) unique
+                 | APadBottom(Style.Space value) unique
+                 | APadLeft(Style.Space value) unique
 
-        MetricDecl = SetPadH(DS.SpaceVal val) unique
-                   | SetPadV(DS.SpaceVal val) unique
-                   | SetGap(DS.SpaceVal val) unique
-                   | SetGapCross(DS.SpaceVal val) unique
-                   | SetBorderWidth(DS.SpaceVal val) unique
+                 | AMargin(Style.Space value) unique
+                 | AMarginX(Style.Space value) unique
+                 | AMarginY(Style.Space value) unique
+                 | AMarginTop(Style.Space value) unique
+                 | AMarginRight(Style.Space value) unique
+                 | AMarginBottom(Style.Space value) unique
+                 | AMarginLeft(Style.Space value) unique
+                 | AMarginAutoX
+                 | AMarginAutoLeft
+                 | AMarginAutoRight
 
-        TextDecl = SetFont(DS.FontVal val) unique
-                 | SetLineHeight(Layout.LineHeight val) unique
-                 | SetTextAlign(Layout.TextAlign val) unique
-                 | SetTextWrap(Layout.TextWrap val) unique
-                 | SetOverflow(Layout.Overflow val) unique
-                 | SetLineLimit(Layout.LineLimit val) unique
+                 | AWidth(Style.Length value) unique
+                 | AHeight(Style.Length value) unique
+                 | AMinWidth(Style.Length value) unique
+                 | AMaxWidth(Style.Length value) unique
+                 | AMinHeight(Style.Length value) unique
+                 | AMaxHeight(Style.Length value) unique
 
-        PaintRule = (DS.PaintSel when,
-                     DS.PaintDecl* set) unique
+                 | AGrow(number value) unique
+                 | AShrink(number value) unique
+                 | ABasis(Style.Basis value) unique
 
-        MetricRule = (DS.StateSel when,
-                      DS.MetricDecl* set) unique
+                 | AFg(Style.ColorRef value) unique
+                 | ABg(Style.ColorRef value) unique
+                 | ABorderColor(Style.ColorRef value) unique
+                 | ABorderWidth(Style.BorderW value) unique
+                 | ARounded(Style.Radius value) unique
+                 | AOpacity(Style.Opacity value) unique
 
-        TextRule = (DS.StateSel when,
-                    DS.TextDecl* set) unique
+                 | ATextSize(Style.FontSize value) unique
+                 | ATextWeight(Style.FontWeight value) unique
+                 | ATextAlign(Style.TextAlign value) unique
+                 | ALeading(Style.Leading value) unique
+                 | ATracking(Style.Tracking value) unique
 
-        Surface = (string name,
-                   DS.PaintRule* paint_rules,
-                   DS.MetricRule* metric_rules,
-                   DS.TextRule* text_rules) unique
+                 | AOverflowX(Style.Overflow value) unique
+                 | AOverflowY(Style.Overflow value) unique
+                 | ACursor(Style.Cursor value) unique
 
-        ColorBinding = (string name, number rgba8) unique
-        SpaceBinding = (string name, number px) unique
-        FontBinding = (string name, number font_id) unique
+                 | ACols(Style.Track* tracks) unique
+                 | ARows(Style.Track* tracks) unique
+                 | AColGap(Style.Space value) unique
+                 | ARowGap(Style.Space value) unique
 
-        Theme = (string name,
-                 DS.ColorBinding* colors,
-                 DS.SpaceBinding* spaces,
-                 DS.FontBinding* fonts,
-                 DS.Surface* surfaces) unique
+                 | AColStart(number value) unique
+                 | AColSpan(number value) unique
+                 | ARowStart(number value) unique
+                 | ARowSpan(number value) unique
 
-        ColorPack = (number idle, number hovered,
-                     number pressed, number dragging) unique
+            Token = (Style.Cond cond,
+                     Style.Atom atom) unique
 
-        NumPack = (number idle, number hovered,
-                   number pressed, number dragging) unique
+            TokenList = (Style.Token* items) unique
+            Group = (Style.Token* items) unique
 
-        ResolvedPaint = (DS.ColorPack bg,
-                         DS.ColorPack fg,
-                         DS.ColorPack border,
-                         DS.ColorPack accent,
-                         DS.NumPack radius,
-                         DS.NumPack opacity) unique
+            MarginVal = MarginAuto
+                      | MarginSpace(Style.Space value) unique
 
-        ResolvedMetrics = (number pad_h,
-                           number pad_v,
-                           number gap,
-                           number gap_cross,
-                           number border_w) unique
+            Padding = (Style.Space top,
+                       Style.Space right,
+                       Style.Space bottom,
+                       Style.Space left) unique
 
-        ResolvedText = (number font_id,
-                        Layout.LineHeight line_height,
-                        Layout.TextAlign align,
-                        Layout.TextWrap wrap,
-                        Layout.Overflow overflow,
-                        Layout.LineLimit line_limit) unique
+            Margin = (Style.MarginVal top,
+                      Style.MarginVal right,
+                      Style.MarginVal bottom,
+                      Style.MarginVal left) unique
 
-        ResolvedStyle = (DS.ResolvedMetrics metrics,
-                         DS.ResolvedPaint paint,
-                         DS.ResolvedText text) unique
+            GapSpec = (Style.Space x,
+                       Style.Space y) unique
 
-        Query = (DS.Theme theme,
-                 string surface,
-                 Interact.Focus focus,
-                 DS.Flag* flags) unique
-    }
-]]
+            GridPlacement = (number col_start,
+                             number col_span,
+                             number row_start,
+                             number row_span) unique
 
--- ─────────────────────────────────────────────────────────────
--- Runtime
--- ─────────────────────────────────────────────────────────────
+            Decl = DDisplay(Style.Display value) unique
+                 | DAxis(Style.Axis value) unique
+                 | DWrap(Style.Wrap value) unique
+                 | DJustify(Style.Justify value) unique
+                 | DItems(Style.Items value) unique
+                 | DSelf(Style.Self value) unique
 
-T:Define [[
-    module Runtime {
-        NumRef = (string name) unique
-        TextRef = (string name) unique
-        ColorRef = (string name) unique
-    }
-]]
+                 | DPadTop(Style.Space value) unique
+                 | DPadRight(Style.Space value) unique
+                 | DPadBottom(Style.Space value) unique
+                 | DPadLeft(Style.Space value) unique
 
--- ─────────────────────────────────────────────────────────────
--- Paint
---
--- Generic custom drawing. This remains intentionally app-agnostic.
--- ─────────────────────────────────────────────────────────────
+                 | DMarginTop(Style.MarginVal value) unique
+                 | DMarginRight(Style.MarginVal value) unique
+                 | DMarginBottom(Style.MarginVal value) unique
+                 | DMarginLeft(Style.MarginVal value) unique
 
-T:Define [[
-    module Paint {
-        Scalar = ScalarLit(number n) unique
-               | ScalarFromRef(Runtime.NumRef ref) unique
+                 | DGapX(Style.Space value) unique
+                 | DGapY(Style.Space value) unique
+                 | DGridGapX(Style.Space value) unique
+                 | DGridGapY(Style.Space value) unique
 
-        TextValue = TextLit(string text) unique
-                  | TextFromRef(Runtime.TextRef ref) unique
+                 | DWidth(Style.Length value) unique
+                 | DHeight(Style.Length value) unique
+                 | DMinWidth(Style.Length value) unique
+                 | DMaxWidth(Style.Length value) unique
+                 | DMinHeight(Style.Length value) unique
+                 | DMaxHeight(Style.Length value) unique
 
-        ColorValue = ColorPackLit(DS.ColorPack pack) unique
-                   | ColorFromRef(Runtime.ColorRef ref) unique
+                 | DGrow(number value) unique
+                 | DShrink(number value) unique
+                 | DBasis(Style.Basis value) unique
 
-        Node = Group(Paint.Node* children) unique
-             | ClipRegion(Paint.Scalar x,
-                          Paint.Scalar y,
-                          Paint.Scalar w,
-                          Paint.Scalar h,
-                          Paint.Node child) unique
-             | Translate(Paint.Scalar tx,
-                         Paint.Scalar ty,
-                         Paint.Node child) unique
-             | FillRect(string tag,
-                        Paint.Scalar x,
-                        Paint.Scalar y,
-                        Paint.Scalar w,
-                        Paint.Scalar h,
-                        Paint.ColorValue color) unique
-             | StrokeRect(string tag,
-                          Paint.Scalar x,
-                          Paint.Scalar y,
-                          Paint.Scalar w,
-                          Paint.Scalar h,
-                          Paint.Scalar thickness,
-                          Paint.ColorValue color) unique
-             | Line(string tag,
-                    Paint.Scalar x1,
-                    Paint.Scalar y1,
-                    Paint.Scalar x2,
-                    Paint.Scalar y2,
-                    Paint.Scalar thickness,
-                    Paint.ColorValue color) unique
-             | Text(string tag,
-                    Paint.Scalar x,
-                    Paint.Scalar y,
-                    Paint.Scalar w,
-                    Paint.Scalar h,
-                    number font_id,
-                    Paint.ColorValue color,
-                    Layout.LineHeight line_height,
-                    Layout.TextAlign align,
-                    Layout.TextWrap wrap,
-                    Layout.Overflow overflow,
-                    Layout.LineLimit line_limit,
-                    Paint.TextValue text) unique
+                 | DFg(Style.ColorRef value) unique
+                 | DBg(Style.ColorRef value) unique
+                 | DBorderColor(Style.ColorRef value) unique
+                 | DBorderWidth(Style.BorderW value) unique
+                 | DRadius(Style.Radius value) unique
+                 | DOpacity(Style.Opacity value) unique
 
-        Kind = FillRectCmd | StrokeRectCmd | LineCmd | TextCmd
-             | PushClipCmd | PopClipCmd | PushTransformCmd | PopTransformCmd
+                 | DFontSize(Style.FontSize value) unique
+                 | DFontWeight(Style.FontWeight value) unique
+                 | DTextAlign(Style.TextAlign value) unique
+                 | DLeading(Style.Leading value) unique
+                 | DTracking(Style.Tracking value) unique
 
-        Cmd = (Paint.Kind kind,
-               string tag,
-               Paint.Scalar a,
-               Paint.Scalar b,
-               Paint.Scalar c,
-               Paint.Scalar d,
-               Paint.Scalar e,
-               Paint.Scalar f,
-               Paint.ColorValue color,
-               number font_id,
-               Layout.LineHeight line_height,
-               Layout.TextAlign text_align,
-               Layout.TextWrap text_wrap,
-               Layout.Overflow overflow,
-               Layout.LineLimit line_limit,
-               Paint.TextValue text) unique
-    }
-]]
+                 | DOverflowX(Style.Overflow value) unique
+                 | DOverflowY(Style.Overflow value) unique
+                 | DCursor(Style.Cursor value) unique
 
--- ─────────────────────────────────────────────────────────────
--- SemUI — authored generic UI semantics
---
--- This is the library-facing tree. It carries identity, interaction wrappers,
--- surface application, and authored layout.
---
--- Surface(name, flags, child) is a semantic style scope. Lowering threads the
--- resolved style down the subtree and may also emit concrete panel chrome.
--- ─────────────────────────────────────────────────────────────
+                 | DCols(Style.Track* tracks) unique
+                 | DRows(Style.Track* tracks) unique
+                 | DColStart(number value) unique
+                 | DColSpan(number value) unique
+                 | DRowStart(number value) unique
+                 | DRowSpan(number value) unique
 
-T:Define [[
-    module SemUI {
-        FontChoice = UseSurfaceFont
-                   | OverrideFont(DS.FontVal font) unique
+            Spec = (Style.Display display,
+                    Style.Axis axis,
+                    Style.Wrap wrap,
+                    Style.Justify justify,
+                    Style.Items items,
+                    Style.Self self_align,
 
-        LineHeightChoice = UseSurfaceLineHeight
-                         | OverrideLineHeight(Layout.LineHeight line_height) unique
+                    Style.Padding padding,
+                    Style.Margin margin,
+                    Style.GapSpec gap,
 
-        TextAlignChoice = UseSurfaceTextAlign
-                        | OverrideTextAlign(Layout.TextAlign align) unique
+                    Style.Length w,
+                    Style.Length h,
+                    Style.Length min_w,
+                    Style.Length max_w,
+                    Style.Length min_h,
+                    Style.Length max_h,
 
-        TextWrapChoice = UseSurfaceTextWrap
-                       | OverrideTextWrap(Layout.TextWrap wrap) unique
-
-        OverflowChoice = UseSurfaceOverflow
-                       | OverrideOverflow(Layout.Overflow overflow) unique
-
-        LineLimitChoice = UseSurfaceLineLimit
-                        | OverrideLineLimit(Layout.LineLimit line_limit) unique
-
-        TextSpec = (SemUI.FontChoice font,
-                    SemUI.LineHeightChoice line_height,
-                    SemUI.TextAlignChoice align,
-                    SemUI.TextWrapChoice wrap,
-                    SemUI.OverflowChoice overflow,
-                    SemUI.LineLimitChoice line_limit) unique
-
-        FlexItem = (SemUI.Node node,
                     number grow,
                     number shrink,
-                    Layout.Basis basis,
-                    Layout.CrossAlign self_align,
-                    Layout.Insets margin) unique
+                    Style.Basis basis,
 
-        Node = Empty
+                    Style.ColorRef fg,
+                    Style.ColorRef bg,
+                    Style.ColorRef border_color,
+                    Style.BorderW border_w,
+                    Style.Radius radius,
+                    Style.Opacity opacity,
 
-             | Key(string id,
-                   SemUI.Node child) unique
+                    Style.FontSize font_size,
+                    Style.FontWeight font_weight,
+                    Style.TextAlign text_align,
+                    Style.Leading leading,
+                    Style.Tracking tracking,
 
-             | HitBox(string id,
-                      SemUI.Node child) unique
+                    Style.Overflow overflow_x,
+                    Style.Overflow overflow_y,
+                    Style.Cursor cursor,
 
-             | Pressable(string id,
-                         SemUI.Node child) unique
+                    Style.Track* cols,
+                    Style.Track* rows,
+                    Style.GapSpec grid_gap,
+                    Style.GridPlacement placement) unique
+        }
 
-             | Focusable(string id,
-                         SemUI.Node child) unique
+        module Theme {
+            Palette = (number s50, number s100, number s200, number s300,
+                       number s400, number s500, number s600, number s700,
+                       number s800, number s900, number s950) unique
 
-             | Surface(string name,
-                       DS.Flag* flags,
-                       SemUI.Node child) unique
+            SpaceScale = (number s0, number s0_5, number s1, number s1_5,
+                          number s2, number s2_5, number s3, number s3_5,
+                          number s4, number s5, number s6, number s7,
+                          number s8, number s9, number s10, number s11,
+                          number s12, number s14, number s16, number s20,
+                          number s24, number s28, number s32, number s36,
+                          number s40, number s44, number s48, number s52,
+                          number s56, number s60, number s64, number s72,
+                          number s80, number s96, number px) unique
 
-             | Flex(Layout.Axis axis,
-                    Layout.FlexWrap wrap,
-                    number gap_main,
-                    number gap_cross,
-                    Layout.MainAlign justify,
-                    Layout.CrossAlign align_items,
-                    Layout.ContentAlign align_content,
-                    Layout.Box box,
-                    SemUI.FlexItem* children) unique
+            FontScale = (number xs, number sm, number base, number lg,
+                         number xl, number x2l, number x3l,
+                         number x4l, number x5l, number x6l) unique
 
-             | Pad(Layout.Insets insets,
-                   Layout.Box box,
-                   SemUI.Node child) unique
+            RadiusScale = (number r0, number rsm, number rbase, number rmd,
+                           number rlg, number rxl, number r2xl,
+                           number r3xl, number rfull) unique
 
-             | Stack(Layout.Box box,
-                     SemUI.Node* children) unique
+            BorderScale = (number bw0, number bw1, number bw2,
+                           number bw4, number bw8) unique
 
-             | Clip(Layout.Box box,
-                    SemUI.Node child) unique
+            OpacityScale = (number o0, number o5, number o10, number o20,
+                            number o25, number o30, number o40, number o50,
+                            number o60, number o70, number o75, number o80,
+                            number o90, number o95, number o100) unique
 
-             | Transform(number tx, number ty,
-                         Layout.Box box,
-                         SemUI.Node child) unique
+            Fonts = (number regular,
+                     number medium,
+                     number semibold,
+                     number bold,
+                     number mono) unique
 
-             | Sized(Layout.Box box,
-                     SemUI.Node child) unique
+            T = (Theme.Palette slate, Theme.Palette gray, Theme.Palette zinc,
+                 Theme.Palette neutral, Theme.Palette stone,
+                 Theme.Palette red, Theme.Palette orange, Theme.Palette amber,
+                 Theme.Palette yellow, Theme.Palette lime, Theme.Palette green,
+                 Theme.Palette emerald, Theme.Palette teal, Theme.Palette cyan,
+                 Theme.Palette sky, Theme.Palette blue, Theme.Palette indigo,
+                 Theme.Palette violet, Theme.Palette purple, Theme.Palette fuchsia,
+                 Theme.Palette pink, Theme.Palette rose,
+                 number white,
+                 number black,
+                 number transparent,
+                 Theme.SpaceScale spacing,
+                 Theme.FontScale font_sizes,
+                 Theme.RadiusScale radii,
+                 Theme.BorderScale borders,
+                 Theme.OpacityScale opacities,
+                 Theme.Fonts fonts) unique
+        }
 
-             | ScrollArea(string id,
-                          Layout.ScrollAxis axis,
-                          number scroll_x,
-                          number scroll_y,
-                          Layout.Box box,
-                          SemUI.Node child) unique
+        module Paint {
+            Stroke = (number rgba8,
+                      number width) unique
 
-             | Rect(string tag,
-                    Layout.Box box) unique
+            Fill = NoFill
+                 | SolidFill(number rgba8) unique
 
-             | Text(string tag,
-                    Layout.Box box,
-                    SemUI.TextSpec spec,
-                    string text) unique
+            MeshMode = MeshTriangles | MeshStrip | MeshFan
 
-             | CustomPaint(string tag,
-                           Layout.Box box,
-                           Paint.Node paint) unique
+            Vertex = (number x,
+                      number y,
+                      number u,
+                      number v) unique
 
-             | Overlay(SemUI.Node base,
-                       Paint.Node overlay) unique
+            Program = Line(number x1,
+                           number y1,
+                           number x2,
+                           number y2,
+                           Paint.Stroke stroke) unique
 
-             | Spacer(Layout.Box box) unique
-    }
-]]
+                    | Polyline(number* xy,
+                               Paint.Stroke stroke) unique
 
--- ─────────────────────────────────────────────────────────────
--- UI — lowered concrete UI tree
---
--- This is the reducer-facing tree. Design-system resolution has already happened.
--- Interaction wrappers remain explicit because hit/focus/session reducers still
--- need them.
--- ─────────────────────────────────────────────────────────────
+                    | Polygon(number* xy,
+                              Paint.Fill fill,
+                              Paint.Stroke? stroke) unique
 
-T:Define [[
-    module UI {
-        BoxStyle = (number pad_h,
-                    number pad_v,
-                    number border_w,
-                    DS.ColorPack bg,
-                    DS.ColorPack border,
-                    DS.ColorPack accent,
-                    DS.NumPack radius,
-                    DS.NumPack opacity) unique
+                    | Circle(number cx,
+                             number cy,
+                             number r,
+                             Paint.Fill fill,
+                             Paint.Stroke? stroke) unique
 
-        TextStyle = (number font_id,
-                     DS.ColorPack color,
-                     DS.NumPack opacity,
-                     Layout.LineHeight line_height,
-                     Layout.TextAlign align,
-                     Layout.TextWrap wrap,
-                     Layout.Overflow overflow,
-                     Layout.LineLimit line_limit) unique
+                    | Arc(number cx,
+                          number cy,
+                          number r,
+                          number a1,
+                          number a2,
+                          number segments,
+                          Paint.Stroke stroke) unique
 
-        FlexItem = (UI.Node node,
-                    number grow,
-                    number shrink,
-                    Layout.Basis basis,
-                    Layout.CrossAlign self_align,
-                    Layout.Insets margin) unique
+                    | Bezier(number* xy,
+                             number segments,
+                             Paint.Stroke stroke) unique
 
-        Node = Empty
+                    | Mesh(Paint.MeshMode mode,
+                           Paint.Vertex* vertices,
+                           Core.Id? image_id,
+                           number tint_rgba8,
+                           number opacity) unique
 
-             | Key(string id,
-                   UI.Node child) unique
+                    | Image(Core.Id image_id,
+                            number src_x,
+                            number src_y,
+                            number src_w,
+                            number src_h,
+                            number tint_rgba8,
+                            number opacity) unique
 
-             | HitBox(string id,
-                      UI.Node child) unique
+            ProgramList = (Paint.Program* items) unique
+        }
 
-             | Pressable(string id,
-                         UI.Node child) unique
+        module Auth {
+            Node = Box(Core.Id id,
+                       Style.TokenList styles,
+                       Auth.Node* children) unique
+                 | Text(Core.Id id,
+                        Style.TokenList styles,
+                        string content) unique
+                 | Paint(Core.Id id,
+                         Style.TokenList styles,
+                         Paint.ProgramList paint) unique
+                 | Scroll(Core.Id id,
+                          Style.TokenList styles,
+                          Style.ScrollAxis axis,
+                          Auth.Node child) unique
+                 | WithInput(Core.Id id,
+                             Interact.Role role,
+                             Auth.Node child) unique
+                 | Fragment(Auth.Node* children) unique
+                 | Empty unique
+        }
 
-             | Focusable(string id,
-                         UI.Node child) unique
+        module Resolved {
+            TextStyle = (number font_id,
+                         number font_size,
+                         number font_weight,
+                         number fg,
+                         number align,
+                         number leading,
+                         number tracking) unique
 
-             | Flex(Layout.Axis axis,
-                    Layout.FlexWrap wrap,
-                    number gap_main,
-                    number gap_cross,
-                    Layout.MainAlign justify,
-                    Layout.CrossAlign align_items,
-                    Layout.ContentAlign align_content,
-                    Layout.Box box,
-                    UI.FlexItem* children) unique
+            GridPlacement = (number col_start,
+                             number col_span,
+                             number row_start,
+                             number row_span) unique
 
-             | Pad(Layout.Insets insets,
-                   Layout.Box box,
-                   UI.Node child) unique
+            Style = (Style.Display display,
+                     Layout.Axis axis,
+                     Layout.Wrap wrap,
+                     Layout.MainAlign justify,
+                     Layout.CrossAlign items,
+                     Layout.BoxStyle box,
+                     Resolved.TextStyle text,
+                     Layout.Track* cols,
+                     Layout.Track* rows,
+                     number gap_x,
+                     number gap_y,
+                     number col_gap,
+                     number row_gap,
+                     Resolved.GridPlacement placement) unique
+        }
 
-             | Stack(Layout.Box box,
-                     UI.Node* children) unique
+        module Layout {
+            Constraint = (number max_w,
+                          number max_h) unique
 
-             | Clip(Layout.Box box,
-                    UI.Node child) unique
+            Size = (number w,
+                    number h,
+                    number baseline) unique
 
-             | Transform(number tx, number ty,
-                         Layout.Box box,
-                         UI.Node child) unique
+            Axis = LRow | LCol
+            Wrap = LWrapOff | LWrapOn
 
-             | Sized(Layout.Box box,
-                     UI.Node child) unique
+            MainAlign = MStart | MCenter | MEnd | MBetween | MAround | MEvenly
+            CrossAlign = CStart | CCenter | CEnd | CStretch | CBaseline
+            SelfAlign = SelfAuto | SelfStart | SelfCenter | SelfEnd | SelfStretch | SelfBaseline
 
-             | ScrollArea(string id,
-                          Layout.ScrollAxis axis,
-                          number scroll_x,
-                          number scroll_y,
-                          Layout.Box box,
-                          UI.BoxStyle style,
-                          UI.Node child) unique
+            Sizing = SAuto
+                   | SHug
+                   | SFill
+                   | SFixed(number px) unique
+                   | SFrac(number value) unique
 
-             | Panel(string tag,
-                     Layout.Box box,
-                     UI.BoxStyle style,
-                     UI.Node child) unique
+            Basis = BasisAuto
+                  | BasisHug
+                  | BasisFixed(number px) unique
+                  | BasisFrac(number value) unique
 
-             | Rect(string tag,
-                    Layout.Box box,
-                    UI.BoxStyle style) unique
+            Min = NoMin | MinPx(number px) unique | MinFrac(number value) unique
+            Max = NoMax | MaxPx(number px) unique | MaxFrac(number value) unique
 
-             | Text(string tag,
-                    Layout.Box box,
-                    UI.TextStyle style,
-                    string text) unique
+            Overflow = OVisible | OHidden | OScroll | OAuto
 
-             | CustomPaint(string tag,
-                           Layout.Box box,
-                           Paint.Node paint) unique
+            Edges = (number top,
+                     number right,
+                     number bottom,
+                     number left) unique
 
-             | Overlay(UI.Node base,
-                       Paint.Node overlay) unique
+            MarginVal = MarginAuto
+                      | MarginPx(number px) unique
 
-             | Spacer(Layout.Box box) unique
-    }
-]]
+            Margin = (Layout.MarginVal top,
+                      Layout.MarginVal right,
+                      Layout.MarginVal bottom,
+                      Layout.MarginVal left) unique
 
--- ─────────────────────────────────────────────────────────────
--- Facts
--- ─────────────────────────────────────────────────────────────
+            Visual = (number bg,
+                      number fg,
+                      number border_color,
+                      number border_w,
+                      number radius,
+                      number opacity) unique
 
-T:Define [[
-    module Facts {
-        Span = SpanUnconstrained
-             | SpanExact(number px)
-             | SpanAtMost(number px)
+            TextStyle = (number font_id,
+                         number font_size,
+                         number font_weight,
+                         number fg,
+                         number align,
+                         number leading,
+                         number tracking,
+                         string content) unique
 
-        Baseline = NoBaseline | BaselinePx(number px)
+            TextLayout = (Layout.TextStyle style,
+                          number max_w,
+                          number measured_w,
+                          number measured_h,
+                          number baseline,
+                          string* lines) unique
 
-        Constraint = (Facts.Span w,
-                      Facts.Span h)
+            Track = TrackAuto
+                  | TrackFr(number fr) unique
+                  | TrackFixed(number px) unique
+                  | TrackMinMax(number min_px, number max_px) unique
 
-        Frame = (number x, number y,
-                 number w, number h)
+            BoxStyle = (Layout.Sizing w,
+                        Layout.Sizing h,
+                        Layout.Min min_w,
+                        Layout.Max max_w,
+                        Layout.Min min_h,
+                        Layout.Max max_h,
+                        number grow,
+                        number shrink,
+                        Layout.Basis basis,
+                        Layout.SelfAlign self_align,
+                        Layout.Edges padding,
+                        Layout.Margin margin,
+                        Layout.Visual visual,
+                        Layout.Overflow overflow_x,
+                        Layout.Overflow overflow_y,
+                        Style.Cursor cursor) unique
 
-        Intrinsic = (number min_w, number min_h,
-                     number max_w, number max_h,
-                     Facts.Baseline baseline)
+            GridItem = (Layout.Node node,
+                        number col_start,
+                        number col_span,
+                        number row_start,
+                        number row_span,
+                        Layout.CrossAlign col_align,
+                        Layout.CrossAlign row_align) unique
 
-        Measure = (Facts.Constraint constraint,
-                   Facts.Intrinsic intrinsic,
-                   number used_w, number used_h,
-                   Facts.Baseline baseline)
+            Node = Flow(Core.Id id,
+                        Layout.BoxStyle box,
+                        Layout.MainAlign justify,
+                        Layout.CrossAlign items,
+                        number gap_y,
+                        Layout.Node* children) unique
 
-        ScrollExtent = (number content_w, number content_h,
-                        number viewport_w, number viewport_h)
+                 | Flex(Core.Id id,
+                        Layout.BoxStyle box,
+                        Layout.Axis axis,
+                        Layout.Wrap wrap,
+                        Layout.MainAlign justify,
+                        Layout.CrossAlign items,
+                        number gap_x,
+                        number gap_y,
+                        Layout.Node* children) unique
 
-        Hit = Miss
-            | HitId(string id)
-    }
-]]
+                 | Grid(Core.Id id,
+                        Layout.BoxStyle box,
+                        Layout.Track* cols,
+                        Layout.Track* rows,
+                        number col_gap,
+                        number row_gap,
+                        Layout.GridItem* items) unique
 
--- ─────────────────────────────────────────────────────────────
--- Msg
---
--- Generic event/message vocabulary for the session layer.
--- ─────────────────────────────────────────────────────────────
+                 | Leaf(Core.Id id,
+                        Layout.BoxStyle box,
+                        Layout.TextStyle? text) unique
 
-T:Define [[
-    module Msg {
-        Kind = Click
-             | Press
-             | Release
-             | HoverEnter
-             | HoverLeave
-             | Focus
-             | Blur
-             | Scroll
-             | Change
-             | Submit
-             | Cancel
-             | Custom(string name) unique
+                 | Paint(Core.Id id,
+                         Layout.BoxStyle box,
+                         Paint.ProgramList paint) unique
 
-        Payload = None
-                | Num(number value) unique
-                | Bool(boolean value) unique
-                | Text(string value) unique
-                | Pair(number a, number b) unique
+                 | Scroll(Core.Id id,
+                          Layout.BoxStyle box,
+                          Style.ScrollAxis axis,
+                          Layout.Node child) unique
 
-        Event = (Msg.Kind kind,
-                 string id,
-                 Msg.Payload payload) unique
-    }
-]]
+                 | WithInput(Core.Id id,
+                             Interact.Role role,
+                             Layout.Node child) unique
+        }
+
+        module View {
+            Kind = KRect | KText | KPaint | KPushClip | KPopClip | KPushTx | KPopTx
+                 | KPushScroll | KPopScroll
+                 | KHit | KFocus | KCursor
+
+            Op = (View.Kind kind,
+                  Core.Id id,
+                  number x,
+                  number y,
+                  number w,
+                  number h,
+                  number dx,
+                  number dy,
+                  Layout.Visual? visual,
+                  Layout.TextLayout? text,
+                  Style.Cursor? cursor,
+                  Style.ScrollAxis? scroll_axis,
+                  Paint.ProgramList? paint) unique
+        }
+
+        module Interact {
+            Role = Passive | HitTarget | FocusTarget | ActivateTarget | EditTarget
+
+            Hover = NoHover
+                  | Hovered(Core.Id id) unique
+
+            Focus = NoFocus
+                  | Focused(Core.Id id,
+                            number slot) unique
+
+            Drag = NoDrag
+                 | DragPending(Core.Id id) unique
+                 | Dragging(Core.Id id) unique
+
+            HitBox = (Core.Id id,
+                      number x,
+                      number y,
+                      number w,
+                      number h) unique
+
+            FocusBox = (Core.Id id,
+                        number slot,
+                        number x,
+                        number y,
+                        number w,
+                        number h) unique
+
+            ScrollBox = (Core.Id id,
+                         Style.ScrollAxis axis,
+                         number x,
+                         number y,
+                         number w,
+                         number h) unique
+
+            Report = (Core.Id hover_id,
+                      Core.Id cursor_id,
+                      Style.Cursor cursor,
+                      Core.Id scroll_id,
+                      Interact.HitBox* hits,
+                      Interact.FocusBox* focusables,
+                      Interact.ScrollBox* scrollables) unique
+
+            Button = BtnLeft | BtnMiddle | BtnRight
+
+            Raw = PointerMoved(number x, number y) unique
+                | PointerPressed(Interact.Button button,
+                                 number x,
+                                 number y) unique
+                | PointerReleased(Interact.Button button,
+                                  number x,
+                                  number y) unique
+                | WheelMoved(number dx,
+                             number dy,
+                             number x,
+                             number y) unique
+                | FocusNext
+                | FocusPrev
+                | ActivateFocus
+
+            Event = SetPointer(number x,
+                               number y) unique
+                  | SetHover(Core.Id id) unique
+                  | ClearHover
+                  | SetFocus(Core.Id id) unique
+                  | ClearFocus
+                  | Activate(Core.Id id) unique
+                  | ScrollBy(Core.Id id,
+                             number dx,
+                             number dy) unique
+
+            Model = (number pointer_x,
+                     number pointer_y,
+                     Core.Id hover_id,
+                     Core.Id focus_id,
+                     Solve.Scroll* scrolls) unique
+
+            State = (Interact.Hover hover,
+                     Interact.Focus focus,
+                     Interact.Drag drag) unique
+        }
+
+        module Solve {
+            Scroll = (Core.Id id,
+                      number x,
+                      number y) unique
+
+            Env = (number vw,
+                   number vh,
+                   Solve.Scroll* scrolls) unique
+        }
+    ]]
+    return T
+end
+
+M.T = M.Define(pvm.context())
 
 return M

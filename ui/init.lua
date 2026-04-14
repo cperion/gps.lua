@@ -1,59 +1,20 @@
--- ui/init.lua
---
--- Public facade for the fresh UI stack.
---
--- This keeps the module graph explicit while still giving a convenient
--- `require("ui")` entrypoint.
+local M = {}
 
-local schema = require("ui.asdl")
-local ds = require("ui.ds")
-local lower = require("ui.lower")
-local measure = require("ui.measure")
-local hit = require("ui.hit")
-local draw = require("ui.draw")
-local session = require("ui.session")
+M.asdl = require("ui.asdl")
+M.T = M.asdl.T
+M.normalize = require("ui.normalize")
+M.resolve = require("ui.resolve")
+M.tw = require("ui.tw")
+M.build = require("ui.build")
+M.compose = require("ui.compose")
+M.paint = require("ui.paint")
+M.lower = require("ui.lower")
+M.text = require("ui.text")
+M.text_love = require("ui.text_love")
+M.interact = require("ui.interact")
+M.measure = require("ui.measure")
+M.render = require("ui.render")
+M.runtime = require("ui.runtime")
+M.runtime_love = require("ui.runtime_love")
 
-local ui = {
-    T = schema.T,
-    schema = schema,
-
-    asdl = schema,
-    ds = ds,
-    lower = lower,
-    measure = measure,
-    hit = hit,
-    draw = draw,
-    session = session,
-
-    Session = session.Session,
-    new_session = session.new,
-
-    theme = ds.theme,
-    surface = ds.surface,
-    query = ds.query,
-    resolve = ds.resolve,
-
-    lower_node = lower.node,
-    measure_node = measure.measure,
-    hit_node = hit.hit,
-    hit_id = hit.id,
-    scroll_hit_id = hit.scroll_id,
-    draw_node = draw.draw,
-    record_node = draw.record,
-    draw_paint = draw.paint,
-    record_paint = draw.record_paint,
-
-    frame = measure.frame,
-    constraint = measure.constraint,
-    exact = measure.exact,
-    at_most = measure.at_most,
-    available_constraint_from_frame = measure.available_constraint_from_frame,
-    exact_constraint_from_frame = measure.exact_constraint_from_frame,
-
-    DEFAULT_STYLE = ds.DEFAULT_STYLE,
-    UNCONSTRAINED = measure.UNCONSTRAINED,
-    NO_BASELINE = measure.NO_BASELINE,
-    MISS = hit.MISS,
-}
-
-return ui
+return M

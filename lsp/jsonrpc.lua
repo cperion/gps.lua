@@ -158,14 +158,39 @@ local function json_decode(s)
                 elseif esc == 114 then o = o + 1; out[o] = "\r"; i = i + 2
                 elseif esc == 116 then o = o + 1; out[o] = "\t"; i = i + 2
                 elseif esc == 117 then
-                    local hex = s:sub(i + 2, i + 5)
-                    if #hex < 4 or not hex:match("^[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$") then
-                        err("invalid unicode escape")
+                    local function hex4_at(pos)
+                        local h = s:sub(pos, pos + 3)
+                        if #h < 4 or not h:match("^[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$") then
+                            return nil
+                        end
+                        return tonumber(h, 16)
                     end
-                    local cp = tonumber(hex, 16)
+
+                    local cp = hex4_at(i + 2)
+                    if not cp then err("invalid unicode escape") end
+
+                    local consumed = 6
+                    if cp >= 0xD800 and cp <= 0xDBFF then
+                        -- High surrogate: expect a following low surrogate escape.
+                        if s:byte(i + 6) == 92 and s:byte(i + 7) == 117 then
+                            local cp2 = hex4_at(i + 8)
+                            if cp2 and cp2 >= 0xDC00 and cp2 <= 0xDFFF then
+                                cp = 0x10000 + ((cp - 0xD800) * 0x400) + (cp2 - 0xDC00)
+                                consumed = 12
+                            else
+                                cp = 0xFFFD
+                            end
+                        else
+                            cp = 0xFFFD
+                        end
+                    elseif cp >= 0xDC00 and cp <= 0xDFFF then
+                        -- Unpaired low surrogate.
+                        cp = 0xFFFD
+                    end
+
                     o = o + 1
                     out[o] = utf8_encode_cp(cp)
-                    i = i + 6
+                    i = i + consumed
                 else
                     err("invalid escape")
                 end
@@ -291,7 +316,7 @@ local function json_decode(s)
 
         if s:sub(i, i + 3) == "true" then i = i + 4; return true end
         if s:sub(i, i + 4) == "false" then i = i + 5; return false end
-        if s:sub(i, i + 3) == "null" then i = i + 4; return nil end
+        if s:sub(i, i + 3) == "null" then i = i + 4; return JSON_NULL end
 
         err("unexpected token")
     end
@@ -356,9 +381,10 @@ end
 
 local function rpc_id_to_lua(id)
     if not id then return nil end
-    local k = tostring(id):match("^Lua%.([%w_]+)%(")
+    local k = tostring(id):match("^Lua%.([%w_]+)")
     if k == "RpcIdNumber" then return id.value end
     if k == "RpcIdString" then return id.value end
+    if k == "RpcIdNull" then return JSON_NULL end
     return nil
 end
 
@@ -442,6 +468,7 @@ local function capabilities_to_lua(c)
             commands = { "lua.removeSpace", "lua.solve", "lua.jsonToLua", "lua.setConfig", "lua.getConfig", "lua.autoRequire" },
         },
         workspaceSymbolProvider = c.workspace_symbol_provider,
+        positionEncoding = "utf-16",
         offsetEncoding = "utf-16",
         workspace = {
             workspaceFolders = { supported = true, changeNotifications = true },
@@ -520,9 +547,25 @@ local function outgoing_to_lua(core, out)
 end
 
 local function incoming_from_message(core, C, msg)
-    local method = msg and msg.method
+    local method_raw = msg and msg.method
+    local method = (type(method_raw) == "string") and method_raw or nil
     local id = rpc_id_from_lua(C, msg and msg.id)
-    local params = (msg and msg.params) or {}
+
+    local params = msg and msg.params
+    if params == nil or params == JSON_NULL or type(params) ~= "table" then
+        params = {}
+    end
+
+    -- Client->server responses (no method) are irrelevant here; ignore.
+    if method_raw == nil then
+        return C.RpcInIgnore("<response>")
+    end
+
+    if method == nil then
+        local req = C.ReqInvalid("invalid method")
+        if id then return C.RpcInLspRequest(id, req) end
+        return C.RpcInInvalid("invalid method")
+    end
 
     if method == "initialize" then
         return C.RpcInInitialize(id or C.RpcIdNull())
@@ -628,8 +671,14 @@ function M.new(opts)
         if not ok then
             if ik ~= "RpcInLspRequest" then return nil end
             local emsg = tostring(result_or_err)
-            local code = emsg:match("unsupported") and -32601 or -32603
-            local msg0 = (code == -32601) and "Method not found" or "Internal error"
+            local code, msg0
+            if emsg:match("unsupported method") then
+                code, msg0 = -32601, "Method not found"
+            elseif emsg:match("invalid method") or emsg:match("invalid request") then
+                code, msg0 = -32600, "Invalid Request"
+            else
+                code, msg0 = -32603, "Internal error"
+            end
             return outgoing_to_lua(self.core, C.RpcOutError(incoming.id, code, msg0, emsg))
         end
 
@@ -739,6 +788,7 @@ function M.run_stdio(opts)
 end
 
 -- Expose codec helpers for sibling tooling (parser adapters/tests).
+M.JSON_NULL = JSON_NULL
 M.json_encode = json_encode
 M.json_decode = json_decode
 

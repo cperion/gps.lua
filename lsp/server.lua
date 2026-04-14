@@ -360,22 +360,54 @@ local function code_action_from_lua(C, a)
     a = a or {}
     local edit = C.LspWorkspaceEdit({}, "")
     local e = a.edit
-    if type(e) == "table" and type(e.changes) == "table" then
-        for uri, arr in pairs(e.changes) do
-            local edits = {}
-            if type(arr) == "table" then
-                for i = 1, #arr do
-                    local te = arr[i] or {}
-                    edits[#edits + 1] = C.LspTextEdit(
-                        lsp_range_from_params(C, te.range),
-                        tostring(te.newText or te.new_text or "")
-                    )
+
+    local function to_text_edits(arr)
+        local edits = {}
+        if type(arr) == "table" then
+            for i = 1, #arr do
+                local te = arr[i] or {}
+                edits[#edits + 1] = C.LspTextEdit(
+                    lsp_range_from_params(C, te.range),
+                    tostring(te.newText or te.new_text or "")
+                )
+            end
+        end
+        return edits
+    end
+
+    if type(e) == "table" then
+        if type(e.changes) == "table" then
+            -- Current ASDL stores one URI + edit list; choose deterministically.
+            local uris, n = {}, 0
+            for uri in pairs(e.changes) do
+                n = n + 1
+                uris[n] = tostring(uri or "")
+            end
+            table.sort(uris)
+            local uri = uris[1]
+            if uri then
+                edit = C.LspWorkspaceEdit(to_text_edits(e.changes[uri]), uri)
+            end
+        elseif type(e.documentChanges) == "table" then
+            -- Fallback for clients that send documentChanges on resolve.
+            local picks = {}
+            for i = 1, #e.documentChanges do
+                local dc = e.documentChanges[i]
+                if type(dc) == "table" then
+                    local td = dc.textDocument
+                    local uri = (type(td) == "table" and td.uri) or dc.uri
+                    if uri and type(dc.edits) == "table" then
+                        picks[#picks + 1] = { uri = tostring(uri), edits = dc.edits }
+                    end
                 end
             end
-            edit = C.LspWorkspaceEdit(edits, tostring(uri or ""))
-            break
+            table.sort(picks, function(x, y) return x.uri < y.uri end)
+            if picks[1] then
+                edit = C.LspWorkspaceEdit(to_text_edits(picks[1].edits), picks[1].uri)
+            end
         end
     end
+
     return C.LspCodeAction(tostring(a.title or ""), code_action_kind_from_lua(C, a.kind), edit)
 end
 
@@ -1820,16 +1852,21 @@ function Core:completion(arg)
     local doc = self:_doc(req.doc.uri)
     if not doc or not self._complete_engine then return C.LspCompletionList({}, false) end
 
-    -- Figure out prefix from position
+    -- Figure out identifier prefix right before the cursor.
     local prefix = ""
-    if self.position_to_anchor then
-        -- Use the text at cursor to determine prefix
-        local lines = {}
-        for line in (doc.text or ""):gmatch("[^\n]*") do lines[#lines + 1] = line end
-        local ln = lines[req.position.line + 1] or ""
-        local col = req.position.character
-        local before = ln:sub(1, col)
-        prefix = before:match("([%w_]+)$") or ""
+    do
+        local text = doc.text or ""
+        local line0 = req.position and req.position.line or 0
+        local char0 = req.position and req.position.character or 0
+        local line_start, line_end = line_bounds(text, line0)
+        if line_start <= #text + 1 then
+            local line_text = text:sub(line_start, line_end - 1)
+            local byte_col = utf16_col_to_byte_in_line(line_text, char0)
+            if byte_col < 1 then byte_col = 1 end
+            if byte_col > #line_text + 1 then byte_col = #line_text + 1 end
+            local before = line_text:sub(1, byte_col - 1)
+            prefix = before:match("([%w_]+)$") or ""
+        end
     end
 
     local raw = self._complete_engine.complete(C.CompletionQuery(doc.file, req.position, prefix))

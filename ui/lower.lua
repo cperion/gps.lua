@@ -1,370 +1,297 @@
--- ui/lower.lua
---
--- Lower authored semantic UI (SemUI) to concrete reducer-facing UI.
---
--- Canonical boundary:
---   Lower.Request(theme, focused_id, focus, style, node) -> UI.Node
---
--- Notes:
---   - DS.Surface is treated as a style scope in this first pass. It changes the
---     inherited resolved style for its subtree but does not force a concrete
---     panel node by itself.
---   - Focus-sensitive style resolution happens when entering Focusable(id,...):
---     the lowered child subtree sees Focused when id == focused_id.
---   - Pointer state stays dynamic at runtime via DS.ColorPack / DS.NumPack.
-
 local pvm = require("pvm")
-local schema = require("ui.asdl")
-local ds = require("ui.ds")
+local ui_asdl = require("ui.asdl")
+local norm = require("ui.normalize")
+local resolve = require("ui.resolve")
 
-local T = schema.T
+local T = ui_asdl.T
+local Core = T.Core
+local Auth = T.Auth
+local S = T.Style
+local Layout = T.Layout
 
-T:Define [[
-    module Lower {
-        Request = (DS.Theme theme,
-                   string focused_id,
-                   Interact.Focus focus,
-                   DS.ResolvedStyle style,
-                   SemUI.Node node) unique
+local M = {}
 
-        TextRequest = (DS.Theme theme,
-                       DS.ResolvedStyle style,
-                       SemUI.TextSpec spec) unique
-    }
-]]
+local lower_phase
 
-local lower = { T = T, schema = schema, ds = ds }
-
-local type = type
-local getmetatable = getmetatable
-
-local Request = T.Lower.Request
-local TextRequest = T.Lower.TextRequest
-
-local FOCUS_BLURRED = T.Interact.Blurred
-local FOCUS_FOCUSED = T.Interact.Focused
-
-local FOCUS_MAP = {
-    blurred = FOCUS_BLURRED,
-    focused = FOCUS_FOCUSED,
-}
-
-local UIEmpty = T.UI.Empty
-
-local BoxStyle = T.UI.BoxStyle
-local UITextStyle = T.UI.TextStyle
-local UIFlexItem = T.UI.FlexItem
-
-local ZERO_COLOR_PACK = ds.ZERO_COLOR_PACK
-local ONES_NUM_PACK = ds.ONES_NUM_PACK
-local DEFAULT_STYLE = ds.DEFAULT_STYLE
-
-local USE_SURFACE_FONT = T.SemUI.UseSurfaceFont
-local USE_SURFACE_LINE_HEIGHT = T.SemUI.UseSurfaceLineHeight
-local USE_SURFACE_TEXT_ALIGN = T.SemUI.UseSurfaceTextAlign
-local USE_SURFACE_TEXT_WRAP = T.SemUI.UseSurfaceTextWrap
-local USE_SURFACE_OVERFLOW = T.SemUI.UseSurfaceOverflow
-local USE_SURFACE_LINE_LIMIT = T.SemUI.UseSurfaceLineLimit
-
-local MT = {}
-do
-    MT.OverrideFont = getmetatable(T.SemUI.OverrideFont(T.DS.FontLit(0)))
-    MT.OverrideLineHeight = getmetatable(T.SemUI.OverrideLineHeight(T.Layout.LineHeightAuto))
-    MT.OverrideTextAlign = getmetatable(T.SemUI.OverrideTextAlign(T.Layout.TextStart))
-    MT.OverrideTextWrap = getmetatable(T.SemUI.OverrideTextWrap(T.Layout.TextNoWrap))
-    MT.OverrideOverflow = getmetatable(T.SemUI.OverrideOverflow(T.Layout.OverflowVisible))
-    MT.OverrideLineLimit = getmetatable(T.SemUI.OverrideLineLimit(T.Layout.UnlimitedLines))
-    MT.FontLit = getmetatable(T.DS.FontLit(0))
+local function resolve_style(tokens, theme, env)
+    local sg, sp, sc = norm.normalize_phase(tokens, env)
+    local spec = pvm.one(sg, sp, sc)
+    local rg, rp, rc = resolve.phase(spec, theme)
+    return pvm.one(rg, rp, rc)
 end
 
--- ─────────────────────────────────────────────────────────────
--- Token resolution needed for TextSpec font overrides.
--- Keep local to the lowering layer for now.
--- ─────────────────────────────────────────────────────────────
-
-local font_tok_cache = setmetatable({}, { __mode = "k" })
-
-local function build_font_map(theme)
-    local map = font_tok_cache[theme]
-    if map then
-        return map
-    end
-    map = {}
-    local list = theme.fonts
-    for i = 1, #list do
-        map[list[i].name] = list[i]
-    end
-    font_tok_cache[theme] = map
-    return map
-end
-
-local function resolve_font_val(theme, val)
-    if getmetatable(val) == MT.FontLit then
-        return val.font_id
-    end
-    local b = build_font_map(theme)[val.name]
-    return b and b.font_id or 0
-end
-
-local function wipe(t)
-    for k in pairs(t) do
-        t[k] = nil
+local function lower_children_into(out, children, theme, env)
+    for i = 1, #children do
+        local g, p, c = lower_phase(children[i], theme, env)
+        pvm.drain_into(g, p, c, out)
     end
 end
 
--- ─────────────────────────────────────────────────────────────
--- Style projections
--- ─────────────────────────────────────────────────────────────
-
-local lower_box_style = pvm.lower("ui.lower.box_style", function(style)
-    local metrics = style.metrics
-    local paint = style.paint
-    return BoxStyle(
-        metrics.pad_h,
-        metrics.pad_v,
-        metrics.border_w,
-        paint.bg,
-        paint.border,
-        paint.accent,
-        paint.radius,
-        paint.opacity)
-end)
-
-local lower_text_style = pvm.lower("ui.lower.text_style", function(req)
-    local theme = req.theme
-    local style = req.style
-    local spec = req.spec
-
-    local base = style.text
-    local paint = style.paint
-
-    local font_id = base.font_id
-    local line_height = base.line_height
-    local align = base.align
-    local wrap = base.wrap
-    local overflow = base.overflow
-    local line_limit = base.line_limit
-
-    local font_choice = spec.font
-    if font_choice ~= USE_SURFACE_FONT then
-        font_id = resolve_font_val(theme, font_choice.font)
+local function placement_source(auth_node)
+    local cls = pvm.classof(auth_node)
+    if cls == Auth.WithInput then
+        return placement_source(auth_node.child)
     end
-
-    local line_height_choice = spec.line_height
-    if line_height_choice ~= USE_SURFACE_LINE_HEIGHT then
-        line_height = line_height_choice.line_height
-    end
-
-    local align_choice = spec.align
-    if align_choice ~= USE_SURFACE_TEXT_ALIGN then
-        align = align_choice.align
-    end
-
-    local wrap_choice = spec.wrap
-    if wrap_choice ~= USE_SURFACE_TEXT_WRAP then
-        wrap = wrap_choice.wrap
-    end
-
-    local overflow_choice = spec.overflow
-    if overflow_choice ~= USE_SURFACE_OVERFLOW then
-        overflow = overflow_choice.overflow
-    end
-
-    local limit_choice = spec.line_limit
-    if limit_choice ~= USE_SURFACE_LINE_LIMIT then
-        line_limit = limit_choice.line_limit
-    end
-
-    return UITextStyle(
-        font_id,
-        paint.fg or ZERO_COLOR_PACK,
-        paint.opacity or ONES_NUM_PACK,
-        line_height,
-        align,
-        wrap,
-        overflow,
-        line_limit)
-end)
-
-local function box_style(style)
-    return lower_box_style(style)
+    return auth_node
 end
 
-local function text_style(theme, style, spec)
-    return lower_text_style(TextRequest(theme, style, spec))
+local function has_scroll_overflow(box)
+    return box.overflow_x == Layout.OScroll or box.overflow_x == Layout.OAuto
+        or box.overflow_y == Layout.OScroll or box.overflow_y == Layout.OAuto
 end
 
-lower.box_style = box_style
-lower.text_style = text_style
-
--- ─────────────────────────────────────────────────────────────
--- Main lowering
--- ─────────────────────────────────────────────────────────────
-
-local lower_node
-
-local function lower_child(theme, focused_id, focus, style, node)
-    return lower_node(Request(theme, focused_id, focus, style, node))
+local function scroll_axis_from_box(box)
+    local sx = box.overflow_x == Layout.OScroll or box.overflow_x == Layout.OAuto
+    local sy = box.overflow_y == Layout.OScroll or box.overflow_y == Layout.OAuto
+    if sx and sy then return S.ScrollBoth end
+    if sx then return S.ScrollX end
+    if sy then return S.ScrollY end
+    return nil
 end
 
-local function lower_flex_items(theme, focused_id, focus, style, items)
-    local out = {}
-    for i = 1, #items do
-        local item = items[i]
-        out[i] = UIFlexItem(
-            lower_child(theme, focused_id, focus, style, item.node),
-            item.grow,
-            item.shrink,
-            item.basis,
-            item.self_align,
-            item.margin)
-    end
-    return out
+local function visible_box(box)
+    return pvm.with(box, {
+        overflow_x = Layout.OVisible,
+        overflow_y = Layout.OVisible,
+    })
 end
 
-local function lower_nodes(theme, focused_id, focus, style, nodes)
-    local out = {}
-    for i = 1, #nodes do
-        out[i] = lower_child(theme, focused_id, focus, style, nodes[i])
+local function content_box_for_scroll(axis)
+    local w = (axis == S.ScrollY) and Layout.SFill or Layout.SHug
+    local h = (axis == S.ScrollX) and Layout.SFill or Layout.SHug
+    if axis == S.ScrollBoth then
+        w, h = Layout.SFill, Layout.SFill
     end
-    return out
+    return Layout.BoxStyle(
+        w,
+        h,
+        Layout.NoMin,
+        Layout.NoMax,
+        Layout.NoMin,
+        Layout.NoMax,
+        0,
+        1,
+        Layout.BasisAuto,
+        Layout.SelfAuto,
+        Layout.Edges(0, 0, 0, 0),
+        Layout.Margin(Layout.MarginPx(0), Layout.MarginPx(0), Layout.MarginPx(0), Layout.MarginPx(0)),
+        Layout.Visual(0, 0, 0, 0, 0, 100),
+        Layout.OVisible,
+        Layout.OVisible,
+        S.CursorDefault
+    )
 end
 
-lower_node = pvm.lower("ui.lower.node", function(req)
-    local theme = req.theme
-    local focused_id = req.focused_id
-    local focus = req.focus
-    local style = req.style
-    local node = req.node
+local function wrap_layout_children_for_scroll(axis, nodes)
+    if #nodes == 0 then
+        return Layout.Flow(Core.NoId, content_box_for_scroll(axis), Layout.MStart, Layout.CStart, 0, {})
+    end
+    if #nodes == 1 then
+        return nodes[1]
+    end
+    return Layout.Flow(Core.NoId, content_box_for_scroll(axis), Layout.MStart, Layout.CStart, 0, nodes)
+end
 
-    local kind = node.kind
+local function maybe_wrap_scroll(id, box, axis, child)
+    return Layout.Scroll(id, visible_box(box), axis, child)
+end
 
-    if kind == "Empty" then
-        return UIEmpty
-    elseif kind == "Key" then
-        return T.UI.Key(node.id, lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "HitBox" then
-        return T.UI.HitBox(node.id, lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "Pressable" then
-        return T.UI.Pressable(node.id, lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "Focusable" then
-        local child_focus = (node.id ~= "" and node.id == focused_id) and FOCUS_FOCUSED or FOCUS_BLURRED
-        return T.UI.Focusable(node.id, lower_child(theme, focused_id, child_focus, style, node.child))
-    elseif kind == "Surface" then
-        local next_style = ds.resolve(ds.query(theme, node.name, focus, node.flags))
-        return lower_child(theme, focused_id, focus, next_style, node.child)
-    elseif kind == "Flex" then
-        return T.UI.Flex(
-            node.axis,
-            node.wrap,
-            node.gap_main,
-            node.gap_cross,
-            node.justify,
-            node.align_items,
-            node.align_content,
-            node.box,
-            lower_flex_items(theme, focused_id, focus, style, node.children))
-    elseif kind == "Pad" then
-        return T.UI.Pad(node.insets, node.box, lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "Stack" then
-        return T.UI.Stack(node.box, lower_nodes(theme, focused_id, focus, style, node.children))
-    elseif kind == "Clip" then
-        return T.UI.Clip(node.box, lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "Transform" then
-        return T.UI.Transform(node.tx, node.ty, node.box, lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "Sized" then
-        return T.UI.Sized(node.box, lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "ScrollArea" then
-        return T.UI.ScrollArea(
-            node.id,
-            node.axis,
-            node.scroll_x,
-            node.scroll_y,
-            node.box,
-            box_style(style),
-            lower_child(theme, focused_id, focus, style, node.child))
-    elseif kind == "Rect" then
-        return T.UI.Rect(node.tag, node.box, box_style(style))
-    elseif kind == "Text" then
-        return T.UI.Text(node.tag, node.box, text_style(theme, style, node.spec), node.text)
-    elseif kind == "CustomPaint" then
-        return T.UI.CustomPaint(node.tag, node.box, node.paint)
-    elseif kind == "Overlay" then
-        return T.UI.Overlay(lower_child(theme, focused_id, focus, style, node.base), node.overlay)
-    elseif kind == "Spacer" then
-        return T.UI.Spacer(node.box)
+local function append_grid_items(out, auth_node, theme, env)
+    local cls = pvm.classof(auth_node)
+
+    if cls == Auth.Empty then
+        return
     end
 
-    error("ui.lower: unsupported SemUI node kind " .. tostring(kind), 2)
-end)
-
--- ─────────────────────────────────────────────────────────────
--- Public API
--- ─────────────────────────────────────────────────────────────
-
-local function normalize_focus(focus)
-    if focus == nil then
-        return nil
-    end
-    if type(focus) == "string" then
-        local v = FOCUS_MAP[focus]
-        if not v then
-            error("ui.lower.request: unknown focus '" .. tostring(focus) .. "'", 2)
+    if cls == Auth.Fragment then
+        local children = auth_node.children
+        for i = 1, #children do
+            append_grid_items(out, children[i], theme, env)
         end
-        return v
+        return
     end
-    return focus
-end
 
-function lower.request(theme, node, opts)
-    opts = opts or {}
-    return Request(
-        theme,
-        opts.focused_id or "",
-        normalize_focus(opts.focus) or FOCUS_BLURRED,
-        opts.style or DEFAULT_STYLE,
-        node)
-end
+    local source = placement_source(auth_node)
+    local resolved = resolve_style(source.styles, theme, env)
+    local gp = resolved.placement
+    local nodes = pvm.drain(lower_phase(auth_node, theme, env))
 
-function lower.node(theme, node, opts)
-    return lower_node(lower.request(theme, node, opts))
-end
-
-function lower.stats()
-    return {
-        node = lower_node:stats(),
-        box_style = lower_box_style:stats(),
-        text_style = lower_text_style:stats(),
-    }
-end
-
-function lower.reset()
-    wipe(font_tok_cache)
-    lower_node:reset()
-    lower_box_style:reset()
-    lower_text_style:reset()
-end
-
-function lower.report_string()
-    local s = lower.stats()
-    local function line(stat)
-        local calls = stat.calls or 0
-        local hits = stat.hits or 0
-        local rate = calls > 0 and (hits / calls) * 100 or 100.0
-        return string.format("  %-24s calls=%-6d hits=%-6d rate=%.1f%%", stat.name or "lower", calls, hits, rate)
+    for i = 1, #nodes do
+        out[#out + 1] = Layout.GridItem(
+            nodes[i],
+            gp.col_start,
+            gp.col_span,
+            gp.row_start,
+            gp.row_span,
+            Layout.CStretch,
+            Layout.CStretch
+        )
     end
-    return table.concat({
-        line(s.node),
-        line(s.box_style),
-        line(s.text_style),
-    }, "\n")
 end
 
--- Direct ASDL methods.
--- `T.SemUI.Node` is a sum parent, so ordinary assignment propagates methods to
--- all concrete members through asdl_context.lua's `__newindex` propagation.
-function T.SemUI.Node:lower(theme, opts)
-    return lower.node(theme, self, opts)
-end
+lower_phase = pvm.phase("ui.lower", {
+    [Auth.Empty] = function(self, theme, env)
+        return pvm.empty()
+    end,
 
-return lower
+    [Auth.Fragment] = function(self, theme, env)
+        local children = self.children
+        local n = #children
+        if n == 0 then
+            return pvm.empty()
+        end
+        local trips = {}
+        for i = 1, n do
+            local g, p, c = lower_phase(children[i], theme, env)
+            trips[i] = { g, p, c }
+        end
+        return pvm.concat_all(trips)
+    end,
+
+    [Auth.WithInput] = function(self, theme, env)
+        local lowered = pvm.drain(lower_phase(self.child, theme, env))
+        if #lowered == 0 then
+            return pvm.empty()
+        end
+        if #lowered == 1 then
+            return pvm.once(Layout.WithInput(self.id, self.role, lowered[1]))
+        end
+        local trips = {}
+        for i = 1, #lowered do
+            trips[i] = { pvm.once(Layout.WithInput(self.id, self.role, lowered[i])) }
+        end
+        return pvm.concat_all(trips)
+    end,
+
+    [Auth.Text] = function(self, theme, env)
+        local r = resolve_style(self.styles, theme, env)
+        local text = Layout.TextStyle(
+            r.text.font_id,
+            r.text.font_size,
+            r.text.font_weight,
+            r.text.fg,
+            r.text.align,
+            r.text.leading,
+            r.text.tracking,
+            self.content
+        )
+        if has_scroll_overflow(r.box) then
+            local axis = scroll_axis_from_box(r.box)
+            local inner = Layout.Leaf(Core.NoId, content_box_for_scroll(axis), text)
+            return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, inner))
+        end
+        return pvm.once(Layout.Leaf(self.id, r.box, text))
+    end,
+
+    [Auth.Paint] = function(self, theme, env)
+        local r = resolve_style(self.styles, theme, env)
+        if has_scroll_overflow(r.box) then
+            local axis = scroll_axis_from_box(r.box)
+            local inner = Layout.Paint(Core.NoId, content_box_for_scroll(axis), self.paint)
+            return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, inner))
+        end
+        return pvm.once(Layout.Paint(self.id, r.box, self.paint))
+    end,
+
+    [Auth.Scroll] = function(self, theme, env)
+        local r = resolve_style(self.styles, theme, env)
+        local lowered = pvm.drain(lower_phase(self.child, theme, env))
+        return pvm.once(Layout.Scroll(
+            self.id,
+            visible_box(r.box),
+            self.axis,
+            wrap_layout_children_for_scroll(self.axis, lowered)
+        ))
+    end,
+
+    [Auth.Box] = function(self, theme, env)
+        local r = resolve_style(self.styles, theme, env)
+
+        if has_scroll_overflow(r.box) then
+            local axis = scroll_axis_from_box(r.box)
+            if r.display == S.DisplayGrid then
+                local items = {}
+                append_grid_items(items, Auth.Fragment(self.children), theme, env)
+                return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, Layout.Grid(
+                    Core.NoId,
+                    content_box_for_scroll(axis),
+                    r.cols,
+                    r.rows,
+                    r.col_gap,
+                    r.row_gap,
+                    items
+                )))
+            end
+
+            local children = {}
+            lower_children_into(children, self.children, theme, env)
+            if r.display == S.DisplayFlex then
+                return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, Layout.Flex(
+                    Core.NoId,
+                    content_box_for_scroll(axis),
+                    r.axis,
+                    r.wrap,
+                    r.justify,
+                    r.items,
+                    r.gap_x,
+                    r.gap_y,
+                    children
+                )))
+            end
+
+            return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, Layout.Flow(
+                Core.NoId,
+                content_box_for_scroll(axis),
+                r.justify,
+                r.items,
+                r.gap_y,
+                children
+            )))
+        end
+
+        if r.display == S.DisplayGrid then
+            local items = {}
+            append_grid_items(items, Auth.Fragment(self.children), theme, env)
+            return pvm.once(Layout.Grid(
+                self.id,
+                r.box,
+                r.cols,
+                r.rows,
+                r.col_gap,
+                r.row_gap,
+                items
+            ))
+        end
+
+        local children = {}
+        lower_children_into(children, self.children, theme, env)
+
+        if r.display == S.DisplayFlex then
+            return pvm.once(Layout.Flex(
+                self.id,
+                r.box,
+                r.axis,
+                r.wrap,
+                r.justify,
+                r.items,
+                r.gap_x,
+                r.gap_y,
+                children
+            ))
+        end
+
+        return pvm.once(Layout.Flow(
+            self.id,
+            r.box,
+            r.justify,
+            r.items,
+            r.gap_y,
+            children
+        ))
+    end,
+})
+
+M.phase = lower_phase
+M.T = T
+
+return M

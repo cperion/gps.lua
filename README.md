@@ -49,16 +49,35 @@ local pvm = require("pvm")
 ### ASDL types
 
 ```lua
-pvm.context()                   → T       -- create an ASDL context
+pvm.context()                   → T       -- create a GC-backed ASDL context
 T:Define(schema_string)         → T       -- define types (chainable)
 pvm.with(node, {field=value})   → node    -- structural update, preserves sharing
+pvm.NIL                         -- sentinel for clearing optional fields in pvm.with
 ```
+
+### Runtime contract
+
+Current pvm is GC-backed:
+
+- all ASDL runtime values are ordinary GC-managed ASDL objects
+- `unique` values are canonical while live
+- old ASDL worlds are reclaimed automatically by Lua GC
+- optional fields are cleared via `pvm.with(node, { field = pvm.NIL })`
+
+Internal hot-kernel hooks used inside this repo:
+
+- `node:__raw()` — scalar product fast path, returns fields in schema order
+- `node:__raw_<field>()` — list fast path, returns `buffer, start, len, present`
+
+These raw helpers are runtime internals for hot code, not general app-facing API.
 
 ### Phase boundary — the ONE boundary primitive
 
 ```lua
 pvm.phase(name, handlers)       → boundary
 -- handlers: { [ASDLType] = function(node) → (g, p, c) }
+-- handlers MUST return a triplet; use pvm.empty() for zero output
+-- returning nil from a handler is an error
 -- installs node:name() method on each handled type
 -- hit  → seq_gen over cached array (zero work)
 -- shared → shared recording_gen (no duplicate eval)
@@ -72,23 +91,15 @@ pvm.phase(name, fn)             → boundary
 -- consume with pvm.one(boundary(node))
 ```
 
-### Lower boundary — compatibility wrapper
-
-```lua
-pvm.lower(name, fn)             → boundary
--- convenience wrapper over: pvm.one(pvm.phase(name, fn)(node))
-boundary(node)  → value
-```
-
-### Boundary methods (both)
+### Boundary methods
 
 ```lua
 boundary:stats()            → { name, calls, hits, shared? }
 boundary:hit_ratio()        → number          -- hits / calls
 boundary:reuse_ratio()      → number          -- (hits+shared) / calls
 boundary:reset()            → nil
-boundary:cached(node)       → value or nil    -- inspect without populating
-boundary:warm(node)         → pre-populate
+boundary:cached(node, ...)  → cached output or nil  -- inspect without populating
+boundary:warm(node, ...)    → pre-populate
 ```
 
 ### Triplet constructors
@@ -157,13 +168,16 @@ local T = pvm.context():Define [[
     }
 ]]
 
+local B = T:Builders()      -- safe named-field builder surface
+local F = T:FastBuilders()  -- trusted named-field builder surface
+
 local K_RECT = T.View.Rect
 
 local function Rct(tag, x, y, w, h, rgba8)
     return T.View.Cmd(K_RECT, tag, x, y, w, h, rgba8)
 end
 
--- 2. Define a phase boundary (handlers return triplets)
+-- 2. Define a phase boundary (handlers must return triplets)
 local lower = pvm.phase("lower", {
 
     [T.App.Button] = function(self)
@@ -175,6 +189,8 @@ local lower = pvm.phase("lower", {
         -- recursive: map phase over children, lazy concat
         return pvm.children(lower, self.children)
     end,
+
+    -- for zero output, return pvm.empty() -- never plain nil
 
 })
 
@@ -203,8 +219,8 @@ end
 local new_root = pvm.with(root, {
     children = {
         pvm.with(root.children[1], { rgba8 = 0xff336699 }),  -- changed
-        root.children[2],  -- same object → cache hit
-        root.children[3],  -- same object → cache hit
+        root.children[2],  -- same canonical value → cache hit
+        root.children[3],  -- same canonical value → cache hit
     }
 })
 
@@ -241,9 +257,9 @@ subtrees run handlers. Incrementality is structural, not bolted on.
 pvm.lua              — the centerpiece: phase boundaries, one, lower (compat),
                         drain, each, fold, once, children, concat, seq, report
 triplet.lua          — iterator algebra: map/filter/take/flatmap/zip/scan/...
-quote.lua            — hygienic codegen for ASDL constructor interning tries
+quote.lua            — hygienic codegen for constructors and hot kernels
 
-asdl_context.lua     — ASDL type system: interning, constructors, sum types
+asdl_context.lua     — ASDL type system: GC-backed objects, interning, sum types
 asdl_lexer.lua       — ASDL schema lexer
 asdl_parser.lua      — ASDL schema parser (recursive descent, lexer-fused)
 
@@ -254,7 +270,6 @@ docs/
                             ASDL design methodology, flatten theorem, five concepts
   PVM_GUIDE.md           — complete pvm/uvm implementation guide
   LIBUI_AUTHORING_GUIDE.md — UI app authoring on top of uilib
-  PLAN.md                — historical migration plan (status: complete)
 ```
 
 ---
@@ -267,14 +282,35 @@ module Name { definitions... }
 TypeName = (field_type field_name, ...) unique?    -- product type
 TypeName = Variant1(fields...) unique?             -- sum type
          | Variant2(fields...) unique?
-         | Singleton                               -- no fields = singleton value
+         | Singleton                               -- no fields = canonical singleton handle
 
 Field types:  number  string  boolean
               Module.Type     Module.Type*    Module.Type?
 ```
 
-`unique` enables structural interning: same fields → same Lua table.
-This is what makes phase cache hits work — identity comparison is pointer equality.
+Optional named-field builder surface:
+
+```lua
+local B = T:Builders()
+local F = T:FastBuilders()
+
+local btn = B.App.Button {
+    tag = "play",
+    w = 96,
+    h = 32,
+    rgba8 = 0x22c55eff,
+}
+```
+
+Preferred style:
+- `B.*` first for normal authored code — explicit parameter names, safest API
+- `F.*` once the code is stable and you want the same named-field style with lower overhead
+- `T.*` only when you explicitly want the canonical maximum-speed exact path in hot code, parsers, or benchmarks
+
+All three produce the same canonical interned ASDL values.
+
+`unique` enables structural interning: same fields → same canonical ASDL value.
+In current pvm, ASDL values are ordinary GC-managed objects, so identity is ordinary object identity.
 
 ---
 

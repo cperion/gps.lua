@@ -145,6 +145,24 @@ end
 assert(found_helper2, "should find 'helper' with prefix 'hel'")
 print("OK!")
 
+-- ── Test 5b: Server completion prefix on non-first line ───
+print("\n=== Server completion prefix (non-first line) ===")
+local comp3 = core:handle("textDocument/completion", {
+    textDocument = { uri = uri },
+    position = { line = 20, character = 17 }, -- after "hel" in helper(x)
+})
+print("items matching on line 20:", comp3 and comp3.items and #comp3.items or 0)
+local found_helper3 = false
+if comp3 and comp3.items then
+    for i = 1, #comp3.items do
+        if comp3.items[i].label == "helper" then found_helper3 = true end
+    end
+end
+assert(found_helper3, "server completion should include 'helper' on later lines")
+assert(comp3 and comp3.items and #comp3.items <= 5,
+    "server completion should be prefix-filtered on later lines")
+print("OK!")
+
 -- ── Test 6: Run on real file ───────────────────────────────
 print("\n=== Real file: pvm.lua ===")
 local pvm_text = io.open("pvm.lua", "r"):read("*a")

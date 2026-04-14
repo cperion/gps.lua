@@ -4,7 +4,7 @@
 --
 -- The insight: the memoize boundary, the fusion boundary, and
 -- the machine boundary are the same thing — a recording triplet
--- keyed by ASDL unique identity.
+-- keyed by canonical ASDL identity.
 --
 -- On hit:  seq over cached array. Zero work.
 -- On miss: recording triplet that lazily evaluates, records,
@@ -24,14 +24,13 @@
 --
 -- ── API ─────────────────────────────────────────────────────
 --
---   pvm.context()              ASDL type system (interned, immutable)
+--   pvm.context()              GC-backed ASDL type system
 --   pvm.with(node, overrides)  structural update preserving sharing
 --   pvm.T                      triplet algebra module
 --
---   pvm.phase(name, handlers)  streaming boundary (dispatch table)
---   pvm.phase(name, fn)        scalar boundary as lazy single-element stream
+--   pvm.phase(name, handlers)  streaming boundary (dispatch table, optional extra cache args)
+--   pvm.phase(name, fn)        scalar boundary as lazy single-element stream (optional extra cache args)
 --   pvm.one(g, p, c)           terminal: consume exactly one element
---   pvm.lower(name, fn)        compatibility wrapper over phase + one
 --   pvm.drain(g, p, c)         canonical terminal: materialize → array
 --   pvm.drain_into(g, p, c, out)  terminal optimization for append-only sinks
 --   pvm.report(phases)         cache behavior diagnostics
@@ -58,12 +57,22 @@
 --   The compiler does not produce machines.
 --   The compiler IS machines. All the way down.
 
-local unpack = table.unpack or unpack
 local Triplet = require("triplet")
 
+local type = type
+local rawset = rawset
+local select = select
+local getmetatable = getmetatable
+local unpack = unpack or table.unpack
+
 local pvm = {}
+pvm.NIL = {}
+local ASDL = nil
 
 local function get_asdl()
+    if ASDL ~= nil then
+        return ASDL
+    end
     if not package.preload["gps.asdl_lexer"] then
         package.preload["gps.asdl_lexer"] = function() return require("asdl_lexer") end
     end
@@ -73,7 +82,8 @@ local function get_asdl()
     if not package.preload["gps.asdl_context"] then
         package.preload["gps.asdl_context"] = function() return require("asdl_context") end
     end
-    return require("gps.asdl_context")
+    ASDL = require("gps.asdl_context")
+    return ASDL
 end
 
 function pvm.context()
@@ -86,36 +96,26 @@ function pvm.context()
     return ctx
 end
 
-function pvm.with(node, overrides)
+function pvm.classof(node)
+    if type(node) ~= "table" then
+        return false
+    end
     local mt = getmetatable(node)
-    if not mt or not mt.__fields then
+    return (mt and mt.__class) or false
+end
+
+function pvm.with(node, overrides)
+    local cls = pvm.classof(node)
+    if not cls or not cls.__fields then
         error("pvm.with: not an ASDL node", 2)
     end
-    local fields = mt.__fields
-    local args = {}
-    for i = 1, #fields do
-        local name = fields[i].name
-        args[i] = overrides[name] ~= nil and overrides[name] or node[name]
-    end
-    return mt(unpack(args, 1, #fields))
+    return cls.__with(node, overrides, pvm.NIL)
 end
-local getmetatable = getmetatable
-local type = type
-local rawset = rawset
-local select = select
 
 local function normalize_handlers(handlers)
 	local normalized = {}
 	for key, fn in pairs(handlers) do
-		local class = key
-		if type(key) == "table"
-			and rawget(key, "__fields") == nil
-			and rawget(key, "members") == nil then
-			local mt = getmetatable(key)
-			if type(mt) == "table" then
-				class = mt
-			end
-		end
+		local class = pvm.classof(key) or key
 		normalized[class] = fn
 	end
 	return normalized
@@ -179,17 +179,16 @@ end
 --   • safe under partial consumption (the unexhausted recording does not commit)
 -- ══════════════════════════════════════════════════════════════
 
-local REC_NAME    = 1
-local REC_NODE    = 2
-local REC_CACHE   = 3
-local REC_PENDING = 4
-local REC_BUF     = 5
-local REC_N       = 6
-local REC_DONE    = 7
-local REC_G       = 8
-local REC_P       = 9
-local REC_C       = 10
-local REC_PACKED  = 11
+local REC_CACHE_PARENT   = 1
+local REC_PENDING_PARENT = 2
+local REC_SLOT           = 3
+local REC_BUF            = 4
+local REC_N              = 5
+local REC_DONE           = 6
+local REC_G              = 7
+local REC_P              = 8
+local REC_C              = 9
+local REC_PACKED         = 10
 
 local function finish_recording(entry)
 	if entry[REC_DONE] then
@@ -197,11 +196,11 @@ local function finish_recording(entry)
 	end
 	entry[REC_DONE] = true
 	if entry[REC_PACKED] then
-		entry[REC_CACHE][entry[REC_NODE]] = { array = entry[REC_BUF], n = entry[REC_N] }
+		entry[REC_CACHE_PARENT][entry[REC_SLOT]] = { array = entry[REC_BUF], n = entry[REC_N] }
 	else
-		entry[REC_CACHE][entry[REC_NODE]] = entry[REC_BUF]
+		entry[REC_CACHE_PARENT][entry[REC_SLOT]] = entry[REC_BUF]
 	end
-	entry[REC_PENDING][entry[REC_NODE]] = nil
+	entry[REC_PENDING_PARENT][entry[REC_SLOT]] = nil
 end
 
 local function advance_recording(entry)
@@ -241,9 +240,11 @@ end
 --  sink optimization; it is not a second execution model.
 --
 --  A phase is a recording triplet boundary keyed by ASDL unique
---  identity.
+--  identity. Extra explicit arguments become additional cache-key
+--  dimensions: `phase(node, max_w)` caches on `(node identity, max_w)`.
 --
---  Handlers receive a node and return a triplet (g, p, c).
+--  Handlers receive a node and must return a triplet (g, p, c).
+--  Returning nil from a handler is an error.
 --  The handler's triplet is the raw production of that phase
 --  for that node.
 --
@@ -282,15 +283,67 @@ end
 
 local VALUE_FN = 1
 local VALUE_NODE = 2
-local VALUE_READY = 3
-local VALUE_DATA = 4
+local VALUE_ARGC = 3
+local VALUE_ARGS = 4
+local VALUE_READY = 5
+local VALUE_DATA = 6
+
+local PHASE_ARG_NIL = {}
+
+local function pack_phase_args(argc, ...)
+	local args = { n = argc }
+	for i = 1, argc do
+		args[i] = select(i, ...)
+	end
+	return args
+end
+
+local function phase_arg_key(args, i)
+	local v = args[i]
+	if v == nil then
+		return PHASE_ARG_NIL
+	end
+	return v
+end
+
+local function lookup_phase_args(root, args, argc)
+	local t = root
+	for i = 1, argc do
+		t = t[phase_arg_key(args, i)]
+		if t == nil then
+			return nil
+		end
+	end
+	return t
+end
+
+local function ensure_phase_args_parent(root, args, argc)
+	local t = root
+	for i = 1, argc - 1 do
+		local key = phase_arg_key(args, i)
+		local child = t[key]
+		if child == nil then
+			child = {}
+			t[key] = child
+		end
+		t = child
+	end
+	return t, phase_arg_key(args, argc)
+end
 
 local function value_once_gen(s, emitted)
 	if emitted ~= 0 then
 		return nil
 	end
 	if not s[VALUE_READY] then
-		s[VALUE_DATA] = s[VALUE_FN](s[VALUE_NODE])
+		local argc = s[VALUE_ARGC]
+		if argc == 0 then
+			s[VALUE_DATA] = s[VALUE_FN](s[VALUE_NODE])
+		elseif argc == 1 then
+			s[VALUE_DATA] = s[VALUE_FN](s[VALUE_NODE], s[VALUE_ARGS][1])
+		else
+			s[VALUE_DATA] = s[VALUE_FN](s[VALUE_NODE], unpack(s[VALUE_ARGS], 1, argc))
+		end
 		s[VALUE_READY] = true
 	end
 	return 1, s[VALUE_DATA]
@@ -309,56 +362,172 @@ function pvm.phase(name, handlers_or_fn)
 		error("pvm.phase: second argument must be handlers table or value function", 2)
 	end
 
-	local cache = setmetatable({}, { __mode = "k" })
-	local pending = setmetatable({}, { __mode = "k" })
+	local keyed_cache = setmetatable({}, { __mode = "k" })
+	local keyed_pending = setmetatable({}, { __mode = "k" })
+	local keyed_cache_args = setmetatable({}, { __mode = "k" })
+	local keyed_pending_args = setmetatable({}, { __mode = "k" })
 	local stats = { name = name, calls = 0, hits = 0, shared = 0 }
+	local boundary = {}
+	boundary.name = name
 
-	local function call(self_or_node, maybe_node)
-		local node = maybe_node or self_or_node
-		stats.calls = stats.calls + 1
-
-		-- cache hit: instant
-		local hit = cache[node]
-		if hit ~= nil then
-			stats.hits = stats.hits + 1
-			if hit.array ~= nil and hit.n ~= nil then
-				return seq_n_gen, hit, 0
-			end
-			return seq_gen, hit, 0
+	local function resolve_node(node)
+		local cls = pvm.classof(node)
+		if not cls then
+			error("pvm.phase '" .. name .. "': expected ASDL node", 3)
 		end
+		return cls, node.__cachekey or node
+	end
 
-		-- in-flight hit: share the recording already underway
-		local inflight = pending[node]
-		if inflight ~= nil then
-			stats.shared = stats.shared + 1
-			return recording_gen, inflight, 0
+	local function peek_cache_table(cls)
+		return keyed_cache[cls]
+	end
+
+	local function peek_cache_args_table(cls)
+		return keyed_cache_args[cls]
+	end
+
+	local function resolve_cache_table(cls)
+		local by_key = keyed_cache[cls]
+		if by_key == nil then
+			by_key = setmetatable({}, { __mode = "k" })
+			keyed_cache[cls] = by_key
 		end
+		return by_key
+	end
 
+	local function resolve_pending_table(cls)
+		local by_key = keyed_pending[cls]
+		if by_key == nil then
+			by_key = setmetatable({}, { __mode = "k" })
+			keyed_pending[cls] = by_key
+		end
+		return by_key
+	end
+
+	local function resolve_cache_args_table(cls)
+		local by_key = keyed_cache_args[cls]
+		if by_key == nil then
+			by_key = setmetatable({}, { __mode = "k" })
+			keyed_cache_args[cls] = by_key
+		end
+		return by_key
+	end
+
+	local function resolve_pending_args_table(cls)
+		local by_key = keyed_pending_args[cls]
+		if by_key == nil then
+			by_key = setmetatable({}, { __mode = "k" })
+			keyed_pending_args[cls] = by_key
+		end
+		return by_key
+	end
+
+	local function miss_triplet(node, cls, argc, args)
 		local g, p, c
 		if value_fn ~= nil then
-			g, p, c = value_once_gen, { value_fn, node, false, nil }, 0
+			g, p, c = value_once_gen, { value_fn, node, argc, args, false, nil }, 0
 		else
-			-- miss: dispatch
-			local mt = getmetatable(node)
-			local handler = dispatch[mt]
+			local handler = dispatch[cls]
 			if not handler then
-				error("pvm.phase '" .. name .. "': no handler for " .. tostring(mt and mt.kind or type(node)), 2)
+				error("pvm.phase '" .. name .. "': no handler for " .. tostring(cls and cls.kind or type(node)), 2)
 			end
-			g, p, c = handler(node)
+			if argc == 0 then
+				g, p, c = handler(node)
+			elseif argc == 1 then
+				g, p, c = handler(node, args[1])
+			else
+				g, p, c = handler(node, unpack(args, 1, argc))
+			end
+			if g == nil then
+				error("pvm.phase '" .. name .. "': handler must return a triplet (gen, param, ctrl), got nil", 2)
+			end
+		end
+		if type(g) ~= "function" then
+			error("pvm.phase '" .. name .. "': handler must return a triplet (gen, param, ctrl), got " .. type(g), 2)
+		end
+		return g, p, c
+	end
+
+	local function call(_, node, ...)
+		stats.calls = stats.calls + 1
+		local cls, key = resolve_node(node)
+		local argc = select("#", ...)
+
+		if argc == 0 then
+			local cache_t = resolve_cache_table(cls)
+			local hit = cache_t[key]
+			if hit ~= nil then
+				stats.hits = stats.hits + 1
+				if hit.array ~= nil and hit.n ~= nil then
+					return seq_n_gen, hit, 0
+				end
+				return seq_gen, hit, 0
+			end
+
+			local pending_t = resolve_pending_table(cls)
+			local inflight = pending_t[key]
+			if inflight ~= nil then
+				stats.shared = stats.shared + 1
+				return recording_gen, inflight, 0
+			end
+
+			local g, p, c = miss_triplet(node, cls, 0, nil)
+			local entry = {
+				cache_t,
+				pending_t,
+				key,
+				{},
+				0,
+				false,
+				g,
+				p,
+				c,
+				value_fn ~= nil,
+			}
+			pending_t[key] = entry
+			return recording_gen, entry, 0
 		end
 
-		-- if handler returned nil, treat as empty production
-		if g == nil then
-			local empty = {}
-			cache[node] = empty
-			return seq_gen, empty, 0
+		local args = pack_phase_args(argc, ...)
+		local cache_by_key = resolve_cache_args_table(cls)
+		local cache_root = cache_by_key[key]
+		if cache_root ~= nil then
+			local hit = lookup_phase_args(cache_root, args, argc)
+			if hit ~= nil then
+				stats.hits = stats.hits + 1
+				if hit.array ~= nil and hit.n ~= nil then
+					return seq_n_gen, hit, 0
+				end
+				return seq_gen, hit, 0
+			end
 		end
 
+		local pending_by_key = resolve_pending_args_table(cls)
+		local pending_root = pending_by_key[key]
+		if pending_root ~= nil then
+			local inflight = lookup_phase_args(pending_root, args, argc)
+			if inflight ~= nil then
+				stats.shared = stats.shared + 1
+				return recording_gen, inflight, 0
+			end
+		end
+
+		if cache_root == nil then
+			cache_root = {}
+			cache_by_key[key] = cache_root
+		end
+		if pending_root == nil then
+			pending_root = {}
+			pending_by_key[key] = pending_root
+		end
+
+		local g, p, c = miss_triplet(node, cls, argc, args)
+		local cache_parent, slot = ensure_phase_args_parent(cache_root, args, argc)
+		local pending_parent = ensure_phase_args_parent(pending_root, args, argc)
 		local entry = {
-			name,
-			node,
-			cache,
-			pending,
+			cache_parent,
+			pending_parent,
+			slot,
 			{},
 			0,
 			false,
@@ -367,22 +536,19 @@ function pvm.phase(name, handlers_or_fn)
 			c,
 			value_fn ~= nil,
 		}
-		pending[node] = entry
+		pending_parent[slot] = entry
 		return recording_gen, entry, 0
 	end
 
-	-- inject method on handler classes so nodes can call node:phase_name()
+	boundary.__call = call
+
 	if dispatch ~= nil then
 		for cls, _ in pairs(dispatch) do
-			rawset(cls, name, call)
+			rawset(cls, name, function(node, ...)
+				return call(boundary, node, ...)
+			end)
 		end
 	end
-
-	-- the boundary object
-	local boundary = {}
-	boundary.name = name
-
-	boundary.__call = call
 
 	function boundary:stats()
 		return stats
@@ -403,109 +569,45 @@ function pvm.phase(name, handlers_or_fn)
 	end
 
 	function boundary:reset()
-		cache = setmetatable({}, { __mode = "k" })
-		pending = setmetatable({}, { __mode = "k" })
+		keyed_cache = setmetatable({}, { __mode = "k" })
+		keyed_pending = setmetatable({}, { __mode = "k" })
+		keyed_cache_args = setmetatable({}, { __mode = "k" })
+		keyed_pending_args = setmetatable({}, { __mode = "k" })
 		stats.calls = 0
 		stats.hits = 0
 		stats.shared = 0
-		-- re-inject methods since cache ref changed
-		if dispatch ~= nil then
-			for cls, _ in pairs(dispatch) do
-				rawset(cls, name, call)
-			end
+	end
+
+	-- inspect cached output for a node without populating
+	function boundary:cached(node, ...)
+		local cls, key = resolve_node(node)
+		local argc = select("#", ...)
+		if argc == 0 then
+			local cache_t = peek_cache_table(cls)
+			return cache_t ~= nil and cache_t[key] or nil
 		end
-	end
-
-	-- allow inspecting what's cached for a node (testing/debugging)
-	function boundary:cached(node)
-		return cache[node]
-	end
-
-	function boundary:inflight(node)
-		return pending[node]
+		local by_key = peek_cache_args_table(cls)
+		if by_key == nil then
+			return nil
+		end
+		local root = by_key[key]
+		if root == nil then
+			return nil
+		end
+		local args = pack_phase_args(argc, ...)
+		return lookup_phase_args(root, args, argc)
 	end
 
 	-- force a node's cache to be populated (eager pre-compilation)
-	function boundary:warm(node)
-		local g, p, c = call(node)
-		-- drain to force commit
+	function boundary:warm(node, ...)
+		local g, p, c = call(self, node, ...)
 		while true do
 			c, _ = g(p, c)
 			if c == nil then
 				break
 			end
 		end
-		return cache[node]
-	end
-
-	return setmetatable(boundary, boundary)
-end
-
--- ══════════════════════════════════════════════════════════════
---  LOWER — compatibility wrapper over phase + one
---
---  Keep existing call sites working while converging on
---  a single public boundary concept (`pvm.phase`).
---
---    local solve_phase = pvm.phase("solve", fn)
---    local solved = pvm.one(solve_phase(node))
---
---  `pvm.lower` now preserves old ergonomics (`solve(node)`)
---  by wrapping that pattern.
--- ══════════════════════════════════════════════════════════════
-
-local function cached_scalar_value(cached)
-	if cached == nil then
-		return nil
-	end
-	if cached.array ~= nil and cached.n ~= nil then
-		if cached.n == 0 then
-			return nil
-		end
-		return cached.array[1]
-	end
-	return cached[1]
-end
-
-function pvm.lower(name, fn)
-	local scalar_phase = pvm.phase(name, fn)
-
-	local boundary = {}
-	boundary.name = name
-	boundary.__phase = scalar_phase
-
-	boundary.__call = function(_, node, ...)
-		if select("#", ...) ~= 0 then
-			error("pvm.lower '" .. tostring(name) .. "': extra args are not supported", 2)
-		end
-		return pvm.one(scalar_phase(node))
-	end
-
-	function boundary:stats()
-		return scalar_phase:stats()
-	end
-
-	function boundary:hit_ratio()
-		return scalar_phase:hit_ratio()
-	end
-
-	function boundary:reuse_ratio()
-		return scalar_phase:reuse_ratio()
-	end
-
-	function boundary:reset()
-		scalar_phase:reset()
-	end
-
-	function boundary:cached(node)
-		return cached_scalar_value(scalar_phase:cached(node))
-	end
-
-	function boundary:warm(node, ...)
-		if select("#", ...) ~= 0 then
-			error("pvm.lower '" .. tostring(name) .. "': extra args are not supported", 2)
-		end
-		return cached_scalar_value(scalar_phase:warm(node))
+		return self:cached(node, ...)
 	end
 
 	return setmetatable(boundary, boundary)
@@ -564,6 +666,57 @@ local function drain_recording_into(entry, start_i, out)
 	return out
 end
 
+local function drain_generic(g, p, c)
+	local result, n = {}, 0
+	while true do
+		local val
+		c, val = g(p, c)
+		if c == nil then
+			break
+		end
+		n = n + 1
+		result[n] = val
+	end
+	return result
+end
+
+local function drain_generic_into(g, p, c, out)
+	local n = #out
+	while true do
+		local val
+		c, val = g(p, c)
+		if c == nil then
+			break
+		end
+		n = n + 1
+		out[n] = val
+	end
+	return out
+end
+
+local function each_generic(g, p, c, fn)
+	while true do
+		local val
+		c, val = g(p, c)
+		if c == nil then
+			break
+		end
+		fn(val)
+	end
+end
+
+local function fold_generic(g, p, c, acc, fn)
+	while true do
+		local val
+		c, val = g(p, c)
+		if c == nil then
+			break
+		end
+		acc = fn(acc, val)
+	end
+	return acc
+end
+
 -- ══════════════════════════════════════════════════════════════
 --  DRAIN — force full materialization
 --
@@ -593,17 +746,7 @@ function pvm.drain(g, p, c)
 	if g == recording_gen then
 		return drain_recording(p, c + 1)
 	end
-	local result, n = {}, 0
-	while true do
-		local val
-		c, val = g(p, c)
-		if c == nil then
-			break
-		end
-		n = n + 1
-		result[n] = val
-	end
-	return result
+	return drain_generic(g, p, c)
 end
 
 -- Drain appending to an existing output array.
@@ -623,17 +766,7 @@ function pvm.drain_into(g, p, c, out)
 	if g == recording_gen then
 		return drain_recording_into(p, c + 1, out)
 	end
-	local n = #out
-	while true do
-		local val
-		c, val = g(p, c)
-		if c == nil then
-			break
-		end
-		n = n + 1
-		out[n] = val
-	end
-	return out
+	return drain_generic_into(g, p, c, out)
 end
 
 -- ══════════════════════════════════════════════════════════════
@@ -667,14 +800,7 @@ function pvm.each(g, p, c, fn)
 		end
 		return
 	end
-	while true do
-		local val
-		c, val = g(p, c)
-		if c == nil then
-			break
-		end
-		fn(val)
-	end
+	each_generic(g, p, c, fn)
 end
 
 -- ══════════════════════════════════════════════════════════════
@@ -708,15 +834,7 @@ function pvm.fold(g, p, c, init, fn)
 		end
 		return acc
 	end
-	while true do
-		local val
-		c, val = g(p, c)
-		if c == nil then
-			break
-		end
-		acc = fn(acc, val)
-	end
-	return acc
+	return fold_generic(g, p, c, acc, fn)
 end
 
 -- ══════════════════════════════════════════════════════════════
@@ -830,19 +948,20 @@ function pvm.seq(array, n)
 	return seq_n_gen, { array = array, n = n }, 0
 end
 
+local function seq_rev_gen(a, i)
+	i = i - 1
+	if i < 1 then
+		return nil
+	end
+	return i, a[i]
+end
+
 function pvm.seq_rev(array, n)
 	n = n or #array
 	if n > #array then
 		n = #array
 	end
-	local function rev_gen(a, i)
-		i = i - 1
-		if i < 1 then
-			return nil
-		end
-		return i, a[i]
-	end
-	return rev_gen, array, n + 1
+	return seq_rev_gen, array, n + 1
 end
 
 -- ══════════════════════════════════════════════════════════════

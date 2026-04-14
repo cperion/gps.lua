@@ -46,12 +46,11 @@ pvm is not a framework. It is a small vocabulary:
 
 | Primitive | What it does |
 |-----------|-------------|
-| `pvm.context()` | Creates an ASDL context for defining types |
+| `pvm.context()` | Creates a GC-backed ASDL context |
 | `pvm.with(node, overrides)` | Structural update preserving sharing |
 | `pvm.phase(name, handlers)` | Recording-triplet boundary (type-dispatched streaming form) |
 | `pvm.phase(name, fn)` | Scalar boundary as lazy single-element stream |
 | `pvm.one(g, p, c)` | Consume exactly one element (scalar contract) |
-| `pvm.lower(name, fn)` | Compatibility wrapper over `phase(name, fn)` + `one` |
 | `pvm.drain(g, p, c)` | Materialize a triplet chain into a flat array |
 | `pvm.drain_into(g, p, c, out)` | Append a triplet chain into an existing array |
 | `pvm.each(g, p, c, fn)` | Execute a callback for each element |
@@ -64,6 +63,27 @@ Plus `pvm.T` — the full Triplet algebra (`map`, `filter`, `concat`, `flatmap`,
 
 Everything else — your ASDL schemas, your layout algorithms, your rendering,
 your interaction — is your domain.
+
+### Runtime contract
+
+Current pvm is GC-backed.
+
+Public contract:
+- all ASDL runtime values are ordinary GC-managed ASDL objects
+- `unique` values are canonical while live
+- old ASDL worlds are reclaimed automatically by Lua GC
+- clearing an optional field in `pvm.with` uses `pvm.NIL`
+
+```lua
+local next = pvm.with(node, { optional_field = pvm.NIL })
+```
+
+Internal hot-kernel hooks used inside this repo:
+- `node:__raw()` — scalar-product fast path, returns fields in declared order
+- `node:__raw_<field>()` — list fast path, returns `array, start, len, present`
+
+These raw helpers are runtime internals for hot kernels. They are stable enough
+for repo-internal performance code, but they are not the primary app-facing API.
 
 ### Using pvm
 
@@ -78,15 +98,15 @@ local T = pvm.context():Define [[
     }
 ]]
 
--- 2. Construct interned nodes
+-- 2. Construct canonical handle values
 local m1 = T.Greet.Message(T.Greet.English, "world")
 local m2 = T.Greet.Message(T.Greet.English, "world")
-assert(m1 == m2)  -- same fields → same object (structural identity)
+assert(m1 == m2)  -- same fields → same canonical value
 
 -- 3. Structural update
 local m3 = pvm.with(m1, { name = "Lua" })
-assert(m3 ~= m1)               -- different name → different object
-assert(m3.lang == m1.lang)      -- unchanged field: SAME object
+assert(m3 ~= m1)                -- different name → different canonical value
+assert(m3.lang == m1.lang)      -- unchanged field: SAME canonical value
 
 -- 4. Recording-triplet boundary (the ONE boundary primitive)
 --    Handlers dispatch by ASDL type and return a triplet (g, p, c).
@@ -143,7 +163,7 @@ This defines:
 - A **module** `UI` (namespace)
 - A **sum type** `Node` with four variants: Column, Row, Rect, Text
 - Each variant is a **product type** with named fields
-- `unique` means structurally interned (same fields → same object)
+- `unique` means structurally interned (same fields → same canonical value)
 - `UI.Node*` is a list of Node values
 
 ### Sum types (variants)
@@ -166,19 +186,53 @@ print(rect.tag, rect.w, rect.h, rect.rgba8)
 -- "header"  200  40  0xff3366ff
 ```
 
+### Named-field builders
+
+In addition to exact constructors, a context can expose an optional named-field
+builder surface:
+
+```lua
+local B = T:Builders()
+local F = T:FastBuilders()
+
+local rect1 = B.UI.Rect {
+    tag = "header",
+    w = 200,
+    h = 40,
+    rgba8 = 0xff3366ff,
+}
+
+local rect2 = F.UI.Rect {
+    tag = "header",
+    w = 200,
+    h = 40,
+    rgba8 = 0xff3366ff,
+}
+
+assert(rect1 == T.UI.Rect("header", 200, 40, 0xff3366ff))
+assert(rect2 == rect1)
+```
+
+Use:
+- `T.*` for the canonical exact hot path
+- `B.*` for safe named-field builders (unknown/missing field checks)
+- `F.*` for trusted named-field builders with minimal wrapper overhead
+
+All three produce the same canonical interned ASDL values.
+
 ### Singleton types
 
-A variant with no fields is a singleton — one unique object:
+A variant with no fields is a singleton — one canonical handle value:
 ```lua
 T:Define [[ module View { Kind = Rect | Text | PushClip | PopClip } ]]
 local K_RECT = T.View.Rect      -- singleton (no parens — it IS the value)
-local K_TEXT = T.View.Text       -- singleton
-assert(K_RECT ~= K_TEXT)         -- different objects
-assert(K_RECT == T.View.Rect)    -- same object (singleton)
+local K_TEXT = T.View.Text      -- singleton
+assert(K_RECT ~= K_TEXT)        -- different singleton values
+assert(K_RECT == T.View.Rect)   -- same canonical value
 ```
 
-Singletons are used as Kind tags. Comparing `cmd.kind == K_RECT` is a
-pointer comparison, not a string comparison.
+Singletons are used as Kind tags. Comparing `cmd.kind == K_RECT` is an
+identity comparison, not a string comparison.
 
 ### Field types
 
@@ -188,7 +242,7 @@ pointer comparison, not a string comparison.
 | `string` | Lua string | |
 | `boolean` | Lua boolean | |
 | `T.Module.Type` | ASDL type | Must be defined in the same context |
-| `T.Module.Type*` | Lua table (list) | Interned: same elements → same list |
+| `T.Module.Type*` | Lua array | Canonicalized: same elements → same logical list |
 | `T.Module.Type?` | ASDL type or nil | Optional |
 
 ### Module nesting
@@ -223,13 +277,13 @@ This lets you define layers in separate blocks or even separate files.
 
 ## Chapter 3: Interning — Same Values, Same Object
 
-When a type is marked `unique`, its constructor returns the same Lua table
-for the same field values:
+When a type is marked `unique`, its constructor returns the same canonical
+ASDL value for the same field values:
 
 ```lua
 local a = T.UI.Rect("btn", 100, 30, 0xff0000ff)
 local b = T.UI.Rect("btn", 100, 30, 0xff0000ff)
-assert(a == b)        -- true! same Lua table
+assert(a == b)        -- true! same canonical value
 assert(rawequal(a,b)) -- true! reference equality
 ```
 
@@ -263,16 +317,16 @@ No deep comparison needed.
 node is passed again, the result is returned instantly.
 
 **Free deduplication.** If two parts of your tree independently produce the
-same subtree, they get the same object.
+same subtree, they get the same canonical value.
 
 **Structural sharing.** When you update one field with `pvm.with()`, all
 other fields keep their existing interned identity. Unchanged subtrees are
-literally the same Lua tables.
+literally the same canonical values.
 
 ### List interning
 
 Lists (ASDL `*` fields) are interned too. Same elements in the same order
-→ same Lua table:
+→ same canonical value:
 
 ```lua
 local list1 = { T.UI.Rect("a",10,10,0xff), T.UI.Rect("b",20,20,0xff) }
@@ -299,15 +353,18 @@ local new_rect = pvm.with(old_rect, { rgba8 = 0x00ff00ff })
 
 `pvm.phase` is the ONE boundary primitive. It does four things in one call:
 
-1. **Dispatches** by the node's ASDL type (metatable pointer comparison)
+1. **Dispatches** by the node's ASDL type (`pvm.classof(node)`)
 2. **Returns a triplet** `(g, p, c)` — a lazy stream of output values
 3. **Records** lazily: evaluation happens only as a consumer pulls values
 4. **Caches** as a side effect of full drain: same node next time → instant seq
 
 ### The handler contract
 
-Handlers receive a node and **return a triplet** — a `(gen, param, ctrl)` triple
+Handlers receive a node and **must return a triplet** — a `(gen, param, ctrl)` triple
 that produces zero or more output values when pulled.
+
+If a handler has no output, return `pvm.empty()`.
+Returning `nil` from a handler is an error.
 
 **Leaf handler** — produce one element with `pvm.once`:
 
@@ -409,11 +466,18 @@ end,
 ### Method installation
 
 After `pvm.phase(name, handlers)`, every handled ASDL type gains a method
-`:name()` returning the triplet directly:
+`:name(...)` returning the triplet directly:
 
 ```lua
 local g, p, c = widget:lower()       -- same as widget_to_cmds(widget)
 local cmds    = pvm.drain(widget:lower())
+```
+
+Extra arguments are allowed and become part of the cache key:
+
+```lua
+local size = pvm.one(widget:measure(200))
+-- cache key: (widget identity, 200)
 ```
 
 ### Stats — calls, hits, shared
@@ -447,6 +511,16 @@ The cache holds an array. Hits return `seq_gen`/`seq_n_gen`.
 Use **`pvm.phase(name, fn)` + `pvm.one(...)`** when boundary output is a single
 value — a solved layout, compiled plan, measurement, etc.
 
+Both forms may take extra explicit arguments. Those arguments become extra
+cache-key dimensions:
+
+```lua
+local measure_phase = pvm.phase("measure", function(tree, max_w)
+    return layout_solver(tree, max_w)
+end)
+local solved = pvm.one(measure_phase(tree, 200))
+```
+
 ```lua
 -- phase: streaming boundary (many outputs per node)
 pvm.phase("render", { [T.App.Button] = function(n) return pvm.once(Cmd(n)) end })
@@ -456,9 +530,6 @@ local solve_phase = pvm.phase("solve", function(tree)
     return layout_solver(tree)
 end)
 local solved = pvm.one(solve_phase(tree))
-
--- compatibility sugar (still supported)
-local solve = pvm.lower("solve", function(tree) return layout_solver(tree) end)
 ```
 
 ---
@@ -480,6 +551,18 @@ local cmds = pvm.one(layout_phase(ui_tree))   -- runs layout, caches result
 local cmds2 = pvm.one(layout_phase(ui_tree))  -- same tree → cache hit → instant
 ```
 
+Parametric scalar boundaries are cached on `(node identity × extra args...)`:
+
+```lua
+local measure_phase = pvm.phase("measure", function(root, max_w)
+    return T.UI.Size(compute_w(root, max_w), compute_h(root, max_w))
+end)
+
+local size1 = pvm.one(measure_phase(ui_tree, 320))
+local size2 = pvm.one(measure_phase(ui_tree, 320))  -- hit
+local size3 = pvm.one(measure_phase(ui_tree, 640))  -- different cache entry
+```
+
 ### Stats and diagnostics
 
 ```lua
@@ -490,9 +573,11 @@ print(layout_phase:reuse_ratio())
 
 -- Inspect what is cached for a node (nil if not yet cached):
 local cached = layout_phase:cached(some_node)
+local cached_size = measure_phase:cached(some_node, 320)
 
 -- Force pre-population (warm the cache eagerly):
 layout_phase:warm(some_node)
+measure_phase:warm(some_node, 320)
 ```
 
 Use `pvm.report_string` to format multiple boundaries together:
@@ -503,7 +588,7 @@ print(pvm.report_string({ layout_phase, solve_phase }))
 --   solve                    calls=44    hits=43    shared=0     reuse=97.7%
 ```
 
-`pvm.lower(name, fn)` is equivalent convenience for legacy call sites.
+Consume scalar phase boundaries explicitly with `pvm.one(...)`.
 
 ---
 
@@ -685,9 +770,9 @@ The layout walk's `:place()` method appends to an output list:
 function T.UI.Column:place(x, y, mw, mh, out)
     local cy = y
     for i = 1, #self.children do
-        local cw, ch = cached_measure(self.children[i], mw)
-        self.children[i]:place(x, cy, mw, ch, out)
-        cy = cy + ch + self.spacing
+        local size = measure(self.children[i], mw)
+        self.children[i]:place(x, cy, mw, size.h, out)
+        cy = cy + size.h + self.spacing
     end
 end
 
@@ -852,11 +937,10 @@ sees one metatable forever → one trace → compiled native code → fast.
 ### The Kind field
 
 `Kind` is a singleton sum type — each variant has no fields. `T.View.Rect`,
-`T.View.Text`, etc. are distinct Lua tables with different identity.
+`T.View.Text`, etc. are distinct canonical singleton values.
 
-Comparing `cmd.kind == K_RECT` is a pointer comparison (table identity).
-LuaJIT constant-folds it. The entire dispatch becomes a small integer switch
-in the compiled trace.
+Comparing `cmd.kind == K_RECT` is an identity comparison.
+LuaJIT constant-folds the stable singleton case cleanly in practice.
 
 ### The waste trade-off
 
@@ -1036,7 +1120,7 @@ end
 This looks like immediate-mode code — you call constructors every frame. But
 because every type is `unique`, the constructors are actually interning lookups.
 If the track data didn't change, `T.App.TrackRow(1, track, false, false)` returns
-the SAME Lua table as last frame. The phase cache hits. The widget's entire
+the SAME canonical ASDL value as last frame. The phase cache hits. The widget's entire
 UI subtree is skipped.
 
 **Immediate-mode authoring. Retained-mode performance.**
@@ -1097,26 +1181,20 @@ Layout methods on UI.Node compute sizes and emit flat View.Cmd:
 ### Measure
 
 ```lua
-local measure_cache = setmetatable({}, { __mode = "k" })
+local measure_phase = pvm.phase("measure", function(node, mw)
+    return node:measure(mw)
+end)
 
-local function cached_measure(node, mw)
-    local by_node = measure_cache[node]
-    if by_node then
-        local hit = by_node[mw]
-        if hit then return hit[1], hit[2] end
-    end
-    local w, h = node:measure(mw)
-    if not by_node then by_node = {}; measure_cache[node] = by_node end
-    by_node[mw] = { w, h }
-    return w, h
+local function measure(node, mw)
+    return pvm.one(measure_phase(node, mw))
 end
 ```
 
-The cache is keyed on (node identity × max width). Same node with same
-constraint → cached measurement. This resolves the text-wrap cycle:
-- Column needs child heights (calls cached_measure)
-- Text needs available width (receives mw)
-- cached_measure breaks the cycle by memoizing
+The phase cache is keyed on `(node identity × max width)`. Same node with the
+same constraint → cached measurement. This resolves the text-wrap cycle:
+- Column needs child heights (calls `measure(child, mw)`)
+- Text needs available width (receives `mw`)
+- `measure` breaks the cycle by memoizing inside pvm itself
 
 ### Place
 
@@ -1124,9 +1202,9 @@ constraint → cached measurement. This resolves the text-wrap cycle:
 function T.UI.Column:place(x, y, mw, mh, out)
     local cy = y
     for i = 1, #self.children do
-        local cw, ch = cached_measure(self.children[i], mw)
-        self.children[i]:place(x, cy, mw, ch, out)
-        cy = cy + ch + self.spacing
+        local size = measure(self.children[i], mw)
+        self.children[i]:place(x, cy, mw, size.h, out)
+        cy = cy + size.h + self.spacing
     end
 end
 
@@ -1232,7 +1310,7 @@ layout walk would emit into separate lists. The boundary strips dead fields.
 
 ## Chapter 19: The Interning Test
 
-Construct two nodes with the same fields. Assert they are the same object:
+Construct two nodes with the same fields. Assert they are the same canonical value:
 
 ```lua
 local a = T.UI.Rect("btn", 100, 30, 0xff0000ff)
@@ -1487,7 +1565,7 @@ its generated source on the type's metatable and can be inspected for debugging:
 -- Access via the type's metatable.__source if exposed by asdl_context
 ```
 
-`pvm.phase` dispatch uses a direct `getmetatable` lookup — no loadstring,
+`pvm.phase` dispatch uses `pvm.classof(node)` — no loadstring,
 no generated source to inspect. The dispatch is a single table read followed
 by a function call: simple, predictable, and JIT-friendly.
 
@@ -1537,10 +1615,10 @@ LuaJIT's trace compiler is what makes flat execution fast. Understanding
 what it can and cannot trace is essential:
 
 **Traces well:**
-- Uniform metatable in a for-loop (one Cmd type)
-- Pointer comparison (`cmd.kind == K_RECT`)
+- Uniform command class/shape in a for-loop (one Cmd type)
+- Stable singleton identity checks (`cmd.kind == K_RECT`)
 - Stable upvalues in generated functions
-- Simple arithmetic and table lookups
+- Simple arithmetic and field lookups
 - Linear iteration over arrays
 
 **Does NOT trace well:**
@@ -1552,7 +1630,7 @@ what it can and cannot trace is essential:
 
 This is why:
 - Cmd is one product type, not a sum type → traces
-- Kind comparison is pointer, not string → traces
+- Kind comparison is stable singleton identity, not string → traces
 - `pvm.each` / `pvm.drain` iteration is linear, not recursive → traces
 - Cached results are flat arrays → seq_gen loops trace cleanly
 - Phase hit path is `seq_gen(array, i)` — pure integer increment + table read → traces
@@ -1652,8 +1730,8 @@ Convergence: new features are additive (one variant + one handler).
 ### Boundaries
 ```text
 □ phase for type-dispatched streaming boundaries
-□   handlers return triplets (pvm.once / pvm.children / pvm.concat2/3/all)
-□ scalar boundaries: pvm.phase(name, fn) + pvm.one (pvm.lower optional sugar)
+□   handlers return triplets (pvm.once / pvm.empty / pvm.children / pvm.concat2/3/all)
+□ scalar boundaries: pvm.phase(name, fn) + pvm.one
 □ Cache on identity (not manual keys)
 □ pvm.report_string() checked regularly
 ```
@@ -1678,7 +1756,7 @@ Convergence: new features are additive (one variant + one handler).
 | Deep nesting at execution | No flattening, trees reach the for-loop | Flatten to Cmd array via pvm.drain/each |
 | Monolithic boundary | One handler does layout AND projection | Split into boundaries (phase + scalar phase/one) |
 | Missing boundary | No caching, full recompute every frame | Add phase boundaries at identity nouns |
-| Eager handler (returns value not triplet) | Cache never fills, no composition | Return pvm.once(v) not v |
+| Eager handler (returns value or nil, not triplet) | Cache never fills, no composition | Return pvm.once(v) or pvm.empty(), never raw v/nil |
 
 ---
 
@@ -1711,38 +1789,38 @@ Module.TypeName?                          -- optional
 -- ── Context and types ──────────────────────────────────────────────────
 pvm.context()                          → T (ASDL context)
 T:Define(schema_string)                → T (chainable)
+T:Builders()                           → B (safe named-field builder namespace)
+T:FastBuilders()                       → F (trusted named-field builder namespace)
 
 -- ── Structural update ─────────────────────────────────────────────────
 pvm.with(node, {field=value, ...})     → new interned node
 
 -- ── Phase boundary (one concept, two forms) ───────────────────────────
 pvm.phase(name, handlers)              → boundary
-  -- handlers: { [ASDLType] = function(node) → (g, p, c) }
-  -- Installs node:name() method on each handled type.
+  -- handlers: { [ASDLType] = function(node, ...) → (g, p, c) }
+  -- Handlers must return a triplet. Use pvm.empty() for zero output.
+  -- Returning nil from a handler is an error.
+  -- Installs node:name(...) method on each handled type.
   -- On hit:     returns seq_gen/seq_n_gen over cached output (zero work)
   -- On shared:  returns recording_gen shared with in-flight consumer
   -- On miss:    dispatches handler, wraps triplet in recording_gen
   --             cache commits as side effect of full drain
-  boundary(node)           → g, p, c    -- call form
-  node:name()              → g, p, c    -- method form
+  -- Extra args become additional cache-key dimensions.
+  boundary(node, ...)      → g, p, c    -- call form
+  node:name(...)           → g, p, c    -- method form
 
 pvm.phase(name, fn)                    → boundary
-  -- fn: function(node) → value
+  -- fn: function(node, ...) → value
   -- Exposes value as a lazy single-element stream (triplet).
-  -- consume with pvm.one(boundary(node)).
-
--- ── Scalar convenience wrapper (compatibility) ────────────────────────
-pvm.lower(name, fn)                    → boundary
-  -- Equivalent to pvm.one(pvm.phase(name, fn)(node))
-  boundary(node)           → value
+  -- consume with pvm.one(boundary(node, ...)).
 
 -- ── Boundary methods ───────────────────────────────────────────────────
 boundary:stats()           → { name, calls, hits, shared }
-boundary:hit_ratio()       → number         -- hits / calls
-boundary:reuse_ratio()     → number         -- (hits + shared) / calls
-boundary:reset()           → nil            -- clear cache and stats
-boundary:cached(node)      → value or nil   -- inspect cache without populating
-boundary:warm(node)        → value or array -- pre-populate
+boundary:hit_ratio()       → number            -- hits / calls
+boundary:reuse_ratio()     → number            -- (hits + shared) / calls
+boundary:reset()           → nil               -- clear cache and stats
+boundary:cached(node, ...) → value or nil      -- inspect cache without populating
+boundary:warm(node, ...)   → value or array    -- pre-populate
 
 -- ── Triplet constructors ───────────────────────────────────────────────
 pvm.once(value)                        → g, p, c   -- single-element triplet
@@ -1904,12 +1982,12 @@ algebraic data types.
 
 **Flatten-early** — Convert trees to flat Cmd arrays as soon as layout is resolved.
 
-**Interning** — Same field values → same Lua table. Enabled by `unique`.
+**Interning** — Same field values → same canonical ASDL value. Enabled by `unique`.
 
 **Kind** — Singleton sum type used as a tag in the uniform Cmd product type.
 
-**Lower** — Compatibility sugar for scalar boundaries. `pvm.lower(name, fn)` is
-equivalent to defining `pvm.phase(name, fn)` and consuming with `pvm.one(...)`.
+**Scalar boundary** — `pvm.phase(name, fn)` defines a lazy single-element
+stream boundary. Consume it with `pvm.one(...)`.
 
 **Structural sharing** — Unchanged subtrees keep identity across edits via `pvm.with()`.
 
@@ -1917,7 +1995,8 @@ equivalent to defining `pvm.phase(name, fn)` and consuming with `pvm.one(...)`.
 
 **Phase** — Recording-triplet boundary. `pvm.phase(name, handlers)` for type-dispatched
 streams, or `pvm.phase(name, fn)` for scalar single-element streams. Cache fills lazily
-as a side effect of draining/exhaustion. Handlers form installs `node:name()` methods.
+as a side effect of draining/exhaustion. Handlers form installs `node:name(...)` methods,
+and extra call arguments become additional cache-key dimensions.
 
 **Recording triplet** — The miss-path result of a `pvm.phase` call. A
 `(recording_gen, entry, 0)` triplet that lazily evaluates the handler's output,

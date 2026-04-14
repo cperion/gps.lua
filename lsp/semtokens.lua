@@ -227,8 +227,7 @@ function M.new(semantics_engine, lexer_engine, range_for)
     return {
         plan_semantic_tokens = plan_semantic_tokens,
         C = C,
-        Tok = Tok,
-        Mod = Mod,
+        Tok = Tok, Mod = Mod,
     }
 end
 

@@ -46,6 +46,16 @@ function M.new(semantics_engine, type_engine)
         return KIND.Variable
     end
 
+    local function kind_for_type(typ)
+        if not typ then return KIND.Variable end
+        local k = typ.kind
+        if k == "TFunc" then return KIND.Function end
+        if k == "TTable" then return KIND.Struct end
+        if k == "TArray" then return KIND.Variable end
+        if k == "TNamed" then return KIND.Class end
+        return KIND.Variable
+    end
+
     -- ── complete lower ─────────────────────────────────────
 
     local complete = pvm.lower("complete", function(q)
