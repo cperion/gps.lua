@@ -423,10 +423,6 @@ local function section_tabs(ctx, active_tab)
         { id = "tab:notifications", label = "Notifications", kind = W.Notifications },
     }
 
-    local tab_bar = b.box {
-        tw.flex, tw.row, tw.gap_1, tw.p_1, tw.rounded_lg, bg_muted(ctx),
-        b.fragment(tab_items)
-    }
     local tab_items = {}
     for i = 1, #tabs do
         local t = tabs[i]
@@ -449,6 +445,11 @@ local function section_tabs(ctx, active_tab)
     else
         content_title, content_body = "Notifications", "Choose what updates you want to receive."
     end
+
+    local tab_bar = b.box {
+        tw.flex, tw.row, tw.gap_1, tw.p_1, tw.rounded_lg, bg_muted(ctx),
+        b.fragment(tab_items)
+    }
 
     local tab_content = b.box {
         tw.flow, tw.mt_2, tw.p_6, tw.w_full, tw.rounded_xl, tw.border_1, border_subtle(ctx), bg_surface(ctx),
