@@ -578,10 +578,15 @@ local function measure_flex_line_cross(axis, line, available_cross, measure_one)
     line.cross_size = cross
 end
 
-local function position_flex_line(node, line, axis, available_main, line_origin_cross, line_index)
+local function position_flex_line(node, line, axis, available_main, available_cross, line_origin_cross, line_index, stretch_to_available_cross)
     local gap = main_gap_for(node)
     local main_start, main_gap = compute_main_alignment(node.justify, line.final_used_main, available_main, gap, #line.items)
     local pos = main_start
+    local line_cross = line.cross_size
+
+    if stretch_to_available_cross and node.wrap == Layout.LWrapOff and finite(available_cross) and available_cross > line_cross then
+        line_cross = available_cross
+    end
 
     for i = 1, #line.items do
         local item = line.items[i]
@@ -592,7 +597,7 @@ local function position_flex_line(node, line, axis, available_main, line_origin_
 
         local align = effective_cross_align(item.box.self_align, node.items)
         local border_cross = max0(item.final_outer_cross - item.cross_before - item.cross_after)
-        local cross_off, placed_cross = cross_place(align, line.cross_size, border_cross, item.cross_before, item.cross_after)
+        local cross_off, placed_cross = cross_place(align, line_cross, border_cross, item.cross_before, item.cross_after)
 
         if axis == Layout.LRow then
             item.dx = pos + item.main_before
@@ -610,7 +615,7 @@ local function position_flex_line(node, line, axis, available_main, line_origin_
     end
 end
 
-local function flex_plan(node, available_w, available_h, measure_one)
+local function flex_plan(node, available_w, available_h, measure_one, stretch_to_available_cross)
     local axis = node.axis
     local available_main = axis_available_main(axis, available_w, available_h)
     local available_cross = axis_available_cross(axis, available_w, available_h)
@@ -632,7 +637,7 @@ local function flex_plan(node, available_w, available_h, measure_one)
         local line = lines[li]
         distribute_flex_line(node, line, available_main)
         measure_flex_line_cross(axis, line, available_cross, measure_one)
-        position_flex_line(node, line, axis, available_main, line_origin_cross, li)
+        position_flex_line(node, line, axis, available_main, available_cross, line_origin_cross, li, stretch_to_available_cross)
 
         if line.base_used_main > base_main_extent then base_main_extent = line.base_used_main end
         if line.final_used_main > final_main_extent then final_main_extent = line.final_used_main end

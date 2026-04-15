@@ -273,49 +273,51 @@ We can teach one clean rule:
 
 ---
 
-## 9. Second proposal: composition helper layer
+## 9. Second proposal: composition ASDL layer
 
 Structural scroll alone does not solve the second problem:
 raw shell composition is too easy to get wrong.
 
-The recommended follow-up is a helper layer that returns ordinary `Auth.Node` values.
+The stronger follow-up is an explicit `Compose` ASDL layer above `Auth`.
 
-Example namespace:
+Shape:
 
-```lua
-ui.compose
+```text
+Compose.Node -> Auth.Node -> Layout.Node -> View.Op*
 ```
 
-Possible helpers:
+Example nouns:
 
-- `compose.panel(opts)`
-- `compose.scroll_panel(opts)`
-- `compose.sidebar(opts)`
-- `compose.hsplit(a, b, opts)`
-- `compose.vsplit(a, b, opts)`
-- `compose.workbench(opts)`
+- `Compose.Raw(Auth.Node child)`
+- `Compose.Panel(...)`
+- `Compose.ScrollPanel(...)`
+- `Compose.HSplit(...)`
+- `Compose.VSplit(...)`
+- `Compose.Workbench(...)`
 
-These are **not** callbacks or opaque managers.
-They are just builder functions that assemble normal authored trees.
-
-Example sketch:
+Preferred authoring surface:
 
 ```lua
-compose.scroll_panel {
+local F = T:FastBuilders()
+
+local node = F.Compose.ScrollPanel {
     id = b.id("browser"),
-    title = "Browser",
-    header = ...,
-    body = ...,
+    scroll_id = b.id("browser-scroll"),
+    axis = T.Style.ScrollY,
+    header = F.Compose.Raw { child = header_ui },
+    body = F.Compose.Raw { child = body_ui },
 }
 ```
 
-which expands to a normal authored tree using:
+Then `ui.compose.phase(node)` lowers that composition noun into ordinary
+`Auth.Node` structure using structural `Auth.Scroll(...)` where needed.
 
-- panel frame box
-- header box
-- structural `Auth.Scroll(...)` around the body
+This is better than a plain Lua helper layer because the composition pattern:
 
-This keeps core `ui/` small while preventing shell code from devolving into viewport arithmetic.
+- is visible as ASDL
+- has identity
+- is testable directly
+- participates honestly in the architecture
 
 ---
 
@@ -371,7 +373,7 @@ The worst state is an implicit hybrid where card internals and grid metrics drif
 1. **Add structural scroll node** to `Auth` and `Layout`
 2. Update `lower`, `measure`, `render`, `runtime`, and `interact` to use it
 3. Keep style overflow clip behavior, but stop deriving interactive scroll from it
-4. Add a small `ui.compose` helper module for panel/shell composition
+4. Add a `Compose` ASDL layer plus `ui.compose` lowering for panel/shell composition
 5. Update docs to teach:
    - scroll is structural
    - panel bodies use flex growth

@@ -446,6 +446,49 @@ function M.Define(T)
                  | Empty unique
         }
 
+        module Compose {
+            Node = Raw(Auth.Node child) unique
+                 | Fragment(Compose.Node* children) unique
+                 | Panel(Core.Id id,
+                         Style.TokenList? styles,
+                         Style.TokenList? header_styles,
+                         Compose.Node? header,
+                         Style.TokenList? body_styles,
+                         Compose.Node? body,
+                         Style.TokenList? footer_styles,
+                         Compose.Node? footer) unique
+                 | ScrollPanel(Core.Id id,
+                               Style.TokenList? styles,
+                               Style.TokenList? header_styles,
+                               Compose.Node? header,
+                               Core.Id scroll_id,
+                               Style.ScrollAxis axis,
+                               Style.TokenList? scroll_styles,
+                               Style.TokenList? body_styles,
+                               Compose.Node? body,
+                               Style.TokenList? footer_styles,
+                               Compose.Node? footer) unique
+                 | HSplit(Core.Id id,
+                          Style.TokenList? styles,
+                          Compose.Node* children) unique
+                 | VSplit(Core.Id id,
+                          Style.TokenList? styles,
+                          Compose.Node* children) unique
+                 | Workbench(Core.Id id,
+                             Style.TokenList? styles,
+                             Style.TokenList? top_styles,
+                             Compose.Node? top,
+                             Style.TokenList? middle_styles,
+                             Style.TokenList? left_styles,
+                             Compose.Node? left,
+                             Style.TokenList? center_styles,
+                             Compose.Node center,
+                             Style.TokenList? right_styles,
+                             Compose.Node? right,
+                             Style.TokenList? bottom_styles,
+                             Compose.Node? bottom) unique
+        }
+
         module Resolved {
             TextStyle = (number font_id,
                          number font_size,

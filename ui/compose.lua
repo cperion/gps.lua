@@ -4,133 +4,137 @@ local tw = require("ui.tw")
 local b = require("ui.build")
 
 local T = ui_asdl.T
+local Compose = T.Compose
 local Auth = T.Auth
 
 local M = {}
 
-local function classof(v)
-    return pvm.classof(v)
-end
-
-local function is_node(v)
-    local cls = classof(v)
-    return cls and Auth.Node.members[cls] or false
-end
-
-local function style_group(styles)
-    if styles == nil or styles == false then return nil end
-    if type(styles) == "table" and not classof(styles) then
-        return tw.group(styles)
-    end
-    return styles
-end
-
-local function child_node(v)
+local function style_value(v)
     if v == nil or v == false then return nil end
-    if is_node(v) then return v end
-    if type(v) == "table" and not classof(v) then
-        return b.fragment(v)
+    return v
+end
+
+local function gather(...)
+    local n = select("#", ...)
+    local out = {}
+    for i = 1, n do
+        local v = select(i, ...)
+        if v ~= nil then
+            out[#out + 1] = v
+        end
     end
-    if type(v) == "string" or type(v) == "number" then
-        return b.text { tostring(v) }
+    return out
+end
+
+local function lower_one(node)
+    if node == nil then return nil end
+    return pvm.one(M.phase(node))
+end
+
+local function lower_many(nodes)
+    local out = {}
+    for i = 1, #nodes do
+        local child = lower_one(nodes[i])
+        if child ~= nil and child ~= Auth.Empty then
+            out[#out + 1] = child
+        end
     end
-    error("compose helpers expect authored nodes, node arrays, strings, numbers, nil, or false", 3)
+    return out
 end
 
 local function section_box(default_styles, styles, content)
-    local child = child_node(content)
-    if child == nil then return nil end
-    return b.box {
+    local child = lower_one(content)
+    if child == nil or child == Auth.Empty then return nil end
+    return b.box(gather(
         default_styles and tw.group(default_styles) or nil,
-        style_group(styles),
-        child,
-    }
+        style_value(styles),
+        child
+    ))
 end
 
-function M.panel(opts)
-    opts = opts or {}
-    return b.box {
-        opts.id,
-        tw.flex, tw.col,
-        style_group(opts.styles),
-        section_box(opts.header_default_styles, opts.header_styles, opts.header),
-        section_box(opts.body_default_styles, opts.body_styles, opts.body),
-        section_box(opts.footer_default_styles, opts.footer_styles, opts.footer),
-    }
-end
+M.phase = pvm.phase("ui.compose", {
+    [Compose.Raw] = function(self)
+        return pvm.once(self.child)
+    end,
 
-function M.scroll_panel(opts)
-    opts = opts or {}
-    if opts.scroll_id == nil then
-        error("scroll_panel expects opts.scroll_id", 2)
-    end
-    if opts.axis == nil then
-        error("scroll_panel expects opts.axis", 2)
-    end
+    [Compose.Fragment] = function(self)
+        return pvm.once(b.fragment(lower_many(self.children)))
+    end,
 
-    return b.box {
-        opts.id,
-        tw.flex, tw.col,
-        style_group(opts.styles),
-        section_box(opts.header_default_styles, opts.header_styles, opts.header),
-        b.scroll(opts.scroll_id, opts.axis, {
+    [Compose.Panel] = function(self)
+        return pvm.once(b.box(gather(
+            self.id,
+            tw.flex, tw.col,
+            tw.items_stretch,
+            style_value(self.styles),
+            section_box(nil, self.header_styles, self.header),
+            section_box(nil, self.body_styles, self.body),
+            section_box(nil, self.footer_styles, self.footer)
+        )))
+    end,
+
+    [Compose.ScrollPanel] = function(self)
+        return pvm.once(b.box(gather(
+            self.id,
+            tw.flex, tw.col,
+            tw.items_stretch,
+            style_value(self.styles),
+            section_box(nil, self.header_styles, self.header),
+            b.scroll(self.scroll_id, self.axis, gather(
+                tw.grow_1, tw.basis_px(0), tw.min_h_px(0),
+                style_value(self.scroll_styles),
+                section_box(nil, self.body_styles, self.body)
+            )),
+            section_box(nil, self.footer_styles, self.footer)
+        )))
+    end,
+
+    [Compose.HSplit] = function(self)
+        return pvm.once(b.box(gather(
+            self.id,
+            tw.flex, tw.row,
+            tw.items_stretch,
+            style_value(self.styles),
+            b.fragment(lower_many(self.children))
+        )))
+    end,
+
+    [Compose.VSplit] = function(self)
+        return pvm.once(b.box(gather(
+            self.id,
+            tw.flex, tw.col,
+            tw.items_stretch,
+            style_value(self.styles),
+            b.fragment(lower_many(self.children))
+        )))
+    end,
+
+    [Compose.Workbench] = function(self)
+        local center = section_box({ tw.flex, tw.col, tw.items_stretch, tw.grow_1, tw.basis_px(0), tw.min_w_px(0), tw.min_h_px(0) }, self.center_styles, self.center)
+        local middle = b.box(gather(
+            tw.flex, tw.row,
+            tw.items_stretch,
             tw.grow_1, tw.basis_px(0), tw.min_h_px(0),
-            style_group(opts.scroll_styles),
-            section_box(opts.body_default_styles, opts.body_styles, opts.body),
-        }),
-        section_box(opts.footer_default_styles, opts.footer_styles, opts.footer),
-    }
-end
+            style_value(self.middle_styles),
+            section_box({ tw.flex, tw.col, tw.items_stretch, tw.shrink_0 }, self.left_styles, self.left),
+            center,
+            section_box({ tw.flex, tw.col, tw.items_stretch, tw.shrink_0 }, self.right_styles, self.right)
+        ))
 
-function M.hsplit(opts)
-    opts = opts or {}
-    return b.box {
-        opts.id,
-        tw.flex, tw.row,
-        style_group(opts.styles),
-        child_node(opts.left),
-        child_node(opts.right),
-        child_node(opts.children),
-    }
-end
+        return pvm.once(b.box(gather(
+            self.id,
+            tw.flex, tw.col,
+            tw.items_stretch,
+            style_value(self.styles),
+            section_box({ tw.flex, tw.col, tw.items_stretch, tw.shrink_0 }, self.top_styles, self.top),
+            middle,
+            section_box({ tw.flex, tw.col, tw.items_stretch, tw.shrink_0 }, self.bottom_styles, self.bottom)
+        )))
+    end,
+})
 
-function M.vsplit(opts)
-    opts = opts or {}
-    return b.box {
-        opts.id,
-        tw.flex, tw.col,
-        style_group(opts.styles),
-        child_node(opts.top),
-        child_node(opts.bottom),
-        child_node(opts.children),
-    }
-end
-
-function M.workbench(opts)
-    opts = opts or {}
-
-    local center = section_box({ tw.grow_1, tw.basis_px(0), tw.min_w_px(0), tw.min_h_px(0) }, opts.center_styles, opts.center)
-    if center == nil then
-        error("workbench expects opts.center", 2)
-    end
-
-    local middle = b.box {
-        tw.flex, tw.row,
-        tw.grow_1, tw.basis_px(0), tw.min_h_px(0),
-        style_group(opts.middle_styles),
-        section_box({ tw.shrink_0 }, opts.left_styles, opts.left),
-        center,
-        section_box({ tw.shrink_0 }, opts.right_styles, opts.right),
-    }
-
-    return b.box {
-        opts.id,
-        tw.flex, tw.col,
-        style_group(opts.styles),
-        section_box({ tw.shrink_0 }, opts.top_styles, opts.top),
-        middle,
-        section_box({ tw.shrink_0 }, opts.bottom_styles, opts.bottom),
-    }
+function M.root(node)
+    return pvm.one(M.phase(node))
 end
 
 M.T = T

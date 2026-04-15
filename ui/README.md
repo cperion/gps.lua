@@ -14,7 +14,7 @@ Current files:
 - `ui/resolve.lua` — theme resolution from canonical `Style.Spec` to concrete resolved/layout-ready values
 - `ui/tw.lua` — typed Tailwind-style authoring surface over `Style.Token`
 - `ui/build.lua` — immediate-mode authored node builders for `Auth.Box`, `Auth.Text`, `Auth.Paint`, `Auth.Scroll`, `Auth.Fragment`, and `Auth.WithInput`
-- `ui/compose.lua` — higher-level authored-tree composition helpers for recurring shell/panel patterns; returns ordinary `Auth.Node` values, not callbacks or opaque managers
+- `ui/compose.lua` — `Compose.Node -> Auth.Node` lowering phase for recurring shell/panel composition nouns defined in `module Compose`
 - `ui/paint.lua` — typed custom paint primitives (`Line`, `Polyline`, `Polygon`, `Circle`, `Arc`, `Bezier`, `Mesh`, `Image`) plus builder helpers
 - `ui/lower.lua` — authored tree lowering phase (`Auth.Node × Theme.T × Env.Class -> Layout.Node*`)
 - `ui/text.lua` — text layout backend bridge; provides default approximate layout plus explicit backend-keyed registration for real measurers
@@ -44,47 +44,55 @@ Current design fixes already applied:
 - `ui.text.register(key, system)` allows a real text measurer to participate without hiding the dependency; caches separate on the explicit `text_system` key
 - `Layout.TextLayout` now carries wrapped `lines`, so the measured text fact is closer to an execution-ready text layout artifact rather than just width/height scalars
 
-## Composition helpers
+## Compose layer
 
-`ui.compose` is a small helper layer above raw `ui.build` for recurring shell patterns.
-These helpers still return ordinary authored `Auth.Node` values.
+`module Compose` is now a real ASDL layer for recurring shell/panel patterns.
+`ui.compose.phase(node)` lowers `Compose.Node` values into ordinary `Auth.Node` trees.
 
-Available helpers:
-- `compose.panel(opts)`
-- `compose.scroll_panel(opts)`
-- `compose.hsplit(opts)`
-- `compose.vsplit(opts)`
-- `compose.workbench(opts)`
+Available nouns:
+- `Compose.Raw(Auth.Node child)`
+- `Compose.Fragment(Compose.Node* children)`
+- `Compose.Panel(...)`
+- `Compose.ScrollPanel(...)`
+- `Compose.HSplit(...)`
+- `Compose.VSplit(...)`
+- `Compose.Workbench(...)`
 
-Example:
+Preferred authoring style:
 
 ```lua
 local ui = require("ui")
-local b = ui.build
-local c = ui.compose
-local tw = ui.tw
 local T = ui.T
+local F = T:FastBuilders()
+local b = ui.build
+local tw = ui.tw
 
-local node = c.scroll_panel {
+local shell = F.Compose.ScrollPanel {
     id = b.id("browser-panel"),
-    styles = {
+    styles = tw.list {
         tw.flex, tw.col,
         tw.w_px(320), tw.h_px(480),
         tw.p_4, tw.gap_y_4,
         tw.bg.slate[900],
         tw.border_1, tw.border_color.slate[800],
     },
-    header = b.text { tw.text_xl, tw.font_semibold, tw.fg.white, "Browser" },
+    header = F.Compose.Raw {
+        child = b.text { tw.text_xl, tw.font_semibold, tw.fg.white, "Browser" },
+    },
     scroll_id = b.id("browser-scroll"),
     axis = T.Style.ScrollY,
-    body = rows,
+    body = F.Compose.Raw {
+        child = b.fragment(rows),
+    },
 }
+
+local auth = ui.compose.root(shell)
 ```
 
 Design rule:
-- `ui.compose` should encode recurring authored structure
-- it must not introduce callbacks, hidden state, or a second execution model
-- if the pattern is not actually recurring, prefer raw `ui.build`
+- recurring shell/panel composition should live in ASDL when it is a real noun
+- `ui.compose` is a lowering phase, not a callback helper layer
+- use raw `ui.build` directly when the pattern is local and not worth naming
 
 ## Structural scroll
 

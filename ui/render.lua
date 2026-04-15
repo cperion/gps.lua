@@ -223,7 +223,7 @@ M.phase = pvm.phase("ui.render", {
         local clipped, pad, cw, ch = begin_container(parts, self, w, h)
         local layout = flex_plan(self, cw, ch, function(node, child_constraint)
             return measure_one(node, child_constraint, text_system)
-        end)
+        end, true)
 
         for i = 1, #layout.items do
             local item = layout.items[i]

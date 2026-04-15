@@ -82,7 +82,8 @@ local function dispatch_raw(raw)
 end
 
 local function run_frame(vw, vh)
-    local auth = widgets.auth_root(state, vw, vh)
+    local compose_node = widgets.compose_root(state, vw, vh)
+    local auth = ui.compose.root(compose_node)
     local layout = pvm.one(ui.lower.phase(auth, theme, current_env_class(state.app.theme_mode)))
     driver:reset()
     return ui.runtime.run(driver, {
