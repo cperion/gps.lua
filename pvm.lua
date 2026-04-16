@@ -70,46 +70,52 @@ pvm.NIL = {}
 local ASDL = nil
 
 local function get_asdl()
-    if ASDL ~= nil then
-        return ASDL
-    end
-    if not package.preload["gps.asdl_lexer"] then
-        package.preload["gps.asdl_lexer"] = function() return require("asdl_lexer") end
-    end
-    if not package.preload["gps.asdl_parser"] then
-        package.preload["gps.asdl_parser"] = function() return require("asdl_parser") end
-    end
-    if not package.preload["gps.asdl_context"] then
-        package.preload["gps.asdl_context"] = function() return require("asdl_context") end
-    end
-    ASDL = require("gps.asdl_context")
-    return ASDL
+	if ASDL ~= nil then
+		return ASDL
+	end
+	if not package.preload["gps.asdl_lexer"] then
+		package.preload["gps.asdl_lexer"] = function()
+			return require("asdl_lexer")
+		end
+	end
+	if not package.preload["gps.asdl_parser"] then
+		package.preload["gps.asdl_parser"] = function()
+			return require("asdl_parser")
+		end
+	end
+	if not package.preload["gps.asdl_context"] then
+		package.preload["gps.asdl_context"] = function()
+			return require("asdl_context")
+		end
+	end
+	ASDL = require("gps.asdl_context")
+	return ASDL
 end
 
 function pvm.context()
-    local ctx = get_asdl().NewContext()
-    local orig = ctx.Define
-    function ctx:Define(text)
-        orig(self, text)
-        return self
-    end
-    return ctx
+	local ctx = get_asdl().NewContext()
+	local orig = ctx.Define
+	function ctx:Define(text)
+		orig(self, text)
+		return self
+	end
+	return ctx
 end
 
 function pvm.classof(node)
-    if type(node) ~= "table" then
-        return false
-    end
-    local mt = getmetatable(node)
-    return (mt and mt.__class) or false
+	if type(node) ~= "table" then
+		return false
+	end
+	local mt = getmetatable(node)
+	return (mt and mt.__class) or false
 end
 
 function pvm.with(node, overrides)
-    local cls = pvm.classof(node)
-    if not cls or not cls.__fields then
-        error("pvm.with: not an ASDL node", 2)
-    end
-    return cls.__with(node, overrides, pvm.NIL)
+	local cls = pvm.classof(node)
+	if not cls or not cls.__fields then
+		error("pvm.with: not an ASDL node", 2)
+	end
+	return cls.__with(node, overrides, pvm.NIL)
 end
 
 local function normalize_handlers(handlers)
@@ -179,16 +185,16 @@ end
 --   • safe under partial consumption (the unexhausted recording does not commit)
 -- ══════════════════════════════════════════════════════════════
 
-local REC_CACHE_PARENT   = 1
+local REC_CACHE_PARENT = 1
 local REC_PENDING_PARENT = 2
-local REC_SLOT           = 3
-local REC_BUF            = 4
-local REC_N              = 5
-local REC_DONE           = 6
-local REC_G              = 7
-local REC_P              = 8
-local REC_C              = 9
-local REC_PACKED         = 10
+local REC_SLOT = 3
+local REC_BUF = 4
+local REC_N = 5
+local REC_DONE = 6
+local REC_G = 7
+local REC_P = 8
+local REC_C = 9
+local REC_PACKED = 10
 
 local function finish_recording(entry)
 	if entry[REC_DONE] then
@@ -786,15 +792,21 @@ function pvm.each(g, p, c, fn)
 		return
 	end
 	if g == seq_gen then
-		for i = c + 1, #p do fn(p[i]) end
+		for i = c + 1, #p do
+			fn(p[i])
+		end
 		return
 	end
 	if g == seq_n_gen then
-		for i = c + 1, p.n do fn(p.array[i]) end
+		for i = c + 1, p.n do
+			fn(p.array[i])
+		end
 		return
 	end
 	if g == recording_gen then
-		for i = c + 1, p[REC_N] do fn(p[REC_BUF][i]) end
+		for i = c + 1, p[REC_N] do
+			fn(p[REC_BUF][i])
+		end
 		while advance_recording(p) do
 			fn(p[REC_BUF][p[REC_N]])
 		end
@@ -820,15 +832,21 @@ function pvm.fold(g, p, c, init, fn)
 	end
 	local acc = init
 	if g == seq_gen then
-		for i = c + 1, #p do acc = fn(acc, p[i]) end
+		for i = c + 1, #p do
+			acc = fn(acc, p[i])
+		end
 		return acc
 	end
 	if g == seq_n_gen then
-		for i = c + 1, p.n do acc = fn(acc, p.array[i]) end
+		for i = c + 1, p.n do
+			acc = fn(acc, p.array[i])
+		end
 		return acc
 	end
 	if g == recording_gen then
-		for i = c + 1, p[REC_N] do acc = fn(acc, p[REC_BUF][i]) end
+		for i = c + 1, p[REC_N] do
+			acc = fn(acc, p[REC_BUF][i])
+		end
 		while advance_recording(p) do
 			acc = fn(acc, p[REC_BUF][p[REC_N]])
 		end
@@ -931,7 +949,14 @@ function pvm.report_string(phases)
 	local report = pvm.report(phases)
 	for i = 1, #report do
 		local r = report[i]
-		lines[i] = string.format("  %-24s calls=%-6d hits=%-6d shared=%-6d reuse=%.1f%%", r.name, r.calls, r.hits, r.shared, r.reuse_ratio * 100)
+		lines[i] = string.format(
+			"  %-24s calls=%-6d hits=%-6d shared=%-6d reuse=%.1f%%",
+			r.name,
+			r.calls,
+			r.hits,
+			r.shared,
+			r.reuse_ratio * 100
+		)
 	end
 	return table.concat(lines, "\n")
 end
@@ -1066,11 +1091,11 @@ end
 -- ══════════════════════════════════════════════════════════════
 
 local CONCAT_TRIPS = 1
-local CONCAT_N     = 2
-local CONCAT_I     = 3
-local CONCAT_G     = 4
-local CONCAT_P     = 5
-local CONCAT_C     = 6
+local CONCAT_N = 2
+local CONCAT_I = 3
+local CONCAT_G = 4
+local CONCAT_P = 5
+local CONCAT_C = 6
 
 local function concatn_gen(s, active)
 	while true do
@@ -1134,11 +1159,11 @@ end
 
 local CHILDREN_PHASE = 1
 local CHILDREN_ARRAY = 2
-local CHILDREN_N     = 3
-local CHILDREN_I     = 4
-local CHILDREN_G     = 5
-local CHILDREN_P     = 6
-local CHILDREN_C     = 7
+local CHILDREN_N = 3
+local CHILDREN_I = 4
+local CHILDREN_G = 5
+local CHILDREN_P = 6
+local CHILDREN_C = 7
 
 local function children_gen(s, active)
 	while true do

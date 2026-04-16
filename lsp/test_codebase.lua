@@ -36,7 +36,7 @@ for _, path in ipairs(files) do
         f:close()
         
         local uri = "file://" .. path
-        local source = C.SourceFile(uri, text)
+        local source = C.OpenDoc(uri, 0, text)
         
         -- Test 1: lex
         local lex_ok, lex_err = pcall(function()
@@ -48,10 +48,10 @@ for _, path in ipairs(files) do
         local parse_ok, parse_result, parse_err
         if lex_ok then
             parse_ok, parse_err = pcall(function()
-                local r = parser_engine.parse(source)
+                local r = pvm.one(parser_engine.parse(source))
                 parse_result = r
-                assert(r.file, "no file")
-                assert(#r.file.items > 0, "no items")
+                assert(r, "no parsed doc")
+                assert(#r.items > 0, "no items")
             end)
         end
         
@@ -59,8 +59,9 @@ for _, path in ipairs(files) do
         local sem_ok, sem_err, diag_count
         if parse_ok and parse_result then
             sem_ok, sem_err = pcall(function()
-                local diags = sem.diagnostics(parse_result.file)
-                diag_count = #diags.items
+                local sdoc = sem:compile(parse_result)
+                local diags = pvm.drain(sem.diagnostics(sdoc))
+                diag_count = #diags
             end)
         end
         
@@ -68,7 +69,7 @@ for _, path in ipairs(files) do
         local idx_ok, idx_err, sym_count
         if parse_ok and parse_result then
             idx_ok, idx_err = pcall(function()
-                local idx = sem:index(parse_result.file)
+                local idx = sem:index(sem:compile(parse_result))
                 sym_count = #idx.symbols
             end)
         end
@@ -80,11 +81,11 @@ for _, path in ipairs(files) do
         
         if lex_ok and parse_ok and sem_ok and idx_ok then
             pass = pass + 1
-            local pe = parse_result.meta.parse_error
+            local pe = (parse_result.status and parse_result.status.kind == "ParseError") and parse_result.status.message or ""
             local pe_str = (pe and pe ~= "") and (" PARSE_ERR:" .. pe:sub(1,40)) or ""
             print(string.format("  ✓ %-50s %4d lines  %3d items  %3d syms  %3d diags%s",
                 short, lines,
-                #parse_result.file.items,
+                #parse_result.items,
                 sym_count or 0,
                 diag_count or 0,
                 pe_str))

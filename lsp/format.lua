@@ -1,7 +1,7 @@
 -- lsp/format.lua
 --
 -- AST pretty-printer boundary.
--- pvm.lower("format_file"): FormatQuery(file, options, range, has_range) -> FormatResult(text, range, has_range)
+-- pvm.phase("format_file"): FormatQuery(file, options, range, has_range) -> FormatResult(text, range, has_range)
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -362,13 +362,15 @@ function M.new(context)
         return out
     end
 
-    local format_file = pvm.lower("format_file", function(q)
+    local format_file = pvm.phase("format_file", function(q)
         local opts = q.options
         local size = tonumber(opts.tab_size) or 4
         if size < 1 then size = 4 end
         local unit = opts.insert_spaces and string.rep(" ", size) or "\t"
 
-        local lines = render_block(C.Block(q.file.items), 0, unit)
+        local items = {}
+        for i = 1, #q.doc.items do items[i] = q.doc.items[i].syntax end
+        local lines = render_block(C.Block(items), 0, unit)
 
         if opts.trim_trailing_ws then
             for i = 1, #lines do lines[i] = lines[i]:gsub("[ \t]+$", "") end
@@ -407,6 +409,7 @@ function M.new(context)
     end)
 
     return {
+        format_file_phase = format_file,
         format_file = format_file,
         C = C,
     }

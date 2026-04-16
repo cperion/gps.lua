@@ -13,9 +13,9 @@ local sem = Semantics.new(ctx)
 
 -- ── Helper: parse source and run semantics ─────────────────
 local function analyze(uri, text)
-    local source = C.SourceFile(uri, text)
-    local result = parser.parse(source)
-    return result.file, result.meta
+    local source = C.OpenDoc(uri, 0, text)
+    local parsed = pvm.one(parser.parse(source))
+    return sem:compile(parsed)
 end
 
 -- ── Test 1: basic diagnostics ──────────────────────────────
@@ -26,7 +26,7 @@ local file1 = analyze("file:///test.lua", table.concat({
     "print(x, z)",
 }, "\n"))
 
-local diags1 = sem.diagnostics(file1).items
+local diags1 = pvm.drain(sem.diagnostics(file1))
 print("diagnostics:", #diags1)
 for i = 1, #diags1 do
     print("  ", diags1[i].code, diags1[i].message)
@@ -102,7 +102,7 @@ for i = 1, #idx.defs do
     if idx.defs[i].name == "x" then x_anchor = idx.defs[i].anchor; break end
 end
 if x_anchor then
-    local h = sem:hover(file3, x_anchor)
+    local h = pvm.one(sem:hover(file3, x_anchor))
     print("hover kind:", h.kind)
     if h.kind == "HoverSymbol" then
         print("  name:", h.name, "symbol_kind:", h.symbol_kind, "defs:", h.defs, "uses:", h.uses)
@@ -121,7 +121,7 @@ for i = 1, #idx.uses do
     if idx.uses[i].name == "x" then x_use_anchor = idx.uses[i].anchor; break end
 end
 if x_use_anchor then
-    local def = sem:goto_definition(file3, x_use_anchor)
+    local def = pvm.one(sem:goto_definition(file3, x_use_anchor))
     print("definition kind:", def.kind)
     if def.kind == "DefHit" then
         print("  anchor:", tostring(def.anchor))
@@ -135,12 +135,12 @@ end
 -- ── Test 6: find references ────────────────────────────────
 print("\n=== Test 6: find references ===")
 if x_anchor then
-    local refs = sem:find_references(file3, x_anchor, true)
-    print("references (incl decl):", #refs.refs)
-    for i = 1, #refs.refs do
-        print("  ref:", refs.refs[i].name, refs.refs[i].kind)
+    local refs = pvm.drain(sem:find_references(file3, x_anchor, true))
+    print("references (incl decl):", #refs)
+    for i = 1, #refs do
+        print("  ref:", refs[i].name, refs[i].kind)
     end
-    assert(#refs.refs >= 2, "expected at least 2 refs (decl + use)")
+    assert(#refs >= 2, "expected at least 2 refs (decl + use)")
     print("OK!")
 end
 
@@ -151,7 +151,7 @@ local file4a = analyze("file:///inc.lua", table.concat({
     "local b = 2",
     "print(a, b)",
 }, "\n"))
-local diags_a = sem.diagnostics(file4a)
+local diags_a = pvm.drain(sem.diagnostics(file4a))
 
 -- Change one line
 local file4b = analyze("file:///inc.lua", table.concat({
@@ -159,14 +159,14 @@ local file4b = analyze("file:///inc.lua", table.concat({
     "local b = 999",  -- changed
     "print(a, b)",
 }, "\n"))
-local diags_b = sem.diagnostics(file4b)
+local diags_b = pvm.drain(sem.diagnostics(file4b))
 
 -- Items should share identity where unchanged
-assert(file4a.items[1] == file4b.items[1], "item 1 should be shared (local a = 1)")
-assert(file4a.items[2] ~= file4b.items[2], "item 2 should differ")
-assert(file4a.items[3] == file4b.items[3], "item 3 should be shared (print(a, b))")
+assert(file4a.items[1].syntax == file4b.items[1].syntax, "item 1 syntax should be shared (local a = 1)")
+assert(file4a.items[2].syntax ~= file4b.items[2].syntax, "item 2 should differ")
+assert(file4a.items[3].syntax == file4b.items[3].syntax, "item 3 syntax should be shared (print(a, b))")
 print("Item sharing: OK")
-print("Diags before:", #diags_a.items, "after:", #diags_b.items)
+print("Diags before:", #diags_a, "after:", #diags_b)
 
 -- ── Test 8: cache report ───────────────────────────────────
 print("\n=== Test 8: cache report ===")

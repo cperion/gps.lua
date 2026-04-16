@@ -1,6 +1,6 @@
 -- lsp/adapter.lua
 --
--- Semantic results → LSP IR adapter. All pvm.lower boundaries.
+-- Semantic results → LSP IR adapter.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -67,7 +67,7 @@ local function anchor_ref(C, v)
 end
 
 local function query_subject(C, v)
-    if not v then return C.QueryMissing() end
+    if not v then return C.QueryMissing end
     if type(v) == "table" and v.kind == "TNamed" then return C.QueryTypeName(v.name) end
     if type(v) == "string" then return C.QueryTypeName(v) end
     return C.QueryAnchor(anchor_ref(C, v))
@@ -102,20 +102,18 @@ function Adapter.new(engine, opts)
     local C = self.engine.C
 
     -- ── lsp_range_for ──────────────────────────────────────
-    local lsp_range_for = pvm.lower("lsp_range_for", function(q)
+    local lsp_range_for = pvm.phase("lsp_range_for", function(q)
         local anchor = q.anchor
-        if self.opts.anchor_to_range then
-            local meta = self.opts.meta_for_file and self.opts.meta_for_file(q.file) or nil
-            local ok, r = pcall(self.opts.anchor_to_range, q.file, anchor, anchor and anchor.id or nil, meta)
-            if ok and r and r.start and r["end"] then
-                return mk_range(C,
-                    r.start.line or 0, r.start.character or 0,
-                    r["end"].line or 0, r["end"].character or 1)
+        local aid = anchor and anchor.id or ""
+        local points = q.doc and q.doc.anchors or {}
+        for i = 1, #points do
+            local p = points[i]
+            if p.anchor and p.anchor.id == aid then
+                return p.span.range
             end
         end
         -- Fallback: rank-based line placement
-        local idx = self.engine:index(q.file)
-        local aid = anchor and anchor.id or ""
+        local idx = self.engine:index(q.doc)
         local rank = 1
         for i = 1, #idx.defs do
             if idx.defs[i].anchor and idx.defs[i].anchor.id == aid then rank = i; break end
@@ -133,12 +131,13 @@ function Adapter.new(engine, opts)
     end)
 
     -- ── all_anchor_entries ─────────────────────────────────
-    local all_anchor_entries = pvm.lower("lsp_all_anchor_entries", function(file)
+    local all_anchor_entries = pvm.phase("lsp_all_anchor_entries", {
+        [C.SemanticDoc] = function(file)
         local out = {}
         local function add(anchor, kind, name)
             if not anchor or contains_anchor(out, anchor.id) then return end
             out[#out + 1] = C.AnchorEntry(anchor, kind, name,
-                lsp_range_for(C.LspRangeQuery(file, anchor)))
+                pvm.one(lsp_range_for(C.LspRangeQuery(file, anchor))))
         end
         local function add_s(anchor, kind_s, name)
             add(anchor, anchor_kind_from_string(C, kind_s), name)
@@ -164,12 +163,13 @@ function Adapter.new(engine, opts)
             if as.line ~= bs.line then return as.line < bs.line end
             return as.character < bs.character
         end)
-        return C.AnchorEntryList(out)
-    end)
+        return pvm.seq(out)
+        end,
+    })
 
     -- ── anchor_at_position ─────────────────────────────────
-    local anchor_at_position = pvm.lower("lsp_anchor_at_position", function(q)
-        local entries = all_anchor_entries(q.file).items
+    local anchor_at_position = pvm.phase("lsp_anchor_at_position", function(q)
+        local entries = pvm.drain(all_anchor_entries(q.doc))
         local line, ch = q.position.line, q.position.character
         local prefer = q.prefer_kind
         local has_prefer = q.has_prefer
@@ -187,29 +187,29 @@ function Adapter.new(engine, opts)
             end
         end
         if best then return C.AnchorPickHit(best.anchor, best) end
-        return C.AnchorPickMiss()
+        return C.AnchorPickMiss
     end)
 
     -- ── lsp_diagnostics ────────────────────────────────────
-    local lsp_diagnostics = pvm.lower("lsp_diagnostics", function(file)
-        local src = self.engine.diagnostics(file).items
+    local lsp_diagnostics = pvm.phase("lsp_diagnostics", function(file)
+        local src = pvm.drain(self.engine.diagnostics(file))
         local out = {}
         for i = 1, #src do
             local d = src[i]
             local code = diag_code_name(d.code)
             out[i] = C.LspDiagnostic(
-                lsp_range_for(C.LspRangeQuery(file, d.anchor)),
+                pvm.one(lsp_range_for(C.LspRangeQuery(file, d.anchor))),
                 SEVERITY[code] or 2, "lua-lsp-pvm", code, d.message)
         end
         return C.LspDiagnosticList(out)
     end)
 
     -- ── lsp_hover ──────────────────────────────────────────
-    local lsp_hover = pvm.lower("lsp_hover", function(q)
+    local lsp_hover = pvm.phase("lsp_hover", function(q)
         local subj = q.subject
-        local h = self.engine:hover(q.file,
-            subj.kind == "QueryAnchor" and subj.anchor or subj.name)
-        if not h or h.kind == "HoverMissing" then return C.LspHoverMiss() end
+        local h = pvm.one(self.engine:hover(q.doc,
+            subj.kind == "QueryAnchor" and subj.anchor or subj.name))
+        if not h or h.kind == "HoverMissing" then return C.LspHoverMiss end
 
         local msg
         if h.kind == "HoverSymbol" then
@@ -225,48 +225,46 @@ function Adapter.new(engine, opts)
 
         local range = mk_range(C, 0, 0, 0, 1)
         if subj.kind == "QueryAnchor" then
-            range = lsp_range_for(C.LspRangeQuery(q.file, subj.anchor))
+            range = pvm.one(lsp_range_for(C.LspRangeQuery(q.doc, subj.anchor)))
         end
         return C.LspHoverHit(C.LspHover(C.LspMarkupContent(C.MarkupMarkdown, msg), range))
     end)
 
     -- ── lsp_definition ─────────────────────────────────────
-    local lsp_definition = pvm.lower("lsp_definition", function(q)
+    local lsp_definition = pvm.phase("lsp_definition", function(q)
         local subj = q.subject
-        local r = self.engine:goto_definition(q.file,
-            subj.kind == "QueryAnchor" and subj.anchor or subj.name)
+        local r = pvm.one(self.engine:goto_definition(q.doc,
+            subj.kind == "QueryAnchor" and subj.anchor or subj.name))
         if not r or r.kind ~= "DefHit" or not r.anchor then return C.LspLocationList({}) end
         return C.LspLocationList({
-            C.LspLocation(q.file.uri, lsp_range_for(C.LspRangeQuery(q.file, r.anchor)))
+            C.LspLocation(q.doc.uri, pvm.one(lsp_range_for(C.LspRangeQuery(q.doc, r.anchor))))
         })
     end)
 
     -- ── lsp_references ─────────────────────────────────────
-    local lsp_references = pvm.lower("lsp_references", function(q)
+    local lsp_references = pvm.phase("lsp_references", function(q)
         local subj = q.subject
-        local rr = self.engine:find_references(q.file,
+        local refs = pvm.drain(self.engine:find_references(q.doc,
             subj.kind == "QueryAnchor" and subj.anchor or subj.name,
-            q.include_declaration)
-        local refs = rr.refs or {}
+            q.include_declaration))
         local out = {}
         for i = 1, #refs do
-            out[i] = C.LspLocation(q.file.uri, lsp_range_for(C.LspRangeQuery(q.file, refs[i].anchor)))
+            out[i] = C.LspLocation(q.doc.uri, pvm.one(lsp_range_for(C.LspRangeQuery(q.doc, refs[i].anchor))))
         end
         return C.LspLocationList(out)
     end)
 
     -- ── lsp_document_highlight ─────────────────────────────
-    local lsp_document_highlight = pvm.lower("lsp_document_highlight", function(q)
+    local lsp_document_highlight = pvm.phase("lsp_document_highlight", function(q)
         local subj = q.subject
-        local rr = self.engine:find_references(q.file,
-            subj.kind == "QueryAnchor" and subj.anchor or subj.name, true)
-        local refs = rr.refs or {}
+        local refs = pvm.drain(self.engine:find_references(q.doc,
+            subj.kind == "QueryAnchor" and subj.anchor or subj.name, true))
         local out = {}
         for i = 1, #refs do
             local sk = refs[i].kind
             local kind = (sk == C.SymLocal or sk == C.SymGlobal or sk == C.SymParam) and 3 or 2
             out[i] = C.LspDocumentHighlight(
-                lsp_range_for(C.LspRangeQuery(q.file, refs[i].anchor)), kind)
+                pvm.one(lsp_range_for(C.LspRangeQuery(q.doc, refs[i].anchor))), kind)
         end
         return C.LspDocumentHighlightList(out)
     end)

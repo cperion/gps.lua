@@ -3,7 +3,7 @@
 -- Type inference over Lua AST + doc annotations.
 -- All results are TypeExpr ASDL nodes — one type language for everything.
 --
--- pvm.lower("typed_index"): File → TypedIndex
+-- pvm.phase("typed_index"): ParsedDoc → TypedIndex
 --   For each symbol in the file, infers its type from:
 --   1. @type/@param/@return annotations on the enclosing Item
 --   2. Literal initializers (local x = 42 → TNumber)
@@ -11,7 +11,7 @@
 --   4. Function definitions (function(a,b) → TFunc)
 --   5. @class fields
 --
--- pvm.lower("expr_type"): ExprTypeQuery → TypeExpr
+-- pvm.phase("expr_type"): ExprTypeQuery → TypeExpr
 --   Given (file, anchor_of_expr), returns the inferred type.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
@@ -27,12 +27,12 @@ function M.new(semantics_engine)
 
     local function type_of_literal(expr)
         local k = expr.kind
-        if k == "Nil"    then return C.TNil() end
-        if k == "True"   then return C.TBoolean() end
-        if k == "False"  then return C.TBoolean() end
-        if k == "Number" then return C.TNumber() end
-        if k == "String" then return C.TString() end
-        if k == "Vararg" then return C.TAny() end
+        if k == "Nil"    then return C.TNil end
+        if k == "True"   then return C.TBoolean end
+        if k == "False"  then return C.TBoolean end
+        if k == "Number" then return C.TNumber end
+        if k == "String" then return C.TString end
+        if k == "Vararg" then return C.TAny end
         return nil
     end
 
@@ -48,7 +48,7 @@ function M.new(semantics_engine)
             local f = fields[i]
             if f.kind == "NameField" then
                 all_array = false
-                local vt = type_of_literal(f.value) or C.TAny()
+                local vt = type_of_literal(f.value) or C.TAny
                 type_fields[#type_fields + 1] = C.TypeField(f.key, vt, false)
             elseif f.kind == "PairField" then
                 all_array = false
@@ -59,7 +59,7 @@ function M.new(semantics_engine)
             -- Array-like: infer element type from first value
             local first = fields[1]
             if first.kind == "ArrayField" then
-                local et = type_of_literal(first.value) or C.TAny()
+                local et = type_of_literal(first.value) or C.TAny
                 return C.TArray(et)
             end
         end
@@ -75,14 +75,14 @@ function M.new(semantics_engine)
         -- Build param types (unknown by default, can be enriched by @param)
         local params = {}
         for i = 1, #body.params do
-            params[i] = C.TAny()
+            params[i] = C.TAny
         end
         -- Return type unknown
-        return C.TFunc(C.FuncType(params, { C.TAny() }, body.vararg))
+        return C.TFunc(C.FuncType(params, { C.TAny }, body.vararg))
     end
 
     local function type_of_expr(expr)
-        if not expr then return C.TUnknown() end
+        if not expr then return C.TUnknown end
         local lit = type_of_literal(expr)
         if lit then return lit end
 
@@ -94,27 +94,27 @@ function M.new(semantics_engine)
             return type_of_funcbody(expr.body)
         end
         if k == "Unary" then
-            if expr.op == "#" then return C.TNumber() end
-            if expr.op == "-" then return C.TNumber() end
-            if expr.op == "not" then return C.TBoolean() end
-            return C.TAny()
+            if expr.op == "#" then return C.TNumber end
+            if expr.op == "-" then return C.TNumber end
+            if expr.op == "not" then return C.TBoolean end
+            return C.TAny
         end
         if k == "Binary" then
-            if expr.op == ".." then return C.TString() end
+            if expr.op == ".." then return C.TString end
             if expr.op == "+" or expr.op == "-" or expr.op == "*" or expr.op == "/"
                 or expr.op == "%" or expr.op == "^" or expr.op == "//" then
-                return C.TNumber()
+                return C.TNumber
             end
             if expr.op == "==" or expr.op == "~=" or expr.op == "<" or expr.op == ">"
                 or expr.op == "<=" or expr.op == ">=" or expr.op == "and" or expr.op == "or" then
-                return C.TBoolean()
+                return C.TBoolean
             end
-            return C.TAny()
+            return C.TAny
         end
         if k == "Paren" then
             return type_of_expr(expr.inner)
         end
-        return C.TUnknown()
+        return C.TUnknown
     end
 
     -- Extract @type/@param/@return from doc blocks attached to an Item
@@ -162,10 +162,10 @@ function M.new(semantics_engine)
         return out
     end
 
-    -- ── typed_index lower ──────────────────────────────────
+    -- ── typed_index phase ──────────────────────────────────
     -- For each symbol, infer its type from context.
 
-    local typed_index = pvm.lower("typed_index", function(file)
+    local typed_index = pvm.phase("typed_index", function(file)
         local idx = semantics_engine:index(file)
         local env = semantics_engine.resolve_named_types(file)
         local typed = {}
@@ -196,7 +196,7 @@ function M.new(semantics_engine)
             for pi = 1, #body.params do
                 local p = body.params[pi]
                 local pid = tostring(p)
-                param_anchor_type[pid] = ptypes[p.name] or C.TAny()
+                param_anchor_type[pid] = ptypes[p.name] or C.TAny
             end
         end
 
@@ -207,14 +207,14 @@ function M.new(semantics_engine)
             local params = {}
             for p = 1, #body.params do
                 local pname = body.params[p].name
-                params[p] = param_types[pname] or C.TAny()
+                params[p] = param_types[pname] or C.TAny
             end
-            local returns = ret_type and { ret_type } or { C.TAny() }
+            local returns = ret_type and { ret_type } or { C.TAny }
             return C.TFunc(C.FuncType(params, returns, body.vararg))
         end
 
         for i = 1, #file.items do
-            local item = file.items[i]
+            local item = file.items[i].syntax
             local stmt = item.stmt
             local sk = stmt.kind
 
@@ -261,7 +261,7 @@ function M.new(semantics_engine)
                     return ts.typ
                 end
             end
-            return C.TUnknown()
+            return C.TUnknown
         end
 
         local function named_from_type(t, out, seen)
@@ -367,7 +367,7 @@ function M.new(semantics_engine)
         end
 
         local function infer_from_expr(expr)
-            if not expr then return C.TUnknown() end
+            if not expr then return C.TUnknown end
             local t = type_of_expr(expr)
             if t.kind ~= "TUnknown" then return t end
 
@@ -400,12 +400,12 @@ function M.new(semantics_engine)
                 end
             end
 
-            return C.TUnknown()
+            return C.TUnknown
         end
 
         for i = 1, #idx.symbols do
             local sym = idx.symbols[i]
-            local typ = C.TUnknown()
+            local typ = C.TUnknown
             local aid = sym.decl_anchor and sym.decl_anchor.id or ""
 
             if sym.kind == C.SymParam and param_anchor_type[aid] then
@@ -435,9 +435,9 @@ function M.new(semantics_engine)
                         local params = {}
                         for p = 1, #body.params do
                             local pname = body.params[p].name
-                            params[p] = param_types[pname] or C.TAny()
+                            params[p] = param_types[pname] or C.TAny
                         end
-                        local returns = ret_type and { ret_type } or { C.TAny() }
+                        local returns = ret_type and { ret_type } or { C.TAny }
                         typ = C.TFunc(C.FuncType(params, returns, body.vararg))
                     end
                 end
@@ -462,21 +462,21 @@ function M.new(semantics_engine)
     -- ── Public type lookup ─────────────────────────────────
 
     local function type_for_symbol(file, symbol_id)
-        local ti = typed_index(file)
+        local ti = pvm.one(typed_index(file))
         for i = 1, #ti.symbols do
             if ti.symbols[i].symbol.id == symbol_id then
                 return ti.symbols[i].typ
             end
         end
-        return C.TUnknown()
+        return C.TUnknown
     end
 
     local function type_for_anchor(file, anchor)
-        local binding = semantics_engine:symbol_for_anchor(file, anchor)
+        local binding = pvm.one(semantics_engine:symbol_for_anchor(file, anchor))
         if binding.kind == "AnchorSymbol" then
             return type_for_symbol(file, binding.symbol.id)
         end
-        return C.TUnknown()
+        return C.TUnknown
     end
 
     -- ── Type → string ──────────────────────────────────────
@@ -528,6 +528,7 @@ function M.new(semantics_engine)
     end
 
     return {
+        typed_index_phase = typed_index,
         typed_index = typed_index,
         type_for_symbol = type_for_symbol,
         type_for_anchor = type_for_anchor,

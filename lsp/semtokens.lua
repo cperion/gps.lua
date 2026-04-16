@@ -1,7 +1,7 @@
 -- lsp/semtokens.lua
 --
 -- Semantic token planner boundary.
--- pvm.lower("plan_semantic_tokens"): LspSemanticTokenQuery -> LspSemanticTokenSpanList
+-- pvm.phase("plan_semantic_tokens"): LspSemanticTokenQuery -> LspSemanticTokenSpanList
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -124,15 +124,15 @@ function M.new(semantics_engine, lexer_engine, range_for)
         spans[#spans + 1] = C.LspSemanticTokenSpan(line, startc, len, tok, mods or {})
     end
 
-    local plan_semantic_tokens = pvm.lower("plan_semantic_tokens", function(q)
+    local plan_semantic_tokens = pvm.phase("plan_semantic_tokens", function(q)
         local spans, seen = {}, {}
 
-        local idx = semantics_engine:index(q.file)
-        local env = semantics_engine.resolve_named_types(q.file)
+        local idx = semantics_engine:index(q.doc)
+        local env = semantics_engine.resolve_named_types(q.doc)
 
         local function add_anchor(anchor, tok, mods)
             if not anchor or not range_for then return end
-            local r = range_for(q.file, anchor)
+            local r = range_for(q.doc, anchor)
             local line = r.start.line or 0
             local startc = r.start.character or 0
             local len = (r.stop.character or 0) - startc
@@ -179,17 +179,16 @@ function M.new(semantics_engine, lexer_engine, range_for)
             add_anchor(env.generics[i].anchor, Tok.typeParameter, { Mod.declaration, Mod.definition })
         end
 
-        if lexer_engine and q.text and q.text ~= "" and q.uri and q.uri ~= "" then
-            local src = C.SourceFile(q.uri, q.text)
-            local lexed = lexer_engine.lex_with_positions(src)
-            local tokens = lexed.tokens or {}
-            local positions = lexed.positions or {}
-            local count = lexed.count or #tokens
+        local text = q.doc and q.doc.text or ""
+        local uri = q.doc and q.doc.uri or ""
+        if lexer_engine and text ~= "" and uri ~= "" then
+            local src = C.OpenDoc(uri, q.doc.version or 0, text)
+            local lexed = pvm.drain(lexer_engine.lex_with_positions(src))
 
-            for i = 1, count do
-                local tok = tokens[i]
-                local pos = positions[i]
-                if tok and pos then
+            for i = 1, #lexed do
+                local lt = lexed[i]
+                local tok = lt.token
+                if tok then
                     local kind = nil
                     local mods = {}
                     if tok.kind == "<string>" then kind = Tok.string
@@ -200,14 +199,14 @@ function M.new(semantics_engine, lexer_engine, range_for)
                     end
 
                     if kind then
-                        local line0 = (pos.line or 1) - 1
-                        local line_start = line_bounds(q.text, line0)
-                        local start_off = pos.offset or line_start
-                        local stop_off = pos.end_offset or start_off
+                        local line0 = (lt.line or 1) - 1
+                        local line_start = line_bounds(text, line0)
+                        local start_off = lt.start_offset or line_start
+                        local stop_off = lt.end_offset or start_off
                         if stop_off < start_off then stop_off = start_off end
 
-                        local prefix = q.text:sub(line_start, math.max(line_start, start_off) - 1)
-                        local token_txt = q.text:sub(start_off, stop_off)
+                        local prefix = text:sub(line_start, math.max(line_start, start_off) - 1)
+                        local token_txt = text:sub(start_off, stop_off)
                         local startc = utf16_len(prefix)
                         local len = utf16_len(token_txt)
                         add_span(spans, seen, line0, startc, len, kind, mods)
@@ -225,6 +224,7 @@ function M.new(semantics_engine, lexer_engine, range_for)
     end)
 
     return {
+        plan_semantic_tokens_phase = plan_semantic_tokens,
         plan_semantic_tokens = plan_semantic_tokens,
         C = C,
         Tok = Tok, Mod = Mod,

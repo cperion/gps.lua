@@ -1,8 +1,8 @@
 -- lsp/sighelp.lua
 --
 -- Signature catalog + lookup.
--- pvm.lower("signature_catalog"): File -> SignatureCatalog
--- pvm.lower("signature_lookup"): SignatureLookupQuery -> SignatureHelp
+-- pvm.phase("signature_catalog"): File -> SignatureCatalog
+-- pvm.phase("signature_lookup"): SignatureLookupQuery -> SignatureHelp
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -71,7 +71,7 @@ function M.new(semantics_engine, type_engine)
         return C.SignatureInfo(label, params, 0)
     end
 
-    local signature_catalog = pvm.lower("signature_catalog", function(file)
+    local signature_catalog = pvm.phase("signature_catalog", function(file)
         local by_name, order = {}, {}
 
         local function ensure_entry(name)
@@ -196,7 +196,7 @@ function M.new(semantics_engine, type_engine)
         end
 
         for i = 1, #file.items do
-            visit_item(file.items[i])
+            visit_item(file.items[i].syntax)
         end
 
         local items = {}
@@ -207,8 +207,8 @@ function M.new(semantics_engine, type_engine)
         return C.SignatureCatalog(items)
     end)
 
-    local signature_lookup = pvm.lower("signature_lookup", function(q)
-        local cat = signature_catalog(q.file)
+    local signature_lookup = pvm.phase("signature_lookup", function(q)
+        local cat = pvm.one(signature_catalog(q.doc))
         local exact, tail = nil, nil
         local tail_name = q.callee:match("([%a_][%w_]*)$")
 
@@ -233,12 +233,14 @@ function M.new(semantics_engine, type_engine)
         return C.SignatureHelp(sigs, 0)
     end)
 
-    local sig_help = pvm.lower("sig_help", function(q)
-        -- compatibility entrypoint (legacy callers)
+    local sig_help = pvm.phase("sig_help", function(q)
         return C.SignatureHelp({}, 0)
     end)
 
     return {
+        signature_catalog_phase = signature_catalog,
+        signature_lookup_phase = signature_lookup,
+        sig_help_phase = sig_help,
         signature_catalog = signature_catalog,
         signature_lookup = signature_lookup,
         sig_help = sig_help,

@@ -1,22 +1,11 @@
 -- lsp/parser.lua
 --
--- Recursive descent Lua 5.1/JIT parser as pvm.lower("parse").
+-- Recursive descent Lua parser as pvm.phase("parse").
 --
--- Input:  SourceFile ASDL node
--- Output: (File ASDL node, ServerMeta with anchor→position mappings)
+--   OpenDoc:parse() -> ParsedDoc
 --
--- The parser drains lex_with_positions(source_file) to get Token nodes + positions,
--- then does standard recursive descent producing AST nodes.
--- All AST nodes are ASDL unique (no Range) → structural interning.
---
--- Anchors: the parser records (asdl_node → position) mappings via the mark()
--- function. These become ServerAnchorPoint entries in ServerMeta, used by the
--- LSP adapter to map from AST identity → source range.
---
--- Because AST nodes carry NO position:
---   local x = 42  at line 1  and  local x = 42  at line 50
---   produce the SAME interned Item.
---   → bind_symbols sees ONE cache entry for both → maximum reuse.
+-- The parser drains lex_with_positions(open_doc) to obtain LexTok facts,
+-- runs recursive descent, and yields one ParsedDoc.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -31,18 +20,30 @@ function M.new(ctx)
     local C = ctx.Lua
     local lexer_engine = Lexer.new(ctx)
 
-    -- ══════════════════════════════════════════════════════════
-    --  Parser core
-    -- ══════════════════════════════════════════════════════════
+    local function offset_to_line_col(text, offset)
+        local target = offset or 1
+        if target < 1 then target = 1 end
+        if target > #text + 1 then target = #text + 1 end
+        local line, col = 1, 1
+        for i = 1, target - 1 do
+            local ch = text:sub(i, i)
+            if ch == "\n" then
+                line = line + 1
+                col = 1
+            else
+                col = col + 1
+            end
+        end
+        return line, col
+    end
 
     local function make_parser(tokens, positions, uri)
         local pos = 1
-        local count = #tokens
-        local anchors = {}     -- {anchor_ref, lsp_range, label}
+        local anchors = {}
         local anchor_n = 0
+        local top_items = {}
+        local block_depth = 0
 
-        -- ── Token access ───────────────────────────────────
-        local function raw_peek() return tokens[pos] end
         local function raw_peek_kind()
             local t = tokens[pos]
             return t and t.kind or "<eof>"
@@ -57,25 +58,15 @@ function M.new(ctx)
             while true do
                 local t = tokens[pos]
                 if not t or t.kind ~= "<comment>" then break end
-                -- Keep doc comments for parse_block to attach to the next item.
                 if type(t.value) == "string" and t.value:match("^%-%-%-@") then break end
                 pos = pos + 1
             end
         end
 
-        local function peek()
-            skip_comments()
-            return tokens[pos]
-        end
         local function peek_kind()
             skip_comments()
             local t = tokens[pos]
             return t and t.kind or "<eof>"
-        end
-        local function peek_value()
-            skip_comments()
-            local t = tokens[pos]
-            return t and t.value or ""
         end
         local function advance()
             skip_comments()
@@ -87,8 +78,7 @@ function M.new(ctx)
             skip_comments()
             local t = tokens[pos]
             if not t or t.kind ~= kind then
-                error(string.format("parse error at token %d: expected '%s', got '%s'",
-                    pos, kind, t and t.kind or "<eof>"), 0)
+                error(string.format("parse error at token %d: expected '%s', got '%s'", pos, kind, t and t.kind or "<eof>"), 0)
             end
             pos = pos + 1
             return t
@@ -103,57 +93,30 @@ function M.new(ctx)
             return false
         end
 
-        -- ── Anchor recording ───────────────────────────────
-        -- Records mapping: tostring(node) → source range.
-        -- The node's tostring is its interned identity key.
-        local function mark(node, start_tok, end_tok)
-            if not node then return node end
-            local sp = positions[start_tok] or positions[pos - 1] or { line = 1, col = 1 }
-            local ep = positions[end_tok or (pos - 1)] or sp
-            anchor_n = anchor_n + 1
-            anchors[anchor_n] = {
-                anchor = C.AnchorRef(tostring(node)),
-                range = C.LspRange(
-                    C.LspPos(sp.line - 1, sp.col - 1),  -- 0-based for LSP
-                    C.LspPos(ep.line - 1, (ep.end_offset or ep.offset) - (positions[ep.line == sp.line and start_tok or (end_tok or pos - 1)] or ep).offset + ep.col)
-                ),
-            }
-            return node
-        end
-
-        -- Simpler mark using token index range
         local function mark_range(node, start_pos, end_pos)
             if not node then return node end
-            local sp = positions[start_pos] or { line = 1, col = 1, offset = 1, end_offset = 1 }
+            local sp = positions[start_pos] or { line = 1, col = 1, start_offset = 1, end_offset = 1 }
             local ep = positions[end_pos or (pos - 1)] or sp
             anchor_n = anchor_n + 1
             anchors[anchor_n] = {
                 anchor = C.AnchorRef(tostring(node)),
                 range = C.LspRange(
-                    C.LspPos(sp.line - 1, sp.col - 1),
-                    C.LspPos(ep.line - 1, ep.col - 1 + (ep.end_offset - ep.offset + 1))
+                    C.LspPos((sp.line or 1) - 1, (sp.col or 1) - 1),
+                    C.LspPos((ep.line or 1) - 1, (ep.col or 1) - 1 + ((ep.end_offset or ep.start_offset or 1) - (ep.start_offset or 1) + 1))
                 ),
+                start_pos = start_pos,
+                end_pos = end_pos or (pos - 1),
             }
             return node
         end
 
-        -- ── Forward declarations ───────────────────────────
         local parse_expr, parse_block, parse_stmt
-
-        -- ── Expression parsing ─────────────────────────────
+        local lvalue_to_expr
 
         local function parse_name()
             local p0 = pos
             local t = expect("<name>")
             return mark_range(C.Name(t.value), p0)
-        end
-
-        local function parse_namelist()
-            local names = { parse_name() }
-            while match(",") do
-                names[#names + 1] = parse_name()
-            end
-            return names
         end
 
         local function parse_funcbody()
@@ -197,7 +160,7 @@ function M.new(ctx)
                     fields[#fields + 1] = mark_range(C.PairField(key, val), p0)
                 elseif check("<name>") and positions[pos + 1] and tokens[pos + 1] and tokens[pos + 1].kind == "=" then
                     local name = advance().value
-                    advance() -- =
+                    advance()
                     local val = parse_expr()
                     fields[#fields + 1] = mark_range(C.NameField(name, val), p0)
                 elseif check("}") then
@@ -207,11 +170,8 @@ function M.new(ctx)
                     fields[#fields + 1] = mark_range(C.ArrayField(val), p0)
                 end
                 if not match(",") then
-                    match(";")  -- both , and ; are field separators
-                    -- if next is }, we're done
+                    match(";")
                     if check("}") then break end
-                    -- if no separator and not }, might be end of fields
-                    -- Lua allows trailing separator, and we should also handle missing separator gracefully
                 end
             end
             return fields
@@ -220,20 +180,16 @@ function M.new(ctx)
         local function parse_primary_expr()
             local p0 = pos
             local k = peek_kind()
-
             if k == "<name>" then
                 local name = advance().value
                 return mark_range(C.NameRef(name), p0)
-
             elseif k == "(" then
                 advance()
                 local inner = parse_expr()
                 expect(")")
                 return mark_range(C.Paren(inner), p0)
-
             else
-                error(string.format("parse error at token %d: unexpected '%s' in expression",
-                    pos, k), 0)
+                error(string.format("parse error at token %d: unexpected '%s' in expression", pos, k), 0)
             end
         end
 
@@ -267,7 +223,6 @@ function M.new(ctx)
         local function parse_suffixed_expr()
             local p0 = pos
             local base = parse_primary_expr()
-
             while true do
                 local k = peek_kind()
                 if k == "." then
@@ -291,29 +246,26 @@ function M.new(ctx)
                     break
                 end
             end
-
             return base
         end
 
         local function parse_simple_expr()
             local p0 = pos
             local k = peek_kind()
-
             if k == "<number>" then
                 return mark_range(C.Number(advance().value), p0)
             elseif k == "<string>" then
                 return mark_range(C.String(advance().value), p0)
             elseif k == "nil" then
-                advance(); return C.Nil()
+                advance(); return C.Nil
             elseif k == "true" then
-                advance(); return mark_range(C.True(), p0)
+                advance(); return mark_range(C.True, p0)
             elseif k == "false" then
-                advance(); return mark_range(C.False(), p0)
+                advance(); return mark_range(C.False, p0)
             elseif k == "..." then
-                advance(); return mark_range(C.Vararg(), p0)
+                advance(); return mark_range(C.Vararg, p0)
             elseif k == "function" then
-                advance()
-                return mark_range(C.FunctionExpr(parse_funcbody()), p0)
+                advance(); return mark_range(C.FunctionExpr(parse_funcbody()), p0)
             elseif k == "{" then
                 advance()
                 local fields = parse_fieldlist()
@@ -324,22 +276,16 @@ function M.new(ctx)
             end
         end
 
-        -- Operator precedence
         local UNARY_OPS = { ["-"] = true, ["not"] = true, ["#"] = true, ["~"] = true }
-
         local BINARY_PREC = {
-            ["or"]  = {1, 1},
-            ["and"] = {2, 2},
-            ["<"]   = {3, 3}, [">"]  = {3, 3}, ["<="] = {3, 3}, [">="] = {3, 3},
-            ["~="]  = {3, 3}, ["=="] = {3, 3},
-            ["|"]   = {4, 4},
-            ["~"]   = {5, 5},
-            ["&"]   = {6, 6},
-            ["<<"]  = {7, 7}, [">>"] = {7, 7},
-            [".."]  = {8, 7},  -- right-associative
-            ["+"]   = {9, 9}, ["-"]  = {9, 9},
-            ["*"]   = {10, 10}, ["/"] = {10, 10}, ["//"] = {10, 10}, ["%"] = {10, 10},
-            ["^"]   = {12, 11},  -- right-associative
+            ["or"]  = {1, 1}, ["and"] = {2, 2},
+            ["<"] = {3, 3}, [">"] = {3, 3}, ["<="] = {3, 3}, [">="] = {3, 3}, ["~="] = {3, 3}, ["=="] = {3, 3},
+            ["|"] = {4, 4}, ["~"] = {5, 5}, ["&"] = {6, 6},
+            ["<<"] = {7, 7}, [">>"] = {7, 7},
+            [".."] = {8, 7},
+            ["+"] = {9, 9}, ["-"] = {9, 9},
+            ["*"] = {10, 10}, ["/"] = {10, 10}, ["//"] = {10, 10}, ["%"] = {10, 10},
+            ["^"] = {12, 11},
         }
 
         local function parse_unary()
@@ -356,7 +302,6 @@ function M.new(ctx)
         local function parse_binary(min_prec)
             local p0 = pos
             local lhs = parse_unary()
-
             while true do
                 local k = peek_kind()
                 local prec = BINARY_PREC[k]
@@ -365,65 +310,53 @@ function M.new(ctx)
                 local rhs = parse_binary(prec[2] + 1)
                 lhs = mark_range(C.Binary(k, lhs, rhs), p0)
             end
-
             return lhs
         end
 
-        parse_expr = function()
-            return parse_binary(1)
-        end
+        parse_expr = function() return parse_binary(1) end
 
         local function parse_exprlist()
             local exprs = { parse_expr() }
-            while match(",") do
-                exprs[#exprs + 1] = parse_expr()
-            end
+            while match(",") do exprs[#exprs + 1] = parse_expr() end
             return exprs
         end
 
-        -- ── LValue parsing ─────────────────────────────────
-
         local function expr_to_lvalue(expr)
-            if expr.kind == "NameRef" then
-                return C.LName(expr.name)
-            elseif expr.kind == "Field" then
-                return C.LField(expr.base, expr.key)
-            elseif expr.kind == "Index" then
-                return C.LIndex(expr.base, expr.key)
-            else
-                -- fallback: treat as name
-                return C.LName("_")
-            end
+            if expr.kind == "NameRef" then return C.LName(expr.name) end
+            if expr.kind == "Field" then return C.LField(expr.base, expr.key) end
+            if expr.kind == "Index" then return C.LIndex(expr.base, expr.key) end
+            return C.LName("_")
         end
 
-        -- ── Statement parsing ──────────────────────────────
+        lvalue_to_expr = function(lv)
+            if lv.kind == "LName" then return C.NameRef(lv.name) end
+            if lv.kind == "LField" then return C.Field(lv.base, lv.key) end
+            if lv.kind == "LIndex" then return C.Index(lv.base, lv.key) end
+            return C.NameRef("_")
+        end
 
         local function parse_if_stmt()
             local p0 = pos
-            advance() -- if
+            advance()
             local cond = parse_expr()
             expect("then")
             local body = parse_block()
             local arms = { C.CondBlock(cond, body) }
-
             while match("elseif") do
                 local econd = parse_expr()
                 expect("then")
                 local ebody = parse_block()
                 arms[#arms + 1] = C.CondBlock(econd, ebody)
             end
-
             local else_block = C.Block({})
-            if match("else") then
-                else_block = parse_block()
-            end
+            if match("else") then else_block = parse_block() end
             expect("end")
             return mark_range(C.If(arms, else_block), p0)
         end
 
         local function parse_while_stmt()
             local p0 = pos
-            advance() -- while
+            advance()
             local cond = parse_expr()
             expect("do")
             local body = parse_block()
@@ -433,7 +366,7 @@ function M.new(ctx)
 
         local function parse_repeat_stmt()
             local p0 = pos
-            advance() -- repeat
+            advance()
             local body = parse_block()
             expect("until")
             local cond = parse_expr()
@@ -442,11 +375,9 @@ function M.new(ctx)
 
         local function parse_for_stmt()
             local p0 = pos
-            advance() -- for
+            advance()
             local name = expect("<name>").value
-
             if match("=") then
-                -- numeric for
                 local init = parse_expr()
                 expect(",")
                 local limit = parse_expr()
@@ -456,11 +387,8 @@ function M.new(ctx)
                 expect("end")
                 return mark_range(C.ForNum(name, init, limit, step, body), p0)
             else
-                -- generic for
                 local names = { mark_range(C.Name(name), p0 + 1) }
-                while match(",") do
-                    names[#names + 1] = parse_name()
-                end
+                while match(",") do names[#names + 1] = parse_name() end
                 expect("in")
                 local iter = parse_exprlist()
                 expect("do")
@@ -472,38 +400,27 @@ function M.new(ctx)
 
         local function parse_local_stmt()
             local p0 = pos
-            advance() -- local
-
+            advance()
             if match("function") then
                 local fname = expect("<name>").value
                 local body = parse_funcbody()
                 return mark_range(C.LocalFunction(fname, body), p0)
             end
-
             local names = { parse_name() }
-            while match(",") do
-                names[#names + 1] = parse_name()
-            end
-
+            while match(",") do names[#names + 1] = parse_name() end
             local values = {}
-            if match("=") then
-                values = parse_exprlist()
-            end
+            if match("=") then values = parse_exprlist() end
             return mark_range(C.LocalAssign(names, values), p0)
         end
 
         local function parse_function_stmt()
             local p0 = pos
-            advance() -- function
-
-            -- Parse function name: a.b.c or a.b.c:d
+            advance()
             local fname_p0 = pos
             local name_str = expect("<name>").value
             local lv = mark_range(C.LName(name_str), fname_p0)
-
             while match(".") do
                 local key = expect("<name>").value
-                -- Convert to LField: the base is the expr equivalent
                 local base_expr = (lv.kind == "LName") and C.NameRef(lv.name) or
                     (lv.kind == "LField") and C.Field(lvalue_to_expr(lv), lv.key) or
                     C.NameRef(name_str)
@@ -516,363 +433,128 @@ function M.new(ctx)
                     C.NameRef(name_str)
                 lv = C.LMethod(base_expr, method)
             end
-
             local body = parse_funcbody()
             return mark_range(C.Function(lv, body), p0)
         end
 
         local function parse_return_stmt()
             local p0 = pos
-            advance() -- return
+            advance()
             local values = {}
             local k = peek_kind()
             if k ~= "end" and k ~= "else" and k ~= "elseif" and k ~= "until" and k ~= "<eof>" and k ~= ";" then
                 values = parse_exprlist()
             end
-            match(";") -- optional semicolon after return
+            match(";")
             return mark_range(C.Return(values), p0)
-        end
-
-        -- Convert LValue to Expr (for chained field access in function names)
-        local function lvalue_to_expr(lv)
-            if lv.kind == "LName" then return C.NameRef(lv.name)
-            elseif lv.kind == "LField" then return C.Field(lv.base, lv.key)
-            elseif lv.kind == "LIndex" then return C.Index(lv.base, lv.key)
-            else return C.NameRef("_") end
         end
 
         parse_stmt = function()
             local p0 = pos
             local k = peek_kind()
-
-            if k == "if"       then return parse_if_stmt()
-            elseif k == "while"  then return parse_while_stmt()
+            if k == "if" then return parse_if_stmt()
+            elseif k == "while" then return parse_while_stmt()
             elseif k == "repeat" then return parse_repeat_stmt()
-            elseif k == "for"    then return parse_for_stmt()
-            elseif k == "do"     then
-                advance()
-                local body = parse_block()
-                expect("end")
-                return mark_range(C.Do(body), p0)
-            elseif k == "local"  then return parse_local_stmt()
+            elseif k == "for" then return parse_for_stmt()
+            elseif k == "do" then
+                advance(); local body = parse_block(); expect("end"); return mark_range(C.Do(body), p0)
+            elseif k == "local" then return parse_local_stmt()
             elseif k == "function" then return parse_function_stmt()
             elseif k == "return" then return parse_return_stmt()
-            elseif k == "break"  then
-                advance()
-                return mark_range(C.Break(), p0)
-            elseif k == "goto"   then
-                advance()
-                local label = expect("<name>").value
-                return mark_range(C.Goto(label), p0)
-            elseif k == "::"     then
-                advance()
-                local label = expect("<name>").value
-                expect("::")
-                return mark_range(C.Label(label), p0)
-            elseif k == ";"      then
-                advance()
-                return nil  -- empty statement
+            elseif k == "break" then advance(); return mark_range(C.Break, p0)
+            elseif k == "goto" then advance(); return mark_range(C.Goto(expect("<name>").value), p0)
+            elseif k == "::" then advance(); local label = expect("<name>").value; expect("::"); return mark_range(C.Label(label), p0)
+            elseif k == ";" then advance(); return nil
             else
-                -- Expression statement: assignment or function call
                 local expr = parse_suffixed_expr()
-
-                -- Check for assignment
                 if check("=") or check(",") then
                     local lhs = { expr_to_lvalue(expr) }
-                    while match(",") do
-                        lhs[#lhs + 1] = expr_to_lvalue(parse_suffixed_expr())
-                    end
+                    while match(",") do lhs[#lhs + 1] = expr_to_lvalue(parse_suffixed_expr()) end
                     expect("=")
                     local rhs = parse_exprlist()
                     return mark_range(C.Assign(lhs, rhs), p0)
                 end
-
-                -- Must be a function call
                 if expr.kind == "Call" or expr.kind == "MethodCall" then
                     return mark_range(C.CallStmt(expr.callee or expr.recv, expr.args or {}), p0)
                 end
-
-                -- Fallback: treat as call statement
                 return mark_range(C.CallStmt(expr, {}), p0)
             end
         end
 
-        -- ── Doc comment parsing ────────────────────────────
-
         local function parse_doc_comment(text)
             local tags = {}
-
-            local primitive = {
-                number = C.TNumber(), string = C.TString(), boolean = C.TBoolean(),
-                ["nil"] = C.TNil(), any = C.TAny(),
-            }
-
-            local function trim(s)
-                return (s or ""):match("^%s*(.-)%s*$")
-            end
-
+            local primitive = { number = C.TNumber, string = C.TString, boolean = C.TBoolean, ["nil"] = C.TNil, any = C.TAny }
+            local function trim(s) return (s or ""):match("^%s*(.-)%s*$") end
             local function parse_doc_type(s)
                 s = trim(s)
-                if s == "" then return C.TAny() end
-
+                if s == "" then return C.TAny end
                 local parts = {}
                 for raw in s:gmatch("[^|]+") do
                     local p = trim(raw)
                     local optional = false
-                    if p:sub(-1) == "?" then
-                        optional = true
-                        p = p:sub(1, -2)
-                    end
-
+                    if p:sub(-1) == "?" then optional = true; p = p:sub(1, -2) end
                     local arr = 0
-                    while p:sub(-2) == "[]" do
-                        arr = arr + 1
-                        p = p:sub(1, -3)
-                    end
-
+                    while p:sub(-2) == "[]" do arr = arr + 1; p = p:sub(1, -3) end
                     local t = primitive[p] or C.TNamed(p)
                     for _ = 1, arr do t = C.TArray(t) end
                     if optional then t = C.TOptional(t) end
                     parts[#parts + 1] = t
                 end
-
-                if #parts == 0 then return C.TAny() end
+                if #parts == 0 then return C.TAny end
                 if #parts == 1 then return parts[1] end
                 return C.TUnion(parts)
             end
 
-            -- ---@class Name[: Base, Base2]
             local cls, extends = text:match("%-%-%-@class%s+([%w_%.]+)%s*:%s*(.+)")
             if cls then
                 local ex = {}
-                for e in tostring(extends or ""):gmatch("[^,]+") do
-                    ex[#ex + 1] = parse_doc_type(e)
-                end
+                for e in tostring(extends or ""):gmatch("[^,]+") do ex[#ex + 1] = parse_doc_type(e) end
                 tags[#tags + 1] = C.ClassTag(cls, ex)
                 return tags
             end
             cls = text:match("%-%-%-@class%s+([%w_%.]+)")
-            if cls then
-                tags[#tags + 1] = C.ClassTag(cls, {})
-                return tags
-            end
+            if cls then tags[#tags + 1] = C.ClassTag(cls, {}); return tags end
 
-            -- ---@field name[?] type
             local fname, fopt_name, ftype = text:match("%-%-%-@field%s+([%w_]+)(%??)%s+([%w_%.%[%]%|%?]+)")
-            if fname then
-                local typ = parse_doc_type(ftype)
-                local optional = (fopt_name == "?")
-                tags[#tags + 1] = C.FieldTag(fname, typ, optional)
-                return tags
-            end
+            if fname then tags[#tags + 1] = C.FieldTag(fname, parse_doc_type(ftype), fopt_name == "?"); return tags end
 
-            -- ---@param name type
             local pname, ptype = text:match("%-%-%-@param%s+([%w_]+)%s+([%w_%.%[%]%|%?]+)")
-            if pname then
-                tags[#tags + 1] = C.ParamTag(pname, parse_doc_type(ptype))
-                return tags
-            end
+            if pname then tags[#tags + 1] = C.ParamTag(pname, parse_doc_type(ptype)); return tags end
 
-            -- ---@return type
             local rtype = text:match("%-%-%-@return%s+([%w_%.%[%]%|%?]+)")
-            if rtype then
-                tags[#tags + 1] = C.ReturnTag({ parse_doc_type(rtype) })
-                return tags
-            end
+            if rtype then tags[#tags + 1] = C.ReturnTag({ parse_doc_type(rtype) }); return tags end
 
-            -- ---@alias name type
             local aname, atype = text:match("%-%-%-@alias%s+([%w_%.]+)%s+([%w_%.%[%]%|%?]+)")
-            if aname then
-                tags[#tags + 1] = C.AliasTag(aname, parse_doc_type(atype))
-                return tags
-            end
+            if aname then tags[#tags + 1] = C.AliasTag(aname, parse_doc_type(atype)); return tags end
 
-            -- ---@type type
             local ttype = text:match("%-%-%-@type%s+([%w_%.%[%]%|%?]+)")
-            if ttype then
-                tags[#tags + 1] = C.TypeTag(parse_doc_type(ttype))
-                return tags
-            end
+            if ttype then tags[#tags + 1] = C.TypeTag(parse_doc_type(ttype)); return tags end
 
-            -- ---@generic Name
             local gname = text:match("%-%-%-@generic%s+([%w_]+)")
-            if gname then
-                tags[#tags + 1] = C.GenericTag(gname, {})
-                return tags
-            end
+            if gname then tags[#tags + 1] = C.GenericTag(gname, {}); return tags end
 
-            -- ---@cast expr type
             local ctype = text:match("%-%-%-@cast%s+%w+%s+([%w_%.%[%]%|%?]+)")
-            if ctype then
-                tags[#tags + 1] = C.CastTag(parse_doc_type(ctype))
-                return tags
-            end
+            if ctype then tags[#tags + 1] = C.CastTag(parse_doc_type(ctype)); return tags end
 
-            -- ---@meta name text
             local mname, mtext = text:match("%-%-%-@(%w+)%s+(.*)")
-            if mname then
-                tags[#tags + 1] = C.MetaTag(mname, mtext)
-                return tags
-            end
-
+            if mname then tags[#tags + 1] = C.MetaTag(mname, mtext); return tags end
             return tags
         end
 
-        -- ── Scope extraction ───────────────────────────────
-        -- Walks a Stmt tree and extracts flat NameOcc array.
-        -- This replaces the expensive scope_events phase walk.
-        -- Done once at parse time — O(n) over AST nodes, no pvm overhead.
-
-        local function extract_scope(stmt)
-            local out = {}
-            local n = 0
-            local function emit(occ) n = n + 1; out[n] = occ end
-
-            local function walk_expr(e)
-                if not e then return end
-                local k = e.kind
-                if k == "NameRef" then emit(C.OccRef(e.name))
-                elseif k == "Field" then walk_expr(e.base)
-                elseif k == "Index" then walk_expr(e.base); walk_expr(e.key)
-                elseif k == "Call" then
-                    walk_expr(e.callee)
-                    for i = 1, #e.args do walk_expr(e.args[i]) end
-                elseif k == "MethodCall" then
-                    walk_expr(e.recv)
-                    for i = 1, #e.args do walk_expr(e.args[i]) end
-                elseif k == "FunctionExpr" then walk_body(e.body)
-                elseif k == "TableCtor" then
-                    for i = 1, #e.fields do
-                        local f = e.fields[i]
-                        if f.kind == "ArrayField" then walk_expr(f.value)
-                        elseif f.kind == "PairField" then walk_expr(f.key); walk_expr(f.value)
-                        elseif f.kind == "NameField" then walk_expr(f.value)
-                        end
-                    end
-                elseif k == "Unary" then walk_expr(e.value)
-                elseif k == "Binary" then walk_expr(e.lhs); walk_expr(e.rhs)
-                elseif k == "Paren" then walk_expr(e.inner)
-                end
-                -- Nil, True, False, Number, String, Vararg → nothing
-            end
-
-            local function walk_lvalue(lv)
-                if lv.kind == "LName" then emit(C.OccWrite(lv.name))
-                elseif lv.kind == "LField" then walk_expr(lv.base)
-                elseif lv.kind == "LIndex" then walk_expr(lv.base); walk_expr(lv.key)
-                elseif lv.kind == "LMethod" then walk_expr(lv.base)
-                end
-            end
-
-            local function walk_block(block)
-                for i = 1, #block.items do walk_stmt(block.items[i].stmt) end
-            end
-
-            function walk_body(body, implicit_self)
-                emit(C.OccScopeEnter(C.ScopeFunction))
-                if implicit_self then
-                    emit(C.OccDecl(C.DeclParam, "self"))
-                end
-                for i = 1, #body.params do
-                    emit(C.OccDecl(C.DeclParam, body.params[i].name))
-                end
-                walk_block(body.body)
-                emit(C.OccScopeExit(C.ScopeFunction))
-            end
-
-            function walk_stmt(s)
-                if not s then return end
-                local k = s.kind
-                if k == "LocalAssign" then
-                    for i = 1, #s.values do walk_expr(s.values[i]) end
-                    for i = 1, #s.names do emit(C.OccDecl(C.DeclLocal, s.names[i].value)) end
-                elseif k == "Assign" then
-                    for i = 1, #s.rhs do walk_expr(s.rhs[i]) end
-                    for i = 1, #s.lhs do walk_lvalue(s.lhs[i]) end
-                elseif k == "LocalFunction" then
-                    emit(C.OccDecl(C.DeclLocal, s.name))
-                    walk_body(s.body)
-                elseif k == "Function" then
-                    local implicit_self = false
-                    if s.name.kind == "LName" then
-                        emit(C.OccWrite(s.name.name))
-                    elseif s.name.kind == "LField" then walk_expr(s.name.base)
-                    elseif s.name.kind == "LIndex" then walk_expr(s.name.base); walk_expr(s.name.key)
-                    elseif s.name.kind == "LMethod" then
-                        walk_expr(s.name.base)
-                        implicit_self = true
-                    end
-                    walk_body(s.body, implicit_self)
-                elseif k == "Return" then
-                    for i = 1, #s.values do walk_expr(s.values[i]) end
-                elseif k == "CallStmt" then
-                    walk_expr(s.callee)
-                    for i = 1, #s.args do walk_expr(s.args[i]) end
-                elseif k == "If" then
-                    for i = 1, #s.arms do
-                        walk_expr(s.arms[i].cond)
-                        emit(C.OccScopeEnter(C.ScopeIf))
-                        walk_block(s.arms[i].body)
-                        emit(C.OccScopeExit(C.ScopeIf))
-                    end
-                    if s.else_block then
-                        emit(C.OccScopeEnter(C.ScopeElse))
-                        walk_block(s.else_block)
-                        emit(C.OccScopeExit(C.ScopeElse))
-                    end
-                elseif k == "While" then
-                    walk_expr(s.cond)
-                    emit(C.OccScopeEnter(C.ScopeWhile))
-                    walk_block(s.body)
-                    emit(C.OccScopeExit(C.ScopeWhile))
-                elseif k == "Repeat" then
-                    emit(C.OccScopeEnter(C.ScopeRepeat))
-                    walk_block(s.body)
-                    walk_expr(s.cond)
-                    emit(C.OccScopeExit(C.ScopeRepeat))
-                elseif k == "ForNum" then
-                    walk_expr(s.init); walk_expr(s.limit); walk_expr(s.step)
-                    emit(C.OccScopeEnter(C.ScopeFor))
-                    emit(C.OccDecl(C.DeclLocal, s.name))
-                    walk_block(s.body)
-                    emit(C.OccScopeExit(C.ScopeFor))
-                elseif k == "ForIn" then
-                    for i = 1, #s.iter do walk_expr(s.iter[i]) end
-                    emit(C.OccScopeEnter(C.ScopeFor))
-                    for i = 1, #s.names do emit(C.OccDecl(C.DeclLocal, s.names[i].value)) end
-                    walk_block(s.body)
-                    emit(C.OccScopeExit(C.ScopeFor))
-                elseif k == "Do" then
-                    emit(C.OccScopeEnter(C.ScopeDo))
-                    walk_block(s.body)
-                    emit(C.OccScopeExit(C.ScopeDo))
-                end
-                -- Break, Goto, Label → nothing scope-relevant
-            end
-
-            walk_stmt(stmt)
-            return out
-        end
-
-        -- ── Block parsing ──────────────────────────────────
-
         parse_block = function()
-            local p0 = pos
+            block_depth = block_depth + 1
+            local is_top = (block_depth == 1)
             local items = {}
             local pending_tags = {}
-
+            local pending_start = nil
             while true do
                 local k = raw_peek_kind()
-                -- Block terminators
-                if k == "end" or k == "else" or k == "elseif" or k == "until" or k == "<eof>" then
-                    break
-                end
-
-                -- Doc comments
+                if k == "end" or k == "else" or k == "elseif" or k == "until" or k == "<eof>" then break end
                 if k == "<comment>" then
                     local at = pos
                     local t = raw_advance()
                     if t.value:match("^%-%-%-@") then
+                        if not pending_start then pending_start = at end
                         local tags = parse_doc_comment(t.value)
                         for j = 1, #tags do
                             local tag = tags[j]
@@ -881,89 +563,249 @@ function M.new(ctx)
                         end
                     end
                 else
+                    local item_start = pending_start or pos
                     local ok, stmt = pcall(parse_stmt)
                     if ok and stmt then
                         local docs = {}
-                        if #pending_tags > 0 then
-                            docs[1] = C.DocBlock(pending_tags)
-                            pending_tags = {}
-                        end
+                        if #pending_tags > 0 then docs[1] = C.DocBlock(pending_tags); pending_tags = {} end
                         items[#items + 1] = C.Item(docs, stmt)
+                        if is_top then
+                            top_items[#top_items + 1] = {
+                                index = #items,
+                                start_pos = item_start,
+                                end_pos = pos - 1,
+                            }
+                        end
+                        pending_start = nil
                     elseif not ok then
-                        -- Error recovery: skip token
                         raw_advance()
+                        pending_tags = {}
+                        pending_start = nil
                     end
                 end
             end
-
+            block_depth = block_depth - 1
             return C.Block(items)
         end
 
-        -- ── Top-level parse ────────────────────────────────
-
-        local function parse_file()
+        local function parse_doc(source)
             local block = parse_block()
             local items = block.items
-            if #items == 0 then
-                items = { C.Item({}, C.Break()) }
-            end
-            local file = C.File(uri, items)
+            if #items == 0 then items = { C.Item({}, C.Break) } end
 
-            -- Build ServerMeta from anchors
-            local meta_positions = {}
+            local anchor_points = {}
             for i = 1, anchor_n do
                 local a = anchors[i]
-                meta_positions[i] = C.ServerAnchorPoint(a.anchor, a.range, "")
+                local sp = positions[a.start_pos] or { start_offset = 1 }
+                local ep = positions[a.end_pos] or sp
+                anchor_points[i] = C.AnchorPoint(
+                    a.anchor,
+                    "",
+                    C.Span(
+                        a.range,
+                        sp.start_offset or 1,
+                        ep.end_offset or ep.start_offset or 1
+                    )
+                )
             end
-            local meta = C.ServerMeta(meta_positions, "")
 
-            return file, meta
+            local parsed_items = {}
+            for i = 1, #top_items do
+                local it = top_items[i]
+                local sp = positions[it.start_pos] or { line = 1, col = 1, start_offset = 1, end_offset = 1 }
+                local ep = positions[it.end_pos] or sp
+                parsed_items[i] = C.ParsedItem(
+                    items[it.index],
+                    C.Span(
+                        C.LspRange(
+                            C.LspPos((sp.line or 1) - 1, (sp.col or 1) - 1),
+                            C.LspPos((ep.line or 1) - 1, (ep.col or 1) - 1 + ((ep.end_offset or ep.start_offset or 1) - (ep.start_offset or 1) + 1))
+                        ),
+                        sp.start_offset or 1,
+                        ep.end_offset or ep.start_offset or 1
+                    )
+                )
+            end
+
+            return C.ParsedDoc(source.uri, source.version or 0, source.text or "", parsed_items, anchor_points, C.ParseOk)
         end
 
-        return { parse_file = parse_file }
+        return { parse_doc = parse_doc }
     end
 
-    -- ══════════════════════════════════════════════════════════
-    --  pvm.lower("parse") boundary
-    -- ══════════════════════════════════════════════════════════
-    --
-    -- Drains lex_with_positions(source_file) → tokens + positions.
-    -- Runs recursive descent.
-    -- Returns (File, ServerMeta).
-    --
-    -- Cached per SourceFile identity. When source changes →
-    -- new SourceFile → cache miss → re-parse. But the resulting
-    -- AST Items that are structurally identical to before are the
-    -- SAME interned objects → all downstream phases get cache hits.
+    local function error_doc(source, message)
+        return C.ParsedDoc(source.uri, source.version or 0, source.text or "", {}, {}, C.ParseError(tostring(message or "parse error")))
+    end
 
-    local parse = pvm.lower("parse", function(source_file)
-        local lex_result = lexer_engine.lex_with_positions(source_file)
-        local tokens = lex_result.tokens
-        local positions = lex_result.positions
-
-        local ok, parser = pcall(make_parser, tokens, positions, source_file.uri)
-        if not ok then
-            -- Hard fallback: return minimal File
-            local file = C.File(source_file.uri, { C.Item({}, C.Break()) })
-            local meta = C.ServerMeta({}, tostring(parser))
-            return { file = file, meta = meta }
+    local function parse_source(source, base_line, base_col, base_offset)
+        local lexed = pvm.drain(lexer_engine.lex_with_positions(source))
+        local tokens = {}
+        local positions = {}
+        local bl = base_line or 1
+        local bc = base_col or 1
+        local bo = base_offset or 1
+        for i = 1, #lexed do
+            local lt = lexed[i]
+            tokens[i] = lt.token
+            positions[i] = {
+                line = bl + lt.line - 1,
+                col = (lt.line == 1) and (bc + lt.col - 1) or lt.col,
+                start_offset = bo + lt.start_offset - 1,
+                end_offset = bo + lt.end_offset - 1,
+            }
         end
 
-        local ok2, file, meta = pcall(function() return parser.parse_file() end)
-        if not ok2 then
-            local err_file = C.File(source_file.uri, { C.Item({}, C.Break()) })
-            local err_meta = C.ServerMeta({}, tostring(file))
-            return { file = err_file, meta = err_meta }
-        end
+        local ok, parser = pcall(make_parser, tokens, positions, source.uri)
+        if not ok then return error_doc(source, parser) end
 
-        return { file = file, meta = meta }
+        local ok2, doc = pcall(function() return parser.parse_doc(source) end)
+        if not ok2 then return error_doc(source, doc) end
+        return doc
+    end
+
+    local parse = pvm.phase("parse", function(source)
+        return parse_source(source, 1, 1, 1)
     end)
+
+    local function range_from_offsets(text, start_offset, stop_offset)
+        local sl, sc = offset_to_line_col(text, start_offset)
+        local el, ec = offset_to_line_col(text, (stop_offset or start_offset) + 1)
+        return C.LspRange(C.LspPos(sl - 1, sc - 1), C.LspPos(el - 1, ec - 1))
+    end
+
+    local function shift_span(span, delta, text)
+        if not span then
+            return C.Span(C.LspRange(C.LspPos(0, 0), C.LspPos(0, 1)), 1, 1)
+        end
+        if (delta or 0) == 0 then return span end
+        local so = (span.start_offset or 1) + delta
+        local eo = (span.stop_offset or so) + delta
+        return C.Span(range_from_offsets(text, so, eo), so, eo)
+    end
+
+    local function to_parsed_item(it, delta, text)
+        if not it then return nil end
+        return C.ParsedItem(it.syntax, shift_span(it.span, delta or 0, text))
+    end
+
+    local function slice_items(doc, start_idx, end_idx, delta, text)
+        local out = {}
+        if not doc or not doc.items then return out end
+        for i = start_idx or 1, end_idx or 0 do
+            local it = doc.items[i]
+            if it then out[#out + 1] = to_parsed_item(it, delta, text) end
+        end
+        return out
+    end
+
+    local function slice_anchor_range(doc, start_offset, stop_offset, delta, text)
+        local out = {}
+        if not doc or not doc.anchors then return out end
+        for i = 1, #doc.anchors do
+            local ap = doc.anchors[i]
+            local sp = ap.span
+            if sp and sp.start_offset >= start_offset and sp.stop_offset <= stop_offset then
+                if (delta or 0) == 0 then
+                    out[#out + 1] = ap
+                else
+                    out[#out + 1] = C.AnchorPoint(ap.anchor, ap.label, shift_span(ap.span, delta, text))
+                end
+            end
+        end
+        return out
+    end
+
+    local function concat3(a, b, c)
+        local out = {}
+        for i = 1, #a do out[#out + 1] = a[i] end
+        for i = 1, #b do out[#out + 1] = b[i] end
+        for i = 1, #c do out[#out + 1] = c[i] end
+        return out
+    end
+
+    local function parse_incremental(uri, version, text, prev_doc)
+        local source = C.OpenDoc(uri, version or 0, text or "")
+        if not prev_doc then
+            return pvm.one(parse(source))
+        end
+
+        local old_items = prev_doc.items or {}
+        local old_text = prev_doc.text or ""
+        local new_text = text or ""
+        if #old_items == 0 then
+            return pvm.one(parse(source))
+        end
+
+        if old_text == new_text then
+            return C.ParsedDoc(source.uri, source.version or 0, source.text or "", slice_items(prev_doc, 1, #old_items, 0, source.text or ""), prev_doc.anchors, prev_doc.status)
+        end
+
+        local old_len, new_len = #old_text, #new_text
+        local prefix = 0
+        local max_prefix = math.min(old_len, new_len)
+        while prefix < max_prefix and old_text:byte(prefix + 1) == new_text:byte(prefix + 1) do
+            prefix = prefix + 1
+        end
+
+        local suffix = 0
+        local max_suffix = math.min(old_len - prefix, new_len - prefix)
+        while suffix < max_suffix and old_text:byte(old_len - suffix) == new_text:byte(new_len - suffix) do
+            suffix = suffix + 1
+        end
+
+        local old_change_start = prefix + 1
+        local old_change_end = math.max(old_change_start, old_len - suffix)
+        local delta = new_len - old_len
+
+        local first_idx, last_idx = nil, nil
+        for i = 1, #old_items do
+            local sp = old_items[i].span
+            if sp and sp.stop_offset >= old_change_start then first_idx = i; break end
+        end
+        for i = #old_items, 1, -1 do
+            local sp = old_items[i].span
+            if sp and sp.start_offset <= old_change_end then last_idx = i; break end
+        end
+        if not first_idx or not last_idx or first_idx > last_idx then
+            return pvm.one(parse(source))
+        end
+
+        local region_start = old_items[first_idx].span.start_offset
+        local old_suffix_start = (last_idx < #old_items) and old_items[last_idx + 1].span.start_offset or (old_len + 1)
+        local new_suffix_start = old_suffix_start + delta
+        if new_suffix_start < region_start then new_suffix_start = region_start end
+
+        local start_line, start_col = offset_to_line_col(new_text, region_start)
+        local region_text = new_text:sub(region_start, new_suffix_start - 1)
+        local mid_doc = C.ParsedDoc(uri, version or 0, region_text, {}, {}, C.ParseOk)
+        if region_text ~= "" then
+            mid_doc = parse_source(C.OpenDoc(uri, version or 0, region_text), start_line, start_col, region_start)
+            if mid_doc.status.kind == "ParseError" then
+                return pvm.one(parse(source))
+            end
+        end
+
+        local prefix_items = slice_items(prev_doc, 1, first_idx - 1, 0, new_text)
+        local suffix_items = slice_items(prev_doc, last_idx + 1, #old_items, delta, new_text)
+        local prefix_anchors = slice_anchor_range(prev_doc, 1, region_start - 1, 0, new_text)
+        local suffix_anchors = slice_anchor_range(prev_doc, old_suffix_start, old_len + 1, delta, new_text)
+
+        return C.ParsedDoc(
+            source.uri,
+            source.version or 0,
+            source.text or "",
+            concat3(prefix_items, mid_doc.items or {}, suffix_items),
+            concat3(prefix_anchors, mid_doc.anchors or {}, suffix_anchors),
+            C.ParseOk
+        )
+    end
 
     return {
         C = C,
         context = ctx,
         lexer = lexer_engine,
         parse = parse,
+        parse_incremental = parse_incremental,
     }
 end
 

@@ -4,6 +4,7 @@
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
+local pvm        = require("pvm")
 local ASDL       = require("lsp.asdl")
 local Lexer      = require("lsp.lexer")
 local Parser     = require("lsp.parser")
@@ -73,40 +74,25 @@ function M.server(opts)
     local sem = opts.engine or M.semantics(ctx)
 
     if not opts.parse then
-        opts.parse = function(uri, text, _prev_file, _C, _params)
-            local source = C.SourceFile(uri, text or "")
-            local result = parser_engine.parse(source)
-            return result.file, result.meta
+        opts.parse = function(uri, version, text, prev_doc, _C, _params)
+            return parser_engine.parse_incremental(uri, version or 0, text or "", prev_doc)
         end
     end
 
-    if not opts.adapter_opts then opts.adapter_opts = {} end
-    if not opts.adapter_opts.anchor_to_range then
-        opts.adapter_opts.anchor_to_range = function(_file, anchor, _aid, meta)
-            if not anchor or not meta then return nil end
-            local aid = anchor.id
-            for i = 1, #meta.positions do
-                local p = meta.positions[i]
-                if p.anchor.id == aid then
-                    return {
-                        start = { line = p.range.start.line, character = p.range.start.character },
-                        ["end"] = { line = p.range.stop.line, character = p.range.stop.character },
-                    }
-                end
-            end
-            return nil
+    if not opts.compile then
+        opts.compile = function(parsed)
+            return sem:compile(parsed)
         end
     end
 
     if not opts.position_to_anchor then
-        opts.position_to_anchor = function(_file, position, doc)
-            local meta = doc and doc.meta
-            if not meta then return nil end
+        opts.position_to_anchor = function(doc, position)
+            if not doc or not doc.anchors then return nil end
             local line = position.line or 0
             local ch = position.character or 0
-            for i = 1, #meta.positions do
-                local p = meta.positions[i]
-                local rs, re = p.range.start, p.range.stop
+            for i = 1, #doc.anchors do
+                local p = doc.anchors[i]
+                local rs, re = p.span.range.start, p.span.range.stop
                 if (line > rs.line or (line == rs.line and ch >= rs.character))
                     and (line < re.line or (line == re.line and ch <= re.character)) then
                     return p.anchor

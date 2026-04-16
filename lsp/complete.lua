@@ -1,6 +1,6 @@
 -- lsp/complete.lua
 --
--- Completion engine. pvm.lower("complete"): CompletionQuery → CompletionList
+-- Completion engine. pvm.phase("complete"): CompletionQuery → CompletionItem*
 --
 -- Completion sources:
 --   1. Locals in scope at cursor position
@@ -56,10 +56,11 @@ function M.new(semantics_engine, type_engine)
         return KIND.Variable
     end
 
-    -- ── complete lower ─────────────────────────────────────
+    -- ── complete phase ─────────────────────────────────────
 
-    local complete = pvm.lower("complete", function(q)
-        local file = q.file
+    local complete = pvm.phase("complete", {
+        [C.CompletionQuery] = function(q)
+        local file = q.doc
         local prefix = q.prefix or ""
         local prefix_lower = prefix:lower()
         local items = {}
@@ -77,7 +78,7 @@ function M.new(semantics_engine, type_engine)
 
         -- 1. Symbols from the file
         local idx = semantics_engine:index(file)
-        local ti = type_engine and type_engine.typed_index(file) or nil
+        local ti = type_engine and pvm.one(type_engine.typed_index(file)) or nil
 
         local function type_detail(sym_id)
             if not ti then return "" end
@@ -120,11 +121,13 @@ function M.new(semantics_engine, type_engine)
             add(KEYWORDS[i], KIND.Keyword, "keyword", "9")
         end
 
-        return C.CompletionList(items, false)
-    end)
+        return pvm.seq(items)
+        end,
+    })
 
     return {
-        complete = complete,
+        complete_phase = complete,
+        complete = function(q) return complete(q) end,
         KIND = KIND,
         C = C,
     }

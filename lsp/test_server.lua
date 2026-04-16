@@ -2,7 +2,7 @@
 -- lsp/test_server.lua
 --
 -- End-to-end test of the full LSP server stack:
---   SourceFile → lex phase → parse lower → semantics → adapter → server → LSP response
+--   OpenDoc → lex phase → parse doc → semantics → adapter → server → LSP response
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 

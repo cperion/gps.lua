@@ -1,7 +1,7 @@
 -- lsp/codeaction.lua
 --
 -- Code action planner boundary.
--- pvm.lower("plan_code_actions"): CodeActionQuery -> LspCodeActionList
+-- pvm.phase("plan_code_actions"): CodeActionQuery -> LspCodeActionList
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -22,7 +22,7 @@ end
 function M.new(context)
     local C = context.Lua
 
-    local plan_code_actions = pvm.lower("plan_code_actions", function(q)
+    local plan_code_actions = pvm.phase("plan_code_actions", function(q)
         local out = {}
         local seen = {}
 
@@ -81,6 +81,7 @@ function M.new(context)
     end)
 
     return {
+        plan_code_actions_phase = plan_code_actions,
         plan_code_actions = plan_code_actions,
         C = C,
     }

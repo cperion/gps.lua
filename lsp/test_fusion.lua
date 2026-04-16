@@ -1,5 +1,5 @@
 #!/usr/bin/env luajit
--- Test the full pvm chain: lex phase → parse lower → semantic phases
+-- Test the full pvm chain: lex phase → parse phase → semantic phases
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local pvm = require("pvm")
@@ -17,17 +17,17 @@ local src = table.concat({
     "print(x + y)",
 }, "\n")
 
-local source = C.SourceFile("file:///test.lua", src)
+local source = C.OpenDoc("file:///test.lua", 0, src)
 
 -- First call: lex cache miss → scan runs → tokens stream out
 -- parse lower drains lex → recursive descent → AST
 print("=== First parse ===")
-local r1 = engine.parse(source)
-print("items:", #r1.file.items)
+local r1 = pvm.one(engine.parse(source))
+print("items:", #r1.items)
 
 -- Second call: parse cache hit → instant
 print("\n=== Second parse (cache hit) ===")
-local r2 = engine.parse(source)
+local r2 = pvm.one(engine.parse(source))
 assert(r1 == r2, "should be exact same result table (cache hit)")
 print("Cache hit: OK")
 
@@ -46,17 +46,17 @@ local src2 = table.concat({
     "local y = 999",      -- changed: 100 → 999
     "print(x + y)",       -- unchanged
 }, "\n")
-local source2 = C.SourceFile("file:///test.lua", src2)
-local r3 = engine.parse(source2)
+local source2 = C.OpenDoc("file:///test.lua", 0, src2)
+local r3 = pvm.one(engine.parse(source2))
 
--- Check which items are shared
-print("Item 1 (local x = 42):", r1.file.items[1] == r3.file.items[1] and "SHARED" or "different")
-print("Item 2 (local y = ...):", r1.file.items[2] == r3.file.items[2] and "shared" or "DIFFERENT (expected)")
-print("Item 3 (print(x + y)):", r1.file.items[3] == r3.file.items[3] and "SHARED" or "different")
+-- Check which item syntax nodes are shared
+print("Item 1 (local x = 42):", r1.items[1].syntax == r3.items[1].syntax and "SHARED" or "different")
+print("Item 2 (local y = ...):", r1.items[2].syntax == r3.items[2].syntax and "shared" or "DIFFERENT (expected)")
+print("Item 3 (print(x + y)):", r1.items[3].syntax == r3.items[3].syntax and "SHARED" or "different")
 
-assert(r1.file.items[1] == r3.file.items[1], "item 1 should be shared")
-assert(r1.file.items[2] ~= r3.file.items[2], "item 2 should differ")
-assert(r1.file.items[3] == r3.file.items[3], "item 3 should be shared")
+assert(r1.items[1].syntax == r3.items[1].syntax, "item 1 should be shared")
+assert(r1.items[2].syntax ~= r3.items[2].syntax, "item 2 should differ")
+assert(r1.items[3].syntax == r3.items[3].syntax, "item 3 should be shared")
 
 -- Now simulate what downstream phases would see:
 -- A pvm.phase("bind_symbols") dispatching per-Item would get cache hits
@@ -65,8 +65,10 @@ print("\n=== Simulating downstream phase caching ===")
 local bind_count = 0
 local bind
 bind = pvm.phase("test_bind", {
-    [C.File] = function(n)
-        return pvm.children(bind, n.items)
+    [C.ParsedDoc] = function(n)
+        local items = {}
+        for i = 1, #n.items do items[i] = n.items[i].syntax end
+        return pvm.children(bind, items)
     end,
     [C.Item] = function(n)
         bind_count = bind_count + 1
@@ -77,19 +79,19 @@ bind = pvm.phase("test_bind", {
 
 -- First file: all misses
 bind_count = 0
-local events1 = pvm.drain(bind(r1.file))
+local events1 = pvm.drain(bind(r1))
 print("First file - bind handler calls:", bind_count, "(3 expected)")
 assert(bind_count == 3)
 
 -- Same file again: all hits
 bind_count = 0
-local events2 = pvm.drain(bind(r1.file))
+local events2 = pvm.drain(bind(r1))
 print("Same file  - bind handler calls:", bind_count, "(0 expected, cache hit)")
 assert(bind_count == 0)
 
 -- Changed file: only item 2 misses
 bind_count = 0
-local events3 = pvm.drain(bind(r3.file))
+local events3 = pvm.drain(bind(r3))
 print("Changed    - bind handler calls:", bind_count, "(1 expected: only changed item)")
 -- Note: File node is different → File handler runs → pvm.children dispatches per item
 -- Items 1 & 3 are same objects → cache hit on those Items
@@ -128,7 +130,7 @@ for i = 1, 200 do
 end
 big_lines[#big_lines + 1] = "print(v1, v200)"
 local big_src = table.concat(big_lines, "\n")
-local big_source = C.SourceFile("file:///big.lua", big_src)
+local big_source = C.OpenDoc("file:///big.lua", 0, big_src)
 
 bench("lex (cold)", 100, function()
     engine.lexer.lex:reset()
@@ -144,12 +146,12 @@ end)
 bench("parse (cold)", 100, function()
     engine.parse:reset()
     engine.lexer.lex_with_positions:reset()
-    engine.parse(big_source)
+    pvm.one(engine.parse(big_source))
 end)
 
-engine.parse(big_source)
+pvm.one(engine.parse(big_source))
 bench("parse (cache hit)", 10000, function()
-    engine.parse(big_source)
+    pvm.one(engine.parse(big_source))
 end)
 
 print("\nAll fusion tests passed!")

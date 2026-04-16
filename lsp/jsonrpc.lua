@@ -8,9 +8,19 @@
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
+local pvm = require("pvm")
 local ServerCore = require("lsp.server")
 
 local M = {}
+
+local function asdl_name(v)
+    local cls = pvm.classof(v)
+    if cls then
+        local s = tostring(cls)
+        return s:match("^Class%(Lua%.([%w_]+)%)$") or s:match("^Class%(([%w_]+)%)$")
+    end
+    return tostring(v):match("^Lua%.([%w_]+)")
+end
 
 -- Explicit JSON null sentinel (so object keys can carry null values)
 local JSON_NULL = {}
@@ -376,7 +386,7 @@ local function rpc_id_from_lua(C, id)
     if id == nil then return nil end
     if type(id) == "number" then return C.RpcIdNumber(id) end
     if type(id) == "string" then return C.RpcIdString(id) end
-    return C.RpcIdNull()
+    return C.RpcIdNull
 end
 
 local function rpc_id_to_lua(id)
@@ -477,7 +487,7 @@ local function capabilities_to_lua(c)
 end
 
 local function payload_to_lua(core, payload)
-    local k = tostring(payload):match("^Lua%.([%w_]+)%(")
+    local k = asdl_name(payload)
     if k == "PayloadNull" then return JSON_NULL end
     if k == "PayloadInitialize" then
         local v = payload.value
@@ -516,7 +526,7 @@ local function payload_to_lua(core, payload)
 end
 
 local function outgoing_to_lua(core, out)
-    local k = tostring(out):match("^Lua%.([%w_]+)%(")
+    local k = asdl_name(out)
     if k == "RpcOutNone" then return nil end
     if k == "RpcOutResult" then
         return {
@@ -568,11 +578,11 @@ local function incoming_from_message(core, C, msg)
     end
 
     if method == "initialize" then
-        return C.RpcInInitialize(id or C.RpcIdNull())
+        return C.RpcInInitialize(id or C.RpcIdNull)
     end
-    if method == "initialized" then return C.RpcInInitialized() end
-    if method == "shutdown" then return C.RpcInShutdown(id or C.RpcIdNull()) end
-    if method == "exit" then return C.RpcInExit() end
+    if method == "initialized" then return C.RpcInInitialized end
+    if method == "shutdown" then return C.RpcInShutdown(id or C.RpcIdNull) end
+    if method == "exit" then return C.RpcInExit end
     if method and method:sub(1, 2) == "$/" then return C.RpcInIgnore(method) end
 
     local req = core:request_from_lsp(method, params)
@@ -632,7 +642,7 @@ function M.new(opts)
 
         if ik == "RpcInShutdown" then
             self.shutdown = true
-            return outgoing_to_lua(self.core, C.RpcOutResult(incoming.id, C.PayloadNull()))
+            return outgoing_to_lua(self.core, C.RpcOutResult(incoming.id, C.PayloadNull))
         end
 
         if ik == "RpcInExit" then
@@ -658,7 +668,7 @@ function M.new(opts)
             if ik == "RpcInLspRequest" then
                 -- Be lenient for clients that still send trailing requests between
                 -- shutdown and exit; avoid noisy user-facing errors.
-                return outgoing_to_lua(self.core, C.RpcOutResult(incoming.id, C.PayloadNull()))
+                return outgoing_to_lua(self.core, C.RpcOutResult(incoming.id, C.PayloadNull))
             end
             return nil
         end
@@ -691,7 +701,7 @@ function M.new(opts)
         if ik ~= "RpcInLspRequest" then return nil end
 
         local rk = req.kind
-        local payload = C.PayloadNull()
+        local payload = C.PayloadNull
         if rk == "ReqHover" then
             payload = C.PayloadHoverResult(result_or_err)
         elseif rk == "ReqDefinition" or rk == "ReqDeclaration" or rk == "ReqImplementation"
@@ -719,13 +729,13 @@ function M.new(opts)
                 end
                 payload = C.PayloadWorkspaceEdit(C.LspWorkspaceEdit(edits, req.doc and req.doc.uri or ""))
             else
-                payload = C.PayloadNull()
+                payload = C.PayloadNull
             end
         elseif rk == "ReqPrepareRename" then
             if result_or_err and result_or_err.kind == "LspRange" then
                 payload = C.PayloadRange(result_or_err)
             else
-                payload = C.PayloadNull()
+                payload = C.PayloadNull
             end
         elseif rk == "ReqCodeAction" then
             payload = C.PayloadCodeActionList(result_or_err)

@@ -2,24 +2,30 @@
 --
 -- Semantic boundaries over the Lua AST (ASDL layer).
 --
--- Phases (streaming, per-node cached):
---   collect_doc_types  — File → DocEvent* (DClass, DField, DAlias, ...)
---   scope_events       — File → ScopeEvent* (Enter/Exit/Decl/Ref/Write)
+-- Cached phases (persistent semantic units):
+--   collect_doc_types  — Item/ParsedDoc → DocEvent*
+--   scope_events       — legacy low-level AST walk, not the semantic center
+--   item_scope_events  — Item → ScopeEvent*
+--   item_type_env      — Item → ItemTypeEnv
+--   item_symbol_index  — Item → ItemSymbolIndex
+--   item_scope_summary — Item → ItemScopeSummary
+--   item_semantics     — Item → ItemSemantics
+--   item_unknown_type_diagnostics — (Item, KnownTypeSet) → Diagnostic*
 --
--- Lowers (single value, cached per node identity):
---   resolve_named_types — File → TypeEnv
---   item_scope_events  — Item → ScopeEventList
---   file_scope_events   — File → ScopeEventList
---   scope_diagnostics   — File → DiagnosticSet
---   symbol_index        — File → SymbolIndex
---   diagnostics         — File → DiagnosticSet
---   definitions_of      — SymbolIdQuery → OccurrenceList
---   references_of       — SymbolIdQuery → OccurrenceList
+-- Assembly helpers (not cached at whole-file identity):
+--   resolve_named_types — ParsedDoc → TypeEnv
+--   symbol_index        — ParsedDoc → SymbolIndex
+--   scope_diagnostics   — ParsedDoc → Diagnostic*
+--   diagnostics         — ParsedDoc → Diagnostic*
+--
+-- Query phases:
 --   symbol_for_anchor   — SubjectQuery → AnchorBinding
 --   type_target         — TypeNameQuery → TypeTarget
 --   goto_definition     — SubjectQuery → DefinitionResult
---   find_references     — RefQuery → ReferenceResult
 --   hover               — SubjectQuery → HoverInfo
+--   definitions_of      — SymbolIdQuery → Occurrence*
+--   references_of       — SymbolIdQuery → Occurrence*
+--   find_references     — RefQuery → Occurrence*
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -74,6 +80,18 @@ local function anchor_ref(C, v)
         if tv:match("^Lua%.AnchorRef%(") then return v end
     end
     return C.AnchorRef(tostring(v))
+end
+
+local function doc_items(doc)
+    return (doc and doc.items) or {}
+end
+
+local function syntax_item(v)
+    return v and v.syntax or nil
+end
+
+local function semantic_part(v)
+    return v and v.semantics or nil
 end
 
 local function contains_name(names, name)
@@ -168,9 +186,19 @@ function M.new(ctx)
 
     -- ── collect_doc_types phase ────────────────────────────
     local collect_doc_types
+    local item_scope_summary
+    local item_semantics
+    local semantic_doc
     collect_doc_types = pvm.phase("collect_doc_types", {
-        [C.File] = function(n)
-            return pvm.children(collect_doc_types, n.items)
+        [C.ParsedDoc] = function(n)
+            local items = {}
+            for i = 1, #n.items do items[i] = syntax_item(n.items[i]) end
+            return pvm.children(collect_doc_types, items)
+        end,
+        [C.SemanticDoc] = function(n)
+            local items = {}
+            for i = 1, #n.items do items[i] = syntax_item(n.items[i]) end
+            return pvm.children(collect_doc_types, items)
         end,
         [C.Item] = function(n)
             return pvm.children(collect_doc_types, n.docs)
@@ -217,9 +245,19 @@ function M.new(ctx)
 
     local scope_events
     scope_events = pvm.phase("scope_events", {
-        [C.File] = function(n)
+        [C.ParsedDoc] = function(n)
+            local items = {}
+            for i = 1, #n.items do items[i] = syntax_item(n.items[i]) end
             local g1, p1, c1 = pvm.once(C.ScopeEnter(C.ScopeFile, anchor_ref(C, n)))
-            local g2, p2, c2 = pvm.children(scope_events, n.items)
+            local g2, p2, c2 = pvm.children(scope_events, items)
+            local g3, p3, c3 = pvm.once(C.ScopeExit(C.ScopeFile, anchor_ref(C, n)))
+            return pvm.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
+        end,
+        [C.SemanticDoc] = function(n)
+            local items = {}
+            for i = 1, #n.items do items[i] = syntax_item(n.items[i]) end
+            local g1, p1, c1 = pvm.once(C.ScopeEnter(C.ScopeFile, anchor_ref(C, n)))
+            local g2, p2, c2 = pvm.children(scope_events, items)
             local g3, p3, c3 = pvm.once(C.ScopeExit(C.ScopeFile, anchor_ref(C, n)))
             return pvm.concat3(g1, p1, c1, g2, p2, c2, g3, p3, c3)
         end,
@@ -450,10 +488,9 @@ function M.new(ctx)
         end,
     })
 
-    -- ── resolve_named_types lower ──────────────────────────
+    -- ── item_type_env phase ────────────────────────────────
 
-    local resolve_named_types = pvm.lower("resolve_named_types", function(file)
-        local events = pvm.drain(collect_doc_types(file))
+    local item_type_env = pvm.phase("item_type_env", function(item)
         local classes, aliases, generics = {}, {}, {}
         local current_class = nil
 
@@ -486,8 +523,7 @@ function M.new(ctx)
             return C.TypeClass(cls.name, cls.extends, fields, cls.anchor)
         end
 
-        for i = 1, #events do
-            local e = events[i]
+        for _, e in collect_doc_types(item) do
             local k = e.kind
             if k == "DClass" then
                 upsert_class(e.name, e.extends or {}, e.anchor)
@@ -512,20 +548,118 @@ function M.new(ctx)
             end
         end
 
-        return C.TypeEnv(classes, aliases, generics)
+        return C.ItemTypeEnv(classes, aliases, generics)
     end)
 
-    -- ── item_scope_events lower ────────────────────────────
+    -- ── resolve_named_types assembly ───────────────────────
+
+    local function build_type_env_from_sem_items(items)
+        local classes, aliases, generics = {}, {}, {}
+
+        local function upsert_class(cls)
+            local idx = nil
+            for i = 1, #classes do if classes[i].name == cls.name then idx = i; break end end
+            if not idx then
+                classes[#classes + 1] = cls
+                return
+            end
+            local old = classes[idx]
+            local merged_fields = {}
+            for i = 1, #old.fields do merged_fields[i] = old.fields[i] end
+            for i = 1, #cls.fields do
+                local field = cls.fields[i]
+                local replaced = false
+                for j = 1, #merged_fields do
+                    if merged_fields[j].name == field.name then
+                        merged_fields[j] = field
+                        replaced = true
+                        break
+                    end
+                end
+                if not replaced then merged_fields[#merged_fields + 1] = field end
+            end
+            classes[idx] = C.TypeClass(cls.name, cls.extends, merged_fields, cls.anchor)
+        end
+
+        local function upsert_alias(alias)
+            for i = 1, #aliases do
+                if aliases[i].name == alias.name then aliases[i] = alias; return end
+            end
+            aliases[#aliases + 1] = alias
+        end
+
+        local function upsert_generic(generic)
+            for i = 1, #generics do
+                if generics[i].name == generic.name then generics[i] = generic; return end
+            end
+            generics[#generics + 1] = generic
+        end
+
+        for i = 1, #items do
+            local part = semantic_part(items[i]).type_env
+            for j = 1, #part.classes do upsert_class(part.classes[j]) end
+            for j = 1, #part.aliases do upsert_alias(part.aliases[j]) end
+            for j = 1, #part.generics do upsert_generic(part.generics[j]) end
+        end
+
+        return C.TypeEnv(classes, aliases, generics)
+    end
+
+    local function resolve_named_types(doc)
+        return doc.type_env
+    end
+
+    -- ── item_unknown_type_diagnostics phase ───────────────
+
+    local item_unknown_type_diagnostics = pvm.phase("item_unknown_type_diagnostics", {
+        [C.Item] = function(item, known)
+        local part = pvm.one(item_semantics(item)).type_env
+        local out, n = {}, 0
+        local seen = {}
+        local names = (known and known.names) or {}
+
+        local function emit_unknown(tname, owner, anchor)
+            if contains_name(names, tname) or contains_name(seen, tname) then return end
+            add_name_unique(seen, tname)
+            n = n + 1
+            out[n] = C.Diagnostic(C.DiagUnknownType,
+                "unknown type '" .. tname .. "' in " .. owner, tname, C.ScopeType, anchor)
+        end
+
+        for i = 1, #part.classes do
+            local cls = part.classes[i]
+            for j = 1, #cls.extends do
+                local refs = {}; add_named_type_refs(cls.extends[j], refs)
+                for r = 1, #refs do emit_unknown(refs[r], "class " .. cls.name .. " extends", cls.anchor) end
+            end
+            for j = 1, #cls.fields do
+                local f = cls.fields[j]
+                local refs = {}; add_named_type_refs(f.typ, refs)
+                for r = 1, #refs do emit_unknown(refs[r], "field " .. cls.name .. "." .. f.name, f.anchor) end
+            end
+        end
+        for i = 1, #part.aliases do
+            local a = part.aliases[i]
+            local refs = {}; add_named_type_refs(a.typ, refs)
+            for r = 1, #refs do emit_unknown(refs[r], "alias " .. a.name, a.anchor) end
+        end
+
+        return pvm.seq(out)
+        end,
+    })
+
+    -- ── item_scope_events phase ────────────────────────────
     -- Converts the flat NameOcc array (extracted at parse time)
     -- into ScopeEvent nodes. No tree walking — just array iteration.
     -- Cached per Item identity.
 
-    -- ── item_scope_events lower ────────────────────────────
+    -- ── item_scope_events phase ────────────────────────────
     -- Extracts scope events from an Item by walking its Stmt tree.
     -- Pure Lua walk (no pvm phase overhead per AST node).
     -- Cached per Item identity.
 
-    local item_scope_events = pvm.lower("item_scope_events", function(item)
+    local item_scope_events = pvm.phase("item_scope_events", {
+        [C.Item] = function(item)
         local out, n = {}, 0
         local function emit(ev) n = n + 1; out[n] = ev end
 
@@ -646,73 +780,77 @@ function M.new(ctx)
         end
 
         walk_stmt(item.stmt)
-        return C.ScopeEventList(out)
-    end)
+        return pvm.seq(out)
+        end,
+    })
 
-    -- ── file_scope_events lower ────────────────────────────
+    -- ── file_scope_events phase ────────────────────────────
     -- Assembles per-item scope events into a file-level stream.
-    -- Each item's scope is a flat NameOcc array — no tree walking.
+    -- Kept as a low-level fact view; not the semantic center.
 
-    local file_scope_events = pvm.lower("file_scope_events", function(file)
-        local out, n = {}, 0
-        n = n + 1; out[n] = C.ScopeEnter(C.ScopeFile, anchor_ref(C, file))
+    local file_scope_events = pvm.phase("file_scope_events", {
+        [C.ParsedDoc] = function(file)
+            local trips = {
+                { pvm.once(C.ScopeEnter(C.ScopeFile, anchor_ref(C, file))) },
+            }
+            for i = 1, #file.items do
+                trips[#trips + 1] = { item_scope_events(syntax_item(file.items[i])) }
+            end
+            trips[#trips + 1] = { pvm.once(C.ScopeExit(C.ScopeFile, anchor_ref(C, file))) }
+            return pvm.concat_all(trips)
+        end,
+        [C.SemanticDoc] = function(file)
+            local trips = {
+                { pvm.once(C.ScopeEnter(C.ScopeFile, anchor_ref(C, file))) },
+            }
+            for i = 1, #file.items do
+                trips[#trips + 1] = { item_scope_events(syntax_item(file.items[i])) }
+            end
+            trips[#trips + 1] = { pvm.once(C.ScopeExit(C.ScopeFile, anchor_ref(C, file))) }
+            return pvm.concat_all(trips)
+        end,
+    })
 
-        for i = 1, #file.items do
-            local ev = item_scope_events(file.items[i]).items
-            for j = 1, #ev do n = n + 1; out[n] = ev[j] end
+    -- ── item_scope_summary phase ───────────────────────────
+
+    item_scope_summary = pvm.phase("item_scope_summary", function(item)
+        local events = pvm.drain(item_scope_events(item))
+        local scopes = { { scope = C.ScopeFile, locals = {} } }
+        local diagnostics, d_n = {}, 0
+        local raw_ops, op_n = {}, 0
+
+        local function add_diag(code, message, name, scope_kind, anchor)
+            d_n = d_n + 1
+            diagnostics[d_n] = C.Diagnostic(code, message, name or "", scope_kind or C.ScopeFile, anchor_ref(C, anchor or item))
         end
-
-        n = n + 1; out[n] = C.ScopeExit(C.ScopeFile, anchor_ref(C, file))
-        return C.ScopeEventList(out)
-    end)
-
-    -- ── scope_diagnostics lower ────────────────────────────
-
-    local scope_diagnostics = pvm.lower("scope_diagnostics", function(file)
-        local out, n = {}, 0
-        local events = file_scope_events(file).items
-        local scopes = {}
-        local global_declared = {}
-        local seen_undef = {}
 
         local function current_scope() return scopes[#scopes] end
 
-        local function push_scope(kind)
-            scopes[#scopes + 1] = C.ScopeDiagFrame(kind, {})
-        end
-
         local function find_local_in_frame(frame, name)
             for i = 1, #frame.locals do
-                if frame.locals[i].name == name then return frame.locals[i], i end
+                local info = frame.locals[i]
+                if info.name == name then return info, i end
             end
             return nil, nil
         end
 
         local function find_local(name)
             for i = #scopes, 1, -1 do
-                local info, j = find_local_in_frame(scopes[i], name)
-                if info then return info, i, j end
+                local hit = find_local_in_frame(scopes[i], name)
+                if hit then return hit, i end
             end
-            return nil, nil, nil
+            return nil, nil
         end
 
-        local function replace_local(frame, idx, info)
-            local locals = {}
-            for i = 1, #frame.locals do
-                locals[i] = (i == idx) and info or frame.locals[i]
-            end
-            return C.ScopeDiagFrame(frame.scope, locals)
-        end
-
-        local function add_diag(code, message, name, scope_kind, anchor)
-            n = n + 1
-            out[n] = C.Diagnostic(code, message, name or "", scope_kind or C.ScopeFile, anchor_ref(C, anchor or file))
+        local function push_scope(kind)
+            scopes[#scopes + 1] = { scope = kind, locals = {} }
         end
 
         local function pop_scope()
             local scope = scopes[#scopes]
             if not scope then return end
             scopes[#scopes] = nil
+            if scope.scope == C.ScopeFile then return end
             for i = 1, #scope.locals do
                 local info = scope.locals[i]
                 if info.used == 0 and info.name ~= "_" and info.name:sub(1, 1) ~= "_"
@@ -725,45 +863,61 @@ function M.new(ctx)
             end
         end
 
-        local function declare_local(name, kind, anchor)
-            local scope = current_scope()
-            if not scope then return end
-            if find_local_in_frame(scope, name) then
+        local function add_local(frame, info)
+            frame.locals[#frame.locals + 1] = info
+        end
+
+        local function declare_local(name, decl_kind, anchor, scope_kind)
+            local frame = current_scope()
+            local hit = find_local_in_frame(frame, name)
+            if hit then
                 add_diag(C.DiagRedeclareLocal, "local '" .. name .. "' redeclared in same scope",
-                    name, scope.scope, anchor)
+                    name, frame.scope, anchor)
                 return
             end
+
             local outer_hit = false
             for i = #scopes - 1, 1, -1 do
                 if find_local_in_frame(scopes[i], name) then outer_hit = true; break end
             end
             if outer_hit then
                 add_diag(C.DiagShadowingLocal, "local '" .. name .. "' shadows outer local",
-                    name, scope.scope, anchor)
-            elseif BUILTIN_GLOBALS[name] or contains_name(global_declared, name) then
+                    name, frame.scope, anchor)
+            elseif BUILTIN_GLOBALS[name] then
                 add_diag(C.DiagShadowingGlobal, "local '" .. name .. "' shadows global",
-                    name, scope.scope, anchor)
+                    name, frame.scope, anchor)
+            elseif frame.scope ~= C.ScopeFile then
+                op_n = op_n + 1
+                raw_ops[op_n] = { kind = "shadow", name = name, scope = frame.scope, anchor = anchor_ref(C, anchor) }
             end
-            local locals = {}
-            for i = 1, #scope.locals do locals[i] = scope.locals[i] end
-            locals[#locals + 1] = C.ScopeLocalState(name, kind, 0, anchor_ref(C, anchor or file))
-            scopes[#scopes] = C.ScopeDiagFrame(scope.scope, locals)
+
+            local info = {
+                name = name,
+                decl_kind = decl_kind or C.DeclLocal,
+                used = 0,
+                anchor = anchor_ref(C, anchor or item),
+                scope = frame.scope,
+            }
+            add_local(frame, info)
+            if frame.scope == C.ScopeFile then
+                op_n = op_n + 1
+                raw_ops[op_n] = { kind = "declare", info = info }
+            end
         end
 
-        local function mark_ref(name, anchor)
-            local info, sidx, lidx = find_local(name)
+        local function mark_ref(name, anchor, is_write)
+            local info = find_local(name)
             if info then
-                scopes[sidx] = replace_local(scopes[sidx], lidx,
-                    C.ScopeLocalState(info.name, info.decl_kind, info.used + 1, info.anchor))
+                info.used = info.used + 1
                 return
             end
-            if BUILTIN_GLOBALS[name] or contains_name(global_declared, name) then return end
-            if not contains_name(seen_undef, name) then
-                add_name_unique(seen_undef, name)
-                local scope = current_scope()
-                add_diag(C.DiagUndefinedGlobal, "undefined global '" .. name .. "'",
-                    name, scope and scope.scope or C.ScopeFile, anchor)
-            end
+            op_n = op_n + 1
+            raw_ops[op_n] = {
+                kind = is_write and "write" or "read",
+                name = name,
+                scope = current_scope() and current_scope().scope or C.ScopeFile,
+                anchor = anchor_ref(C, anchor or item),
+            }
         end
 
         for i = 1, #events do
@@ -771,25 +925,132 @@ function M.new(ctx)
             local ek = e.kind
             if     ek == "ScopeEnter"      then push_scope(e.scope)
             elseif ek == "ScopeExit"       then pop_scope()
-            elseif ek == "ScopeDeclLocal"  then declare_local(e.name, e.decl_kind or C.DeclLocal, e.anchor)
-            elseif ek == "ScopeDeclGlobal" then add_name_unique(global_declared, e.name)
-            elseif ek == "ScopeWrite"      then
-                if not find_local(e.name) then add_name_unique(global_declared, e.name) end
-            elseif ek == "ScopeRef"        then mark_ref(e.name, e.anchor)
+            elseif ek == "ScopeDeclLocal"  then declare_local(e.name, e.decl_kind or C.DeclLocal, e.anchor, e.scope)
+            elseif ek == "ScopeDeclGlobal" then
+                op_n = op_n + 1
+                raw_ops[op_n] = { kind = "write", name = e.name, scope = C.ScopeFile, anchor = anchor_ref(C, e.anchor) }
+            elseif ek == "ScopeRef"        then mark_ref(e.name, e.anchor, false)
+            elseif ek == "ScopeWrite"      then mark_ref(e.name, e.anchor, true)
             end
         end
 
-        return C.DiagnosticSet(out)
+        local ops = {}
+        for i = 1, op_n do
+            local op = raw_ops[i]
+            if op.kind == "declare" then
+                ops[i] = C.ItemScopeDeclareLocal(op.info.decl_kind, op.info.name, op.info.anchor, op.info.used)
+            elseif op.kind == "shadow" then
+                ops[i] = C.ItemScopeShadowCandidate(op.name, op.scope, op.anchor)
+            elseif op.kind == "read" then
+                ops[i] = C.ItemScopeOuterRead(op.name, op.scope, op.anchor)
+            elseif op.kind == "write" then
+                ops[i] = C.ItemScopeOuterWrite(op.name, op.scope, op.anchor)
+            end
+        end
+
+        return C.ItemScopeSummary(ops, diagnostics)
     end)
 
-    -- ── symbol_index lower ─────────────────────────────────
+    -- ── scope_diagnostics assembly ─────────────────────────
 
-    local symbol_index = pvm.lower("symbol_index", function(file)
+    local function build_scope_diagnostics_from_sem_items(items, doc_anchor)
+        local out, n = {}, 0
+        local file_locals = {}
+        local global_declared = {}
+        local seen_undef = {}
+
+        local function add_diag(code, message, name, scope_kind, anchor)
+            n = n + 1
+            out[n] = C.Diagnostic(code, message, name or "", scope_kind or C.ScopeFile, anchor_ref(C, anchor or doc_anchor))
+        end
+
+        local function find_file_local(name)
+            for i = 1, #file_locals do
+                if file_locals[i].name == name then return file_locals[i] end
+            end
+            return nil
+        end
+
+        local function add_file_local(name, decl_kind, anchor, used_in_item)
+            file_locals[#file_locals + 1] = {
+                name = name,
+                decl_kind = decl_kind,
+                anchor = anchor,
+                used = used_in_item or 0,
+            }
+        end
+
+        local function mark_use(name)
+            local info = find_file_local(name)
+            if info then info.used = info.used + 1; return true end
+            return false
+        end
+
+        for i = 1, #items do
+            local summary = semantic_part(items[i]).scope_summary
+            for j = 1, #summary.diagnostics do
+                n = n + 1
+                out[n] = summary.diagnostics[j]
+            end
+            for j = 1, #summary.ops do
+                local op = summary.ops[j]
+                local k = op.kind
+                if k == "ItemScopeDeclareLocal" then
+                    if find_file_local(op.name) then
+                        add_diag(C.DiagRedeclareLocal, "local '" .. op.name .. "' redeclared in same scope",
+                            op.name, C.ScopeFile, op.anchor)
+                    else
+                        if BUILTIN_GLOBALS[op.name] or contains_name(global_declared, op.name) then
+                            add_diag(C.DiagShadowingGlobal, "local '" .. op.name .. "' shadows global",
+                                op.name, C.ScopeFile, op.anchor)
+                        end
+                        add_file_local(op.name, op.decl_kind, op.anchor, op.used_in_item)
+                    end
+                elseif k == "ItemScopeShadowCandidate" then
+                    if find_file_local(op.name) then
+                        add_diag(C.DiagShadowingLocal, "local '" .. op.name .. "' shadows outer local",
+                            op.name, op.scope, op.anchor)
+                    elseif BUILTIN_GLOBALS[op.name] or contains_name(global_declared, op.name) then
+                        add_diag(C.DiagShadowingGlobal, "local '" .. op.name .. "' shadows global",
+                            op.name, op.scope, op.anchor)
+                    end
+                elseif k == "ItemScopeOuterRead" then
+                    if not mark_use(op.name) and not BUILTIN_GLOBALS[op.name] and not contains_name(global_declared, op.name) then
+                        if not contains_name(seen_undef, op.name) then
+                            add_name_unique(seen_undef, op.name)
+                            add_diag(C.DiagUndefinedGlobal, "undefined global '" .. op.name .. "'",
+                                op.name, op.scope, op.anchor)
+                        end
+                    end
+                elseif k == "ItemScopeOuterWrite" then
+                    if not mark_use(op.name) then add_name_unique(global_declared, op.name) end
+                end
+            end
+        end
+
+        for i = 1, #file_locals do
+            local info = file_locals[i]
+            if info.used == 0 and info.name ~= "_" and info.name:sub(1, 1) ~= "_" then
+                add_diag(C.DiagUnusedLocal, "unused local '" .. info.name .. "'",
+                    info.name, C.ScopeFile, info.anchor)
+            end
+        end
+
+        return out
+    end
+
+    local function scope_diagnostics(doc)
+        return pvm.seq(build_scope_diagnostics_from_sem_items(doc.items, doc))
+    end
+
+    -- ── item_symbol_index phase ───────────────────────────
+
+    local item_symbol_index = pvm.phase("item_symbol_index", function(item)
         local symbols, defs, uses, unresolved = {}, {}, {}, {}
-        local events = file_scope_events(file).items
         local scopes = {}
         local scope_seq = 0
         local globals = {}
+        local item_anchor = anchor_ref(C, item)
 
         local function symbol_by_id(id)
             for i = 1, #symbols do if symbols[i].id == id then return symbols[i] end end
@@ -805,16 +1066,16 @@ function M.new(ctx)
         end
 
         local function add_def(sym, anchor)
-            defs[#defs + 1] = C.Occurrence(sym.id, sym.name, sym.kind, anchor_ref(C, anchor or file))
+            defs[#defs + 1] = C.Occurrence(sym.id, sym.name, sym.kind, anchor_ref(C, anchor or item_anchor))
         end
 
         local function add_use(sym, anchor)
-            uses[#uses + 1] = C.Occurrence(sym.id, sym.name, sym.kind, anchor_ref(C, anchor or file))
+            uses[#uses + 1] = C.Occurrence(sym.id, sym.name, sym.kind, anchor_ref(C, anchor or item_anchor))
         end
 
         local function push_scope(kind, anchor)
             scope_seq = scope_seq + 1
-            local id = scope_kind_name(kind) .. ":" .. tostring(anchor or file) .. ":" .. tostring(scope_seq)
+            local id = tostring(item_anchor.id) .. ":" .. scope_kind_name(kind) .. ":" .. tostring(anchor or item_anchor) .. ":" .. tostring(scope_seq)
             scopes[#scopes + 1] = C.ScopeSymbolFrame(kind, id, {})
         end
 
@@ -890,7 +1151,7 @@ function M.new(ctx)
             s = find_global(name)
             if s then add_use(s, anchor); return end
             if BUILTIN_GLOBALS[name] then add_use(ensure_builtin(name), anchor); return end
-            unresolved[#unresolved + 1] = C.Unresolved(name, anchor_ref(C, anchor or file))
+            unresolved[#unresolved + 1] = C.Unresolved(name, anchor_ref(C, anchor or item_anchor))
         end
 
         local function write_name(name, anchor)
@@ -898,8 +1159,7 @@ function M.new(ctx)
             if s then add_use(s, anchor) else ensure_global(name, anchor) end
         end
 
-        for i = 1, #events do
-            local e = events[i]
+        local function consume_event(e)
             local ek = e.kind
             if     ek == "ScopeEnter"      then push_scope(e.scope, e.anchor)
             elseif ek == "ScopeExit"       then pop_scope()
@@ -910,54 +1170,117 @@ function M.new(ctx)
             end
         end
 
-        return C.SymbolIndex(symbols, defs, uses, unresolved)
+        consume_event(C.ScopeEnter(C.ScopeFile, item_anchor))
+        for _, e in item_scope_events(item) do consume_event(e) end
+        consume_event(C.ScopeExit(C.ScopeFile, item_anchor))
+
+        return C.ItemSymbolIndex(symbols, defs, uses, unresolved)
     end)
 
-    -- ── diagnostics lower ──────────────────────────────────
+    -- ── item_semantics phase ──────────────────────────────
+
+    item_semantics = pvm.phase("item_semantics", function(item)
+        return C.ItemSemantics(
+            pvm.one(item_type_env(item)),
+            pvm.one(item_symbol_index(item)),
+            pvm.one(item_scope_summary(item))
+        )
+    end)
+
+    -- ── symbol_index assembly ──────────────────────────────
+
+    local function build_symbol_index_from_sem_items(items)
+        local symbols, defs, uses, unresolved = {}, {}, {}, {}
+        local top_locals = {}
+        local globals_by_name = {}
+
+        local function has_symbol(id)
+            for i = 1, #symbols do if symbols[i].id == id then return true end end
+            return false
+        end
+
+        local function add_symbol(sym)
+            if not has_symbol(sym.id) then symbols[#symbols + 1] = sym end
+            if sym.kind == C.SymGlobal or sym.kind == C.SymBuiltin then
+                globals_by_name[sym.name] = sym
+            end
+        end
+
+        local function symbol_by_id_local(part, id)
+            for i = 1, #part.symbols do if part.symbols[i].id == id then return part.symbols[i] end end
+            return nil
+        end
+
+        for i = 1, #items do
+            local part = semantic_part(items[i]).symbol_index
+            for j = 1, #part.symbols do add_symbol(part.symbols[j]) end
+            for j = 1, #part.defs do defs[#defs + 1] = part.defs[j] end
+            for j = 1, #part.uses do uses[#uses + 1] = part.uses[j] end
+            for j = 1, #part.unresolved do
+                local u = part.unresolved[j]
+                local hit = top_locals[u.name] or globals_by_name[u.name]
+                if hit then
+                    uses[#uses + 1] = C.Occurrence(hit.id, hit.name, hit.kind, u.anchor)
+                else
+                    unresolved[#unresolved + 1] = u
+                end
+            end
+            for j = 1, #part.defs do
+                local occ = part.defs[j]
+                local sym = symbol_by_id_local(part, occ.symbol_id)
+                if sym and sym.scope == C.ScopeFile and sym.kind ~= C.SymGlobal and sym.kind ~= C.SymBuiltin then
+                    top_locals[sym.name] = sym
+                end
+            end
+        end
+
+        return C.SymbolIndex(symbols, defs, uses, unresolved)
+    end
+
+    local function symbol_index(doc)
+        return doc.symbol_index
+    end
+
+    -- ── diagnostics assembly ───────────────────────────────
     -- Combines scope diagnostics + unknown-type diagnostics from doc annotations.
 
-    local diagnostics = pvm.lower("diagnostics", function(file)
+    local function build_diagnostics_from_sem_items(items, env, doc_anchor)
         local out, n = {}, 0
         local function add(d) n = n + 1; out[n] = d end
 
-        local sdiags = scope_diagnostics(file).items
+        local sdiags = build_scope_diagnostics_from_sem_items(items, doc_anchor)
         for i = 1, #sdiags do add(sdiags[i]) end
 
-        local env = resolve_named_types(file)
         local known = {}
         for k in pairs(BUILTIN_TYPES) do add_name_unique(known, k) end
         for i = 1, #env.aliases  do add_name_unique(known, env.aliases[i].name) end
         for i = 1, #env.classes  do add_name_unique(known, env.classes[i].name) end
         for i = 1, #env.generics do add_name_unique(known, env.generics[i].name) end
+        local known_set = C.KnownTypeSet(known)
 
-        local seen = {}
-        local function emit_unknown(tname, owner, anchor)
-            if contains_name(known, tname) or contains_name(seen, tname) then return end
-            add_name_unique(seen, tname)
-            add(C.Diagnostic(C.DiagUnknownType,
-                "unknown type '" .. tname .. "' in " .. owner, tname, C.ScopeType, anchor))
+        for i = 1, #items do
+            local ds = pvm.drain(item_unknown_type_diagnostics(syntax_item(items[i]), known_set))
+            for j = 1, #ds do add(ds[j]) end
         end
 
-        for i = 1, #env.classes do
-            local cls = env.classes[i]
-            for j = 1, #cls.extends do
-                local refs = {}; add_named_type_refs(cls.extends[j], refs)
-                for r = 1, #refs do emit_unknown(refs[r], "class " .. cls.name .. " extends", cls.anchor) end
-            end
-            for j = 1, #cls.fields do
-                local f = cls.fields[j]
-                local refs = {}; add_named_type_refs(f.typ, refs)
-                for r = 1, #refs do emit_unknown(refs[r], "field " .. cls.name .. "." .. f.name, f.anchor) end
-            end
-        end
-        for i = 1, #env.aliases do
-            local a = env.aliases[i]
-            local refs = {}; add_named_type_refs(a.typ, refs)
-            for r = 1, #refs do emit_unknown(refs[r], "alias " .. a.name, a.anchor) end
-        end
+        return out
+    end
 
-        return C.DiagnosticSet(out)
+    semantic_doc = pvm.phase("semantic_doc", function(parsed)
+        local items = {}
+        for i = 1, #parsed.items do
+            local pit = parsed.items[i]
+            items[i] = C.SemanticItem(pit.syntax, pit.span, pvm.one(item_semantics(pit.syntax)))
+        end
+        local env = build_type_env_from_sem_items(items)
+        local idx = build_symbol_index_from_sem_items(items)
+        local ds = build_diagnostics_from_sem_items(items, env, parsed)
+        return C.SemanticDoc(parsed.uri, parsed.version, parsed.text, items, parsed.anchors, parsed.status, env, idx, ds)
     end)
+
+    local function diagnostics(doc)
+        return pvm.seq(doc.diagnostics)
+    end
 
     -- ── Query lowers ───────────────────────────────────────
 
@@ -975,34 +1298,38 @@ function M.new(ctx)
     end
 
     local function query_subject(v)
-        if not v then return C.QueryMissing() end
+        if not v then return C.QueryMissing end
         if type(v) == "table" and v.kind == "TNamed" then return C.QueryTypeName(v.name) end
         if type(v) == "string" then return C.QueryTypeName(v) end
         return C.QueryAnchor(anchor_ref(C, v))
     end
 
-    local definitions_of = pvm.lower("definitions_of", function(q)
-        local idx = symbol_index(q.file)
-        local out = {}
-        for i = 1, #idx.defs do
-            if idx.defs[i].symbol_id == q.symbol_id then out[#out + 1] = idx.defs[i] end
-        end
-        return C.OccurrenceList(out)
-    end)
+    local definitions_of = pvm.phase("definitions_of", {
+        [C.SymbolIdQuery] = function(q)
+            local idx = symbol_index(q.doc)
+            local out = {}
+            for i = 1, #idx.defs do
+                if idx.defs[i].symbol_id == q.symbol_id then out[#out + 1] = idx.defs[i] end
+            end
+            return pvm.seq(out)
+        end,
+    })
 
-    local references_of = pvm.lower("references_of", function(q)
-        local idx = symbol_index(q.file)
-        local out = {}
-        for i = 1, #idx.uses do
-            if idx.uses[i].symbol_id == q.symbol_id then out[#out + 1] = idx.uses[i] end
-        end
-        return C.OccurrenceList(out)
-    end)
+    local references_of = pvm.phase("references_of", {
+        [C.SymbolIdQuery] = function(q)
+            local idx = symbol_index(q.doc)
+            local out = {}
+            for i = 1, #idx.uses do
+                if idx.uses[i].symbol_id == q.symbol_id then out[#out + 1] = idx.uses[i] end
+            end
+            return pvm.seq(out)
+        end,
+    })
 
-    local symbol_for_anchor = pvm.lower("symbol_for_anchor", function(q)
-        if not q.subject or q.subject.kind ~= "QueryAnchor" then return C.AnchorMissing() end
+    local symbol_for_anchor = pvm.phase("symbol_for_anchor", function(q)
+        if not q.subject or q.subject.kind ~= "QueryAnchor" then return C.AnchorMissing end
         local target = q.subject.anchor
-        local idx = symbol_index(q.file)
+        local idx = symbol_index(q.doc)
 
         for i = 1, #idx.defs do
             if idx.defs[i].anchor == target then
@@ -1021,11 +1348,11 @@ function M.new(ctx)
                 return C.AnchorUnresolved(idx.unresolved[i].name)
             end
         end
-        return C.AnchorMissing()
+        return C.AnchorMissing
     end)
 
-    local type_target = pvm.lower("type_target", function(q)
-        local env = resolve_named_types(q.file)
+    local type_target = pvm.phase("type_target", function(q)
+        local env = resolve_named_types(q.doc)
         for i = 1, #env.classes do
             local cls = env.classes[i]
             if cls.name == q.name then return C.TypeClassTarget(q.name, cls.anchor, cls) end
@@ -1039,75 +1366,75 @@ function M.new(ctx)
             if g.name == q.name then return C.TypeGenericTarget(q.name, g.anchor, g) end
         end
         if BUILTIN_TYPES[q.name] then return C.TypeBuiltinTarget(q.name) end
-        return C.TypeTargetMissing()
+        return C.TypeTargetMissing
     end)
 
-    local goto_definition = pvm.lower("goto_definition", function(q)
+    local goto_definition = pvm.phase("goto_definition", function(q)
         if not q.subject or q.subject.kind == "QueryMissing" then
-            return C.DefMiss(C.DefMetaMissing())
+            return C.DefMiss(C.DefMetaMissing)
         end
         if q.subject.kind == "QueryTypeName" then
-            local tt = type_target(C.TypeNameQuery(q.file, q.subject.name))
+            local tt = pvm.one(type_target(C.TypeNameQuery(q.doc, q.subject.name)))
             if tt.kind ~= "TypeTargetMissing" and tt.anchor then
                 return C.DefHit(tt.anchor, C.DefMetaType(tt))
             end
-            return C.DefMiss(tt.kind ~= "TypeTargetMissing" and C.DefMetaType(tt) or C.DefMetaMissing())
+            return C.DefMiss(tt.kind ~= "TypeTargetMissing" and C.DefMetaType(tt) or C.DefMetaMissing)
         end
-        local binding = symbol_for_anchor(C.SubjectQuery(q.file, q.subject))
+        local binding = pvm.one(symbol_for_anchor(C.SubjectQuery(q.doc, q.subject)))
         if binding.kind == "AnchorSymbol" then
-            local d = definitions_of(C.SymbolIdQuery(q.file, binding.symbol.id)).items
+            local d = pvm.drain(definitions_of(C.SymbolIdQuery(q.doc, binding.symbol.id)))
             if #d > 0 then return C.DefHit(d[1].anchor, C.DefMetaSymbol(binding.role, binding.symbol, d)) end
             return C.DefMiss(C.DefMetaSymbol(binding.role, binding.symbol, d))
         end
         if binding.kind == "AnchorUnresolved" then
             return C.DefMiss(C.DefMetaUnresolved(binding.name))
         end
-        return C.DefMiss(C.DefMetaMissing())
+        return C.DefMiss(C.DefMetaMissing)
     end)
 
-    local find_references = pvm.lower("find_references", function(q)
-        local refs = {}
-        if not q.subject or q.subject.kind == "QueryMissing" then return C.ReferenceResult(refs) end
-        if q.subject.kind == "QueryTypeName" then
-            local tt = type_target(C.TypeNameQuery(q.file, q.subject.name))
-            if q.include_declaration and tt.kind ~= "TypeTargetMissing" and tt.anchor then
-                refs[#refs + 1] = C.Occurrence("type:" .. type_target_kind(tt) .. ":" .. tt.name,
-                    tt.name, type_target_symbol_kind(tt), tt.anchor)
+    local find_references = pvm.phase("find_references", {
+        [C.RefQuery] = function(q)
+            if not q.subject or q.subject.kind == "QueryMissing" then return pvm.empty() end
+            if q.subject.kind == "QueryTypeName" then
+                local tt = pvm.one(type_target(C.TypeNameQuery(q.doc, q.subject.name)))
+                if q.include_declaration and tt.kind ~= "TypeTargetMissing" and tt.anchor then
+                    return pvm.once(C.Occurrence("type:" .. type_target_kind(tt) .. ":" .. tt.name,
+                        tt.name, type_target_symbol_kind(tt), tt.anchor))
+                end
+                return pvm.empty()
             end
-            return C.ReferenceResult(refs)
-        end
-        local binding = symbol_for_anchor(C.SubjectQuery(q.file, q.subject))
-        if binding.kind ~= "AnchorSymbol" then return C.ReferenceResult(refs) end
-        if q.include_declaration then
-            local d = definitions_of(C.SymbolIdQuery(q.file, binding.symbol.id)).items
-            for i = 1, #d do refs[#refs + 1] = d[i] end
-        end
-        local u = references_of(C.SymbolIdQuery(q.file, binding.symbol.id)).items
-        for i = 1, #u do refs[#refs + 1] = u[i] end
-        return C.ReferenceResult(refs)
-    end)
+            local binding = pvm.one(symbol_for_anchor(C.SubjectQuery(q.doc, q.subject)))
+            if binding.kind ~= "AnchorSymbol" then return pvm.empty() end
+            if q.include_declaration then
+                local g1, p1, c1 = definitions_of(C.SymbolIdQuery(q.doc, binding.symbol.id))
+                local g2, p2, c2 = references_of(C.SymbolIdQuery(q.doc, binding.symbol.id))
+                return pvm.concat2(g1, p1, c1, g2, p2, c2)
+            end
+            return references_of(C.SymbolIdQuery(q.doc, binding.symbol.id))
+        end,
+    })
 
-    local hover = pvm.lower("hover", function(q)
-        if not q.subject or q.subject.kind == "QueryMissing" then return C.HoverMissing() end
+    local hover = pvm.phase("hover", function(q)
+        if not q.subject or q.subject.kind == "QueryMissing" then return C.HoverMissing end
         if q.subject.kind == "QueryTypeName" then
-            local tt = type_target(C.TypeNameQuery(q.file, q.subject.name))
+            local tt = pvm.one(type_target(C.TypeNameQuery(q.doc, q.subject.name)))
             if tt.kind == "TypeTargetMissing" then return C.HoverType(q.subject.name, "unknown type", 0) end
             if tt.kind == "TypeClassTarget" then return C.HoverType(tt.name, "class", #tt.value.fields) end
             if tt.kind == "TypeAliasTarget" then return C.HoverType(tt.name, "alias", 0) end
             if tt.kind == "TypeGenericTarget" then return C.HoverType(tt.name, "generic", 0) end
             return C.HoverType(tt.name, type_target_kind(tt), 0)
         end
-        local binding = symbol_for_anchor(C.SubjectQuery(q.file, q.subject))
+        local binding = pvm.one(symbol_for_anchor(C.SubjectQuery(q.doc, q.subject)))
         if binding.kind == "AnchorSymbol" then
-            local nd = #definitions_of(C.SymbolIdQuery(q.file, binding.symbol.id)).items
-            local nu = #references_of(C.SymbolIdQuery(q.file, binding.symbol.id)).items
+            local nd = #pvm.drain(definitions_of(C.SymbolIdQuery(q.doc, binding.symbol.id)))
+            local nu = #pvm.drain(references_of(C.SymbolIdQuery(q.doc, binding.symbol.id)))
             local sym = binding.symbol
-            return C.HoverSymbol(binding.role, sym.name, sym.kind, sym.scope, nd, nu, C.TUnknown())
+            return C.HoverSymbol(binding.role, sym.name, sym.kind, sym.scope, nd, nu, C.TUnknown)
         end
         if binding.kind == "AnchorUnresolved" then
             return C.HoverUnresolved(binding.name, "undefined global")
         end
-        return C.HoverMissing()
+        return C.HoverMissing
     end)
 
     -- ── Public engine ──────────────────────────────────────
@@ -1117,72 +1444,138 @@ function M.new(ctx)
         C = C,
         collect_doc_types = collect_doc_types,
         scope_events = scope_events,
-        item_scope_events = item_scope_events,
-        file_scope_events = file_scope_events,
-        resolve_named_types = resolve_named_types,
-        scope_diagnostics = scope_diagnostics,
-        symbol_index = symbol_index,
-        diagnostics = diagnostics,
-        definitions_of_lower = definitions_of,
-        references_of_lower = references_of,
-        symbol_for_anchor_lower = symbol_for_anchor,
-        type_target_lower = type_target,
-        goto_definition_lower = goto_definition,
-        find_references_lower = find_references,
-        hover_lower = hover,
+        item_scope_events_phase = item_scope_events,
+        file_scope_events_phase = file_scope_events,
+        item_scope_summary_phase = item_scope_summary,
+        item_type_env_phase = item_type_env,
+        item_unknown_type_diagnostics_phase = item_unknown_type_diagnostics,
+        item_semantics_phase = item_semantics,
+        semantic_doc_phase = semantic_doc,
+        item_symbol_index_phase = item_symbol_index,
+        definitions_of_phase = definitions_of,
+        references_of_phase = references_of,
+        symbol_for_anchor_phase = symbol_for_anchor,
+        type_target_phase = type_target,
+        goto_definition_phase = goto_definition,
+        find_references_phase = find_references,
+        hover_phase = hover,
     }
 
-    function engine:report_string()
+    local function unwrap1(a, b)
+        if pvm.classof(a) then return a end
+        return b
+    end
+
+    local function unwrap2(a, b, c)
+        if pvm.classof(a) then return a, b end
+        return b, c
+    end
+
+    local function unwrap3(a, b, c, d)
+        if pvm.classof(a) then return a, b, c end
+        return b, c, d
+    end
+
+    engine.report_string = function()
         return pvm.report_string({
-            self.collect_doc_types,
-            self.scope_events,
-            self.item_scope_events,
-            self.file_scope_events,
-            self.resolve_named_types,
-            self.scope_diagnostics,
-            self.symbol_index,
-            self.diagnostics,
-            self.definitions_of_lower,
-            self.references_of_lower,
-            self.symbol_for_anchor_lower,
-            self.type_target_lower,
-            self.goto_definition_lower,
-            self.find_references_lower,
-            self.hover_lower,
+            engine.collect_doc_types,
+            engine.scope_events,
+            engine.item_scope_events_phase,
+            engine.file_scope_events_phase,
+            engine.item_scope_summary_phase,
+            engine.item_type_env_phase,
+            engine.item_unknown_type_diagnostics_phase,
+            engine.item_semantics_phase,
+            engine.semantic_doc_phase,
+            engine.item_symbol_index_phase,
+            engine.definitions_of_phase,
+            engine.references_of_phase,
+            engine.symbol_for_anchor_phase,
+            engine.type_target_phase,
+            engine.goto_definition_phase,
+            engine.find_references_phase,
+            engine.hover_phase,
         })
     end
 
-    function engine:index(file) return symbol_index(file) end
-    function engine:definitions_of(file, sid) return definitions_of(C.SymbolIdQuery(file, sid)) end
-    function engine:references_of(file, sid) return references_of(C.SymbolIdQuery(file, sid)) end
+    engine.compile = function(a, b)
+        local doc = unwrap1(a, b)
+        return pvm.one(semantic_doc(doc))
+    end
 
-    function engine:symbol_for_anchor(file, anchor)
+    engine.resolve_named_types = function(a, b)
+        local file = unwrap1(a, b)
+        return resolve_named_types(file)
+    end
+    engine.item_scope_events = function(a, b)
+        local item = unwrap1(a, b)
+        return item_scope_events(item)
+    end
+    engine.file_scope_events = function(a, b)
+        local file = unwrap1(a, b)
+        return file_scope_events(file)
+    end
+    engine.item_scope_summary = function(a, b)
+        local item = unwrap1(a, b)
+        return item_scope_summary(item)
+    end
+    engine.scope_diagnostics = function(a, b)
+        local file = unwrap1(a, b)
+        return scope_diagnostics(file)
+    end
+    engine.diagnostics = function(a, b)
+        local file = unwrap1(a, b)
+        return diagnostics(file)
+    end
+    engine.index = function(a, b)
+        local file = unwrap1(a, b)
+        return symbol_index(file)
+    end
+    engine.definitions_of = function(a, b, c)
+        local file, sid = unwrap2(a, b, c)
+        return definitions_of(C.SymbolIdQuery(file, sid))
+    end
+    engine.references_of = function(a, b, c)
+        local file, sid = unwrap2(a, b, c)
+        return references_of(C.SymbolIdQuery(file, sid))
+    end
+
+    engine.symbol_for_anchor = function(a, b, c)
+        local file, anchor = unwrap2(a, b, c)
         return symbol_for_anchor(C.SubjectQuery(file, C.QueryAnchor(anchor_ref(C, anchor))))
     end
 
-    function engine:type_target(file, name) return type_target(C.TypeNameQuery(file, name)) end
+    engine.type_target = function(a, b, c)
+        local file, name = unwrap2(a, b, c)
+        return type_target(C.TypeNameQuery(file, name))
+    end
 
-    function engine:goto_definition(file, v)
+    engine.goto_definition = function(a, b, c)
+        local file, v = unwrap2(a, b, c)
         return goto_definition(C.SubjectQuery(file, query_subject(v)))
     end
 
-    function engine:find_references(file, v, include_decl)
+    engine.find_references = function(a, b, c, d)
+        local file, v, include_decl = unwrap3(a, b, c, d)
         return find_references(C.RefQuery(file, query_subject(v), include_decl and true or false))
     end
 
-    function engine:hover(file, v)
+    engine.hover = function(a, b, c)
+        local file, v = unwrap2(a, b, c)
         return hover(C.SubjectQuery(file, query_subject(v)))
     end
 
-    function engine:reset()
+    engine.reset = function()
         collect_doc_types:reset()
         scope_events:reset()
         item_scope_events:reset()
         file_scope_events:reset()
-        resolve_named_types:reset()
-        scope_diagnostics:reset()
-        symbol_index:reset()
-        diagnostics:reset()
+        item_scope_summary:reset()
+        item_type_env:reset()
+        item_unknown_type_diagnostics:reset()
+        item_symbol_index:reset()
+        item_semantics:reset()
+        semantic_doc:reset()
         definitions_of:reset()
         references_of:reset()
         symbol_for_anchor:reset()

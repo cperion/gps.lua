@@ -17,7 +17,7 @@ local src = table.concat({
     "print(x, y)",
 }, "\n")
 
-local source = C.SourceFile("file:///test.lua", src)
+local source = C.OpenDoc("file:///test.lua", 0, src)
 local tokens = pvm.drain(engine.lex(source))
 print("tokens:", #tokens)
 for i = 1, math.min(15, #tokens) do
@@ -34,15 +34,15 @@ local tokens2 = pvm.drain(engine.lex(source))
 print("Cache hit: OK (same source → same tokens)")
 
 -- lex_with_positions
-local result = engine.lex_with_positions(source)
-print("tokens with positions:", result.count)
-assert(result.positions[1].line == 1, "first token should be on line 1")
-assert(result.positions[1].col == 1, "first token should be at col 1")
+local result = pvm.drain(engine.lex_with_positions(source))
+print("tokens with positions:", #result)
+assert(result[1].line == 1, "first token should be on line 1")
+assert(result[1].col == 1, "first token should be at col 1")
 print("Positions: OK")
 
 -- Keywords
 local kw_src = "and break do else elseif end false for function goto if in local nil not or repeat return then true until while myname"
-local kw_source = C.SourceFile("file:///kw.lua", kw_src)
+local kw_source = C.OpenDoc("file:///kw.lua", 0, kw_src)
 local kw_tokens = pvm.drain(engine.lex(kw_source))
 local kw_count, name_count = 0, 0
 for i = 1, #kw_tokens do

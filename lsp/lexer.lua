@@ -1,25 +1,13 @@
 -- lsp/lexer.lua
 --
--- Lua lexer as pvm.phase("lex").
+-- Lua lexer as pvm phases.
 --
--- Dispatches on SourceFile, emits Token ASDL nodes.
--- Token = (string kind, string value) unique — NO position.
--- Position is tracked in a parallel array returned alongside.
+--   OpenDoc:lex()                  -> Token*
+--   OpenDoc:lex_with_positions()   -> LexTok*
 --
--- Usage:
---   local engine = require("lsp.lexer").new(ctx)
---   -- As pvm phase (lazy triplet, cached per SourceFile identity):
---   local g, p, c = engine.lex(source_file)
---   local tokens = pvm.drain(g, p, c)
---
---   -- As pvm lower (returns {tokens=..., positions=...}, cached):
---   local result = engine.lex_with_positions(source_file)
---   result.tokens[i]      -- Token ASDL node
---   result.positions[i]   -- {line, col, offset, end_offset}
---
--- Because Token is unique + position-free:
---   Token("local", "local") at line 1 == Token("local", "local") at line 50
---   → maximum interning → maximum downstream cache hits
+-- Token stays position-free for maximal interning.
+-- LexTok carries position metadata as ASDL facts, replacing the old plain-Lua
+-- { tokens = ..., positions = ..., count = ... } product.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -160,7 +148,6 @@ end
 
 -- ══════════════════════════════════════════════════════════════
 --  Raw scanner: returns arrays of (kind, value, line, col, offset, end_offset)
---  This is the inner loop — pure byte scanning, no ASDL allocation.
 -- ══════════════════════════════════════════════════════════════
 local function scan_all(src)
     local n = #src
@@ -175,7 +162,6 @@ local function scan_all(src)
         local col = i - line_start + 1
         local token_start = i
 
-        -- whitespace
         if b == 32 or b == 9 or b == 12 then
             i = i + 1
         elseif b == 10 then
@@ -184,7 +170,6 @@ local function scan_all(src)
             i = i + 1; if src:byte(i) == 10 then i = i + 1 end
             line = line + 1; line_start = i
 
-        -- comment or minus
         elseif b == 45 then
             if src:byte(i+1) == 45 then
                 i = i + 2
@@ -218,7 +203,6 @@ local function scan_all(src)
                 offsets[count] = token_start; end_offsets[count] = token_start
             end
 
-        -- string literals
         elseif b == 34 or b == 39 then
             local val, end_pos = scan_short_string(src, i)
             for _ in src:sub(i, end_pos-1):gmatch("\n") do line = line + 1 end
@@ -251,7 +235,6 @@ local function scan_all(src)
                 offsets[count] = token_start; end_offsets[count] = token_start
             end
 
-        -- numbers
         elseif (b >= 48 and b <= 57) or (b == 46 and src:byte(i+1) and src:byte(i+1) >= 48 and src:byte(i+1) <= 57) then
             local val, end_pos = scan_number(src, i)
             count = count + 1
@@ -260,7 +243,6 @@ local function scan_all(src)
             offsets[count] = token_start; end_offsets[count] = end_pos - 1
             i = end_pos
 
-        -- name or keyword
         elseif (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 then
             local j = i + 1
             while j <= n do
@@ -277,7 +259,6 @@ local function scan_all(src)
             offsets[count] = token_start; end_offsets[count] = j - 1
             i = j
 
-        -- dot / concat / vararg
         elseif b == 46 then
             if src:byte(i+1) == 46 then
                 if src:byte(i+2) == 46 then
@@ -295,7 +276,6 @@ local function scan_all(src)
                 offsets[count]=token_start; end_offsets[count]=token_start; i=i+1
             end
 
-        -- relational / assignment
         elseif b == 61 then
             if src:byte(i+1) == 61 then
                 count=count+1; kinds[count]="=="; values[count]="=="
@@ -367,7 +347,6 @@ local function scan_all(src)
                 offsets[count]=token_start; end_offsets[count]=token_start; i=i+1
             end
 
-        -- single-char tokens
         else
             local ch
             if     b == 43  then ch = "+"
@@ -391,7 +370,6 @@ local function scan_all(src)
                 offsets[count]=token_start; end_offsets[count]=token_start
                 i = i + 1
             else
-                -- unknown byte
                 count=count+1; kinds[count]="<error>"; values[count]=string.char(b)
                 lines_arr[count]=line; cols[count]=col
                 offsets[count]=token_start; end_offsets[count]=token_start
@@ -400,7 +378,6 @@ local function scan_all(src)
         end
     end
 
-    -- EOF
     count = count + 1
     kinds[count] = "<eof>"; values[count] = ""
     lines_arr[count] = line; cols[count] = i - line_start + 1
@@ -409,25 +386,12 @@ local function scan_all(src)
     return count, kinds, values, lines_arr, cols, offsets, end_offsets
 end
 
--- ══════════════════════════════════════════════════════════════
---  pvm boundaries
--- ══════════════════════════════════════════════════════════════
-
 function M.new(ctx)
     ctx = ctx or ASDL.context()
     local C = ctx.Lua
 
-    -- ── lex phase ──────────────────────────────────────────
-    -- Dispatches on SourceFile. Emits Token ASDL nodes.
-    -- Token is (kind, value) unique — NO position.
-    -- Positions are captured in the `lex_with_positions` lower below.
-    --
-    -- Because Token carries no position:
-    --   Token("local", "local") is ONE interned object system-wide.
-    --   Token("<name>", "x") is ONE interned object.
-    -- → Downstream phases (parser, semantics) get maximum cache hits.
     local lex = pvm.phase("lex", {
-        [C.SourceFile] = function(self)
+        [C.OpenDoc] = function(self)
             local count, kinds, values = scan_all(self.text)
             local tokens = {}
             for i = 1, count do
@@ -437,34 +401,29 @@ function M.new(ctx)
         end,
     })
 
-    -- ── lex_with_positions lower ───────────────────────────
-    -- Returns (tokens, positions) for parser use.
-    -- tokens[i]    = Token ASDL node (interned, position-free)
-    -- positions[i] = {line, col, offset, end_offset} (raw numbers)
-    --
-    -- Cached per SourceFile identity.
-    local lex_with_positions = pvm.lower("lex_with_positions", function(source_file)
-        local count, kinds, values, lines_arr, cols, offsets, end_offsets = scan_all(source_file.text)
-        local tokens = {}
-        local positions = {}
-        for i = 1, count do
-            tokens[i] = C.Token(kinds[i], values[i])
-            positions[i] = {
-                line = lines_arr[i],
-                col = cols[i],
-                offset = offsets[i],
-                end_offset = end_offsets[i],
-            }
-        end
-        return { tokens = tokens, positions = positions, count = count }
-    end)
+    local lex_with_positions = pvm.phase("lex_with_positions", {
+        [C.OpenDoc] = function(self)
+            local count, kinds, values, lines_arr, cols, offsets, end_offsets = scan_all(self.text)
+            local out = {}
+            for i = 1, count do
+                out[i] = C.LexTok(
+                    C.Token(kinds[i], values[i]),
+                    lines_arr[i],
+                    cols[i],
+                    offsets[i],
+                    end_offsets[i]
+                )
+            end
+            return pvm.seq(out)
+        end,
+    })
 
     return {
         C = C,
         context = ctx,
         lex = lex,
         lex_with_positions = lex_with_positions,
-        scan_all = scan_all,  -- exposed for testing
+        scan_all = scan_all,
         KEYWORDS = KEYWORDS,
     }
 end

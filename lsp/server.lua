@@ -41,8 +41,28 @@ end
 
 local function anchor_ref(C, v)
     if not v then return nil end
-    if type(v) == "table" and tostring(v):match("^Lua%.AnchorRef%(") then return v end
+    if pvm.classof(v) == C.AnchorRef then return v end
     return C.AnchorRef(tostring(v))
+end
+
+local function is_asdl(v)
+    return pvm.classof(v) ~= false
+end
+
+local function is_plain_table(v)
+    return type(v) == "table" and not is_asdl(v)
+end
+
+local function doc_uri(doc)
+    return doc and doc.uri or ""
+end
+
+local function doc_text(doc)
+    return doc and doc.text or ""
+end
+
+local function doc_version(doc)
+    return doc and doc.version or 0
 end
 
 local function line_bounds(text, line0)
@@ -569,85 +589,54 @@ function Core.new(opts)
     local self = setmetatable({}, Core)
     self.engine = opts.engine or Semantics.new(opts.context)
     self.parse = opts.parse
+    self.compile = opts.compile
     self.position_to_anchor = opts.position_to_anchor
 
     local C = self.engine.C
-    self.docs = C.ServerDocStore({})
+    self.docs = C.SemanticDocStore({})
 
     if opts.adapter then
         self.adapter = opts.adapter
     else
-        local aopts = opts.adapter_opts or {}
-        if not aopts.meta_for_file then
-            aopts.meta_for_file = function(file) return self:_meta_for_file(file) end
-        end
-        self.adapter = AdapterMod.new(self.engine, aopts)
+        self.adapter = AdapterMod.new(self.engine, opts.adapter_opts or {})
     end
 
-    self._doc_lookup = pvm.lower("core_doc_lookup", function(q)
+    self._doc_lookup = pvm.phase("core_doc_lookup", function(q)
         local docs = q.store.docs
         for i = 1, #docs do
-            if docs[i].uri == q.uri then return C.ServerDocHit(docs[i]) end
+            if doc_uri(docs[i]) == q.uri then return C.SemanticDocHit(docs[i]) end
         end
-        return C.ServerDocMiss()
+        return C.SemanticDocMiss
     end)
 
     return self
 end
 
-function Core:_meta_to_asdl(file, meta)
+function Core:_set_doc(doc)
     local C = self.engine.C
-    if type(meta) == "table" and tostring(meta):match("^Lua%.ServerMeta%(") then return meta end
-
-    local positions, parse_error = {}, ""
-    if type(meta) == "table" then
-        local ps = meta.positions or {}
-        for i = 1, #ps do
-            local p = ps[i]
-            positions[#positions + 1] = C.ServerAnchorPoint(
-                anchor_ref(C, p.anchor or file),
-                type(p.range) == "table" and tostring(p.range):match("^Lua%.LspRange%(") and p.range
-                    or C.LspRange(C.LspPos(0, 0), C.LspPos(0, 1)),
-                tostring(p.label or ""))
-        end
-        if meta.parse_error then parse_error = tostring(meta.parse_error) end
-    elseif meta ~= nil then
-        parse_error = tostring(meta)
-    end
-    return C.ServerMeta(positions, parse_error)
-end
-
-function Core:_set_doc(uri, version, text, file, meta)
-    local C = self.engine.C
-    local next_doc = C.ServerDoc(uri, version or 0, text or "", file, self:_meta_to_asdl(file, meta))
+    local uri = doc_uri(doc)
     local old = self.docs.docs
     local out, replaced = {}, false
     for i = 1, #old do
-        if old[i].uri == uri then out[#out + 1] = next_doc; replaced = true
+        if doc_uri(old[i]) == uri then out[#out + 1] = doc; replaced = true
         else out[#out + 1] = old[i] end
     end
-    if not replaced then out[#out + 1] = next_doc end
-    self.docs = C.ServerDocStore(out)
-    return next_doc
+    if not replaced then out[#out + 1] = doc end
+    self.docs = C.SemanticDocStore(out)
+    return doc
 end
 
 function Core:_doc(uri)
     local C = self.engine.C
-    local hit = self._doc_lookup(C.ServerDocQuery(self.docs, uri))
-    if hit.kind == "ServerDocHit" then return hit.doc end
+    local hit = pvm.one(self._doc_lookup(C.SemanticDocQuery(self.docs, uri)))
+    if hit.kind == "SemanticDocHit" then return hit.doc end
     return nil
 end
 
-function Core:_meta_for_file(file)
-    local docs = self.docs.docs
-    for i = 1, #docs do if docs[i].file == file then return docs[i].meta end end
-    return nil
-end
-
-function Core:_range_for(file, anchor)
+function Core:_range_for(doc, anchor)
     local C = self.engine.C
-    if self.adapter and self.adapter._lsp_range_for and file and anchor then
-        return self.adapter._lsp_range_for(C.LspRangeQuery(file, anchor))
+    if self.adapter and self.adapter._lsp_range_for and doc and anchor then
+        return pvm.one(self.adapter._lsp_range_for(C.LspRangeQuery(doc, anchor)))
     end
     return C.LspRange(C.LspPos(0, 0), C.LspPos(0, 1))
 end
@@ -668,25 +657,25 @@ function Core:_workspace_global_locations(name, include_declaration)
 
     for i = 1, #docs do
         local d = docs[i]
-        local idx = self.engine:index(d.file)
+        local idx = self.engine:index(d)
         if include_declaration then
             for j = 1, #idx.defs do
                 local occ = idx.defs[j]
                 if occ.name == name and occ.kind == C.SymGlobal then
-                    add(d.uri, d.file, occ.anchor)
+                    add(d.uri, d, occ.anchor)
                 end
             end
         end
         for j = 1, #idx.uses do
             local occ = idx.uses[j]
             if occ.name == name and occ.kind == C.SymGlobal then
-                add(d.uri, d.file, occ.anchor)
+                add(d.uri, d, occ.anchor)
             end
         end
         for j = 1, #idx.unresolved do
             local occ = idx.unresolved[j]
             if occ.name == name then
-                add(d.uri, d.file, occ.anchor)
+                add(d.uri, d, occ.anchor)
             end
         end
     end
@@ -735,7 +724,7 @@ function Core:_workspace_type_target(name)
     local docs = self.docs.docs
     for i = 1, #docs do
         local d = docs[i]
-        local tt = self.engine:type_target(d.file, name)
+        local tt = pvm.one(self.engine:type_target(d, name))
         if tt and tt.kind ~= "TypeTargetMissing" then return tt end
     end
     return nil
@@ -790,9 +779,9 @@ function Core:_workspace_type_locations(name)
 
     for i = 1, #docs do
         local d = docs[i]
-        local tt = self.engine:type_target(d.file, name)
+        local tt = pvm.one(self.engine:type_target(d, name))
         if tt and tt.kind ~= "TypeTargetMissing" and tt.anchor then
-            add(d.uri, d.file, tt.anchor)
+            add(d.uri, d, tt.anchor)
         end
     end
 
@@ -831,7 +820,7 @@ function Core:_workspace_class_field_type_names(class_name, field_name)
 
         for i = 1, #docs do
             local d = docs[i]
-            local env = self.engine.resolve_named_types(d.file)
+            local env = self.engine.resolve_named_types(d)
 
             for j = 1, #env.classes do
                 local cls = env.classes[j]
@@ -851,8 +840,8 @@ function Core:_workspace_class_field_type_names(class_name, field_name)
                 end
             end
 
-            for j = 1, #d.file.items do
-                local item = d.file.items[j]
+            for j = 1, #d.items do
+                local item = d.items[j].syntax
                 local s = item.stmt
                 if s and s.kind == "Function" and s.name and (s.name.kind == "LMethod" or s.name.kind == "LField") then
                     local base_name = expr_terminal_name(s.name.base)
@@ -885,13 +874,13 @@ function Core:_workspace_type_implementations(name)
 
     for i = 1, #docs do
         local d = docs[i]
-        local env = self.engine.resolve_named_types(d.file)
+        local env = self.engine.resolve_named_types(d)
         for j = 1, #env.classes do
             local cls = env.classes[j]
             for k = 1, #cls.extends do
                 local ex = cls.extends[k]
                 if type(ex) == "table" and ex.kind == "TNamed" and ex.name == name then
-                    add(d.uri, d.file, cls.anchor)
+                    add(d.uri, d, cls.anchor)
                     break
                 end
             end
@@ -1006,20 +995,28 @@ function Core:_workspace_module_field_locations(module_name, field, include_decl
     return C.LspLocationList(out)
 end
 
-function Core:_parse(uri, text, prev_file, version, params)
+function Core:_parse(uri, version, text, prev_doc, params)
     if not self.parse then
         error("lsp/server: parse callback required", 2)
     end
     local parse_params = params
-    if not (type(parse_params) == "table" and not tostring(parse_params):match("^Lua%.")) then
+    if not is_plain_table(parse_params) then
         parse_params = {
             uri = uri, version = version, text = text,
             textDocument = { uri = uri, version = version, text = text },
         }
     end
-    local file, meta = self.parse(uri, text, prev_file, self.engine.C, parse_params)
-    if not file then error("lsp/server: parse callback returned nil file", 2) end
-    return file, meta
+    parse_params.prev_doc = prev_doc
+    local doc = self.parse(uri, version, text, prev_doc, self.engine.C, parse_params)
+    if not doc then error("lsp/server: parse callback returned nil doc", 2) end
+    return doc
+end
+
+function Core:_compile(parsed)
+    if not self.compile then return parsed end
+    local doc = self.compile(parsed, self.engine.C)
+    if not doc then error("lsp/server: compile callback returned nil doc", 2) end
+    return doc
 end
 
 function Core:request_from_lsp(method, params)
@@ -1029,7 +1026,7 @@ function Core:request_from_lsp(method, params)
     local pos0 = params.position or (params.textDocumentPositionParams and params.textDocumentPositionParams.position) or {}
     local pos = C.LspPos(pos0.line or 0, pos0.character or 0)
 
-    local subject = C.QueryMissing()
+    local subject = C.QueryMissing
     if params.anchor then
         subject = C.QueryAnchor(anchor_ref(C, params.anchor))
     elseif params.typeName then
@@ -1156,7 +1153,7 @@ function Core:request_from_lsp(method, params)
         return C.ReqWorkspaceSymbol(tostring(params.query or ""))
     end
     if method == "workspace/diagnostic" then
-        return C.ReqWorkspaceDiagnostic()
+        return C.ReqWorkspaceDiagnostic
     end
     if method == "workspace/executeCommand" then
         local args = {}
@@ -1171,55 +1168,53 @@ end
 
 function Core:_resolve_subject(doc, req, prefer_kind)
     local C = self.engine.C
-    if not doc or not doc.file then return nil end
-    local subject = req.subject or C.QueryMissing()
+    if not doc then return nil end
+    local subject = req.subject or C.QueryMissing
     if subject.kind == "QueryTypeName" then return subject.name end
     if subject.kind == "QueryAnchor" then return subject.anchor end
     local pos = req.position
     if not pos then return nil end
     local position = { line = pos.line, character = pos.character }
     if self.position_to_anchor then
-        local ok, anchor = pcall(self.position_to_anchor, doc.file, position, doc, self.adapter, req)
+        local ok, anchor = pcall(self.position_to_anchor, doc, position, self.adapter, req)
         if ok and anchor then return anchor_ref(C, anchor) end
     end
-    local pick = self.adapter:anchor_at_position(doc.file, position, prefer_kind)
+    local pick = pvm.one(self.adapter:anchor_at_position(doc, position, prefer_kind))
     if pick and pick.kind == "AnchorPickHit" then return pick.anchor end
     return nil
 end
 
 function Core:did_open(arg)
     local C = self.engine.C
-    local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
-    local req = (tag == "ReqDidOpen") and arg or self:request_from_lsp("textDocument/didOpen", arg)
+    local req = (pvm.classof(arg) == C.ReqDidOpen) and arg or self:request_from_lsp("textDocument/didOpen", arg)
     if req.kind ~= "ReqDidOpen" then error("did_open: invalid request", 2) end
-    local raw = (type(arg) == "table" and not tostring(arg):match("^Lua%.")) and arg or nil
-    local file, meta = raw and raw.file or nil, raw and raw.meta or nil
-    if not file then
-        file, meta = self:_parse(req.doc.uri, req.doc.text or "", nil, req.doc.version or 0, raw or req)
+    local raw = is_plain_table(arg) and arg or nil
+    local doc = raw and raw.doc or nil
+    if not doc then
+        doc = self:_compile(self:_parse(req.doc.uri, req.doc.version or 0, req.doc.text or "", nil, raw or req))
     end
-    return self:_set_doc(req.doc.uri, req.doc.version or 0, req.doc.text or "", file, meta)
+    return self:_set_doc(doc)
 end
 
 function Core:did_change(arg)
     local C = self.engine.C
-    local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
-    local req = (tag == "ReqDidChange") and arg or self:request_from_lsp("textDocument/didChange", arg)
+    local req = (pvm.classof(arg) == C.ReqDidChange) and arg or self:request_from_lsp("textDocument/didChange", arg)
     if req.kind ~= "ReqDidChange" then error("did_change: invalid request", 2) end
     local uri = req.doc.uri
     local doc = self:_doc(uri)
     if not doc then error("did_change: unknown uri " .. tostring(uri), 2) end
-    local raw = (type(arg) == "table" and not tostring(arg):match("^Lua%.")) and arg or nil
-    local file, meta = raw and raw.file or nil, raw and raw.meta or nil
-    local next_text = doc.text or ""
+    local raw = is_plain_table(arg) and arg or nil
+    local next_doc = raw and raw.doc or nil
+    local next_text = doc_text(doc)
     if #req.changes > 0 then
         for i = 1, #req.changes do
             next_text = apply_lsp_change(next_text, req.changes[i])
         end
     end
-    if not file then
-        file, meta = self:_parse(uri, next_text, doc.file, req.doc.version or doc.version or 0, raw or req)
+    if not next_doc then
+        next_doc = self:_compile(self:_parse(uri, req.doc.version or doc_version(doc), next_text, doc, raw or req))
     end
-    return self:_set_doc(uri, req.doc.version or doc.version, next_text, file, meta)
+    return self:_set_doc(next_doc)
 end
 
 function Core:did_close(arg)
@@ -1229,8 +1224,8 @@ function Core:did_close(arg)
     if req.kind ~= "ReqDidClose" then error("did_close: invalid request", 2) end
     local old = self.docs.docs
     local out = {}
-    for i = 1, #old do if old[i].uri ~= req.doc.uri then out[#out + 1] = old[i] end end
-    self.docs = C.ServerDocStore(out)
+    for i = 1, #old do if doc_uri(old[i]) ~= req.doc.uri then out[#out + 1] = old[i] end end
+    self.docs = C.SemanticDocStore(out)
     return true
 end
 
@@ -1250,14 +1245,14 @@ function Core:diagnostic(arg)
     local doc = self:_doc(req.doc.uri)
     if not doc then return C.LspDiagnosticReport(C.DiagReportFull, {}, req.doc.uri or "", 0) end
     local items = {}
-    local ds = self.adapter:diagnostics(doc.file).items
+    local ds = pvm.one(self.adapter:diagnostics(doc)).items
     for i = 1, #ds do items[i] = ds[i] end
-    if doc.meta and doc.meta.parse_error and doc.meta.parse_error ~= "" then
+    if doc.status and doc.status.kind == "ParseError" then
         items[#items + 1] = C.LspDiagnostic(
             C.LspRange(C.LspPos(0, 0), C.LspPos(0, 1)), 1,
-            "lua-lsp-pvm", "parse-error", tostring(doc.meta.parse_error))
+            "lua-lsp-pvm", "parse-error", tostring(doc.status.message or "parse error"))
     end
-    return C.LspDiagnosticReport(C.DiagReportFull, items, doc.uri, doc.version or 0)
+    return C.LspDiagnosticReport(C.DiagReportFull, items, doc_uri(doc), doc_version(doc))
 end
 
 function Core:hover(arg)
@@ -1266,10 +1261,10 @@ function Core:hover(arg)
     local req = (tag == "ReqHover") and arg or self:request_from_lsp("textDocument/hover", arg)
     if req.kind ~= "ReqHover" then error("hover: invalid request", 2) end
     local doc = self:_doc(req.doc.uri)
-    if not doc then return C.LspHoverMiss() end
+    if not doc then return C.LspHoverMiss end
     local subject = self:_resolve_subject(doc, req)
-    if not subject then return C.LspHoverMiss() end
-    return self.adapter:hover(doc.file, subject)
+    if not subject then return C.LspHoverMiss end
+    return pvm.one(self.adapter:hover(doc, subject))
 end
 
 function Core:definition(arg)
@@ -1312,7 +1307,7 @@ function Core:definition(arg)
         return C.LspLocationList({})
     end
 
-    local local_hits = self.adapter:definition(doc.file, subject)
+    local local_hits = pvm.one(self.adapter:definition(doc, subject))
     if local_hits and #local_hits.items > 0 then
         return local_hits
     end
@@ -1325,7 +1320,7 @@ function Core:definition(arg)
         return self:_workspace_global_locations(subject, true)
     end
 
-    local binding = self.engine:symbol_for_anchor(doc.file, subject)
+    local binding = pvm.one(self.engine:symbol_for_anchor(doc, subject))
     if binding.kind == "AnchorSymbol" and binding.symbol.kind == C.SymGlobal then
         return self:_workspace_global_locations(binding.symbol.name, true)
     end
@@ -1365,7 +1360,7 @@ function Core:declaration(arg)
         return self:_workspace_global_locations(subject, true)
     end
 
-    local binding = self.engine:symbol_for_anchor(doc.file, subject)
+    local binding = pvm.one(self.engine:symbol_for_anchor(doc, subject))
     if binding.kind == "AnchorSymbol" and binding.symbol then
         local sk = binding.symbol.kind
         if sk == C.SymTypeClass or sk == C.SymTypeAlias or sk == C.SymTypeGeneric then
@@ -1373,12 +1368,12 @@ function Core:declaration(arg)
             if #tlocs.items > 0 then return tlocs end
         end
 
-        local defs = self.engine:definitions_of(doc.file, binding.symbol.id)
+        local defs = pvm.drain(self.engine:definitions_of(doc, binding.symbol.id))
         local out, seen = {}, {}
-        for i = 1, #(defs.items or {}) do
-            local occ = defs.items[i]
+        for i = 1, #defs do
+            local occ = defs[i]
             if occ and occ.anchor then
-                local r = self:_range_for(doc.file, occ.anchor)
+                local r = self:_range_for(doc, occ.anchor)
                 local key = req.doc.uri .. ":" .. r.start.line .. ":" .. r.start.character .. ":" .. r.stop.line .. ":" .. r.stop.character
                 if not seen[key] then
                     seen[key] = true
@@ -1406,13 +1401,13 @@ function Core:implementation(arg)
     if type(subject) == "string" then
         seeds[#seeds + 1] = subject
     elseif subject then
-        local binding = self.engine:symbol_for_anchor(doc.file, subject)
+        local binding = pvm.one(self.engine:symbol_for_anchor(doc, subject))
         if binding.kind == "AnchorSymbol" and binding.symbol then
             local sk = binding.symbol.kind
             if sk == C.SymTypeClass or sk == C.SymTypeAlias or sk == C.SymTypeGeneric then
                 seeds[#seeds + 1] = binding.symbol.name
             elseif self._type_engine then
-                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc.file, subject), seeds, {})
+                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc, subject), seeds, {})
             end
         end
     end
@@ -1457,7 +1452,7 @@ function Core:type_definition(arg)
         seeds[#seeds + 1] = subject
         seen[subject] = true
     elseif subject then
-        local binding = self.engine:symbol_for_anchor(doc.file, subject)
+        local binding = pvm.one(self.engine:symbol_for_anchor(doc, subject))
         if binding.kind == "AnchorSymbol" and binding.symbol then
             local sk = binding.symbol.kind
             if sk == C.SymTypeClass or sk == C.SymTypeAlias or sk == C.SymTypeGeneric then
@@ -1465,7 +1460,7 @@ function Core:type_definition(arg)
                 seeds[#seeds + 1] = n
                 seen[n] = true
             elseif self._type_engine then
-                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc.file, subject), seeds, seen)
+                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc, subject), seeds, seen)
             end
         elseif binding.kind == "AnchorUnresolved" and binding.name and binding.name ~= "" then
             seeds[#seeds + 1] = binding.name
@@ -1480,10 +1475,10 @@ function Core:type_definition(arg)
             local line_start, line_end = line_bounds(doc.text or "", req.position.line)
             local line_text = (doc.text or ""):sub(line_start, line_end - 1)
             local base_char = byte_to_utf16_col_in_line(line_text, bs)
-            local pick = self.adapter:anchor_at_position(doc.file, { line = req.position.line, character = base_char }, "use")
+            local pick = pvm.one(self.adapter:anchor_at_position(doc, { line = req.position.line, character = base_char }, "use"))
             if pick and pick.kind == "AnchorPickHit" then
                 local base_names = {}
-                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc.file, pick.anchor), base_names, {})
+                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc, pick.anchor), base_names, {})
                 local expanded_base = self:_expand_type_names(base_names)
                 for i = 1, #expanded_base do
                     local fnames = self:_workspace_class_field_type_names(expanded_base[i], field)
@@ -1560,7 +1555,7 @@ function Core:references(arg)
         return C.LspLocationList({})
     end
 
-    local local_hits = self.adapter:references(doc.file, subject, include_decl)
+    local local_hits = pvm.one(self.adapter:references(doc, subject, include_decl))
 
     if type(subject) == "string" then
         local ws = self:_workspace_global_locations(subject, include_decl)
@@ -1568,7 +1563,7 @@ function Core:references(arg)
         return local_hits
     end
 
-    local binding = self.engine:symbol_for_anchor(doc.file, subject)
+    local binding = pvm.one(self.engine:symbol_for_anchor(doc, subject))
     if binding.kind == "AnchorSymbol" and binding.symbol.kind == C.SymGlobal then
         local ws = self:_workspace_global_locations(binding.symbol.name, include_decl)
         if #ws.items > 0 then return ws end
@@ -1597,7 +1592,7 @@ function Core:document_highlight(arg)
     if not doc then return C.LspDocumentHighlightList({}) end
     local subject = self:_resolve_subject(doc, req)
     if not subject then return C.LspDocumentHighlightList({}) end
-    return self.adapter:document_highlight(doc.file, subject)
+    return pvm.one(self.adapter:document_highlight(doc, subject))
 end
 
 function Core:to_lsp(v)
@@ -1656,7 +1651,7 @@ function Core:to_lsp(v)
         end
         return out
     end
-    if tag == "LspCompletionList" or tag == "CompletionList" then
+    if tag == "LspCompletionList" then
         local out = {}
         for i = 1, #v.items do out[i] = self:to_lsp(v.items[i]) end
         return { isIncomplete = v.is_incomplete and true or false, items = out }
@@ -1869,18 +1864,13 @@ function Core:completion(arg)
         end
     end
 
-    local raw = self._complete_engine.complete(C.CompletionQuery(doc.file, req.position, prefix))
-    if raw.kind == "LspCompletionList" then
-        return raw
-    end
-
+    local items = pvm.drain(self._complete_engine.complete(C.CompletionQuery(doc, req.position, prefix)))
     local out = {}
-    local items = raw.items or {}
     for i = 1, #items do
         local it = items[i]
         out[i] = C.LspCompletionItem(it.label, it.kind, it.detail or "", it.sort_text or "", it.insert_text or it.label, "")
     end
-    return C.LspCompletionList(out, raw.is_incomplete and true or false)
+    return C.LspCompletionList(out, false)
 end
 
 function Core:completion_resolve(arg)
@@ -1896,7 +1886,7 @@ function Core:completion_resolve(arg)
     local defs, uses = 0, 0
     local docs = self.docs.docs
     for i = 1, #docs do
-        local idx = self.engine:index(docs[i].file)
+        local idx = self.engine:index(docs[i])
         for j = 1, #idx.defs do if idx.defs[j].name == label then defs = defs + 1 end end
         for j = 1, #idx.uses do if idx.uses[j].name == label then uses = uses + 1 end end
     end
@@ -1919,7 +1909,7 @@ function Core:document_symbol(arg)
     local default_range = C.LspRange(C.LspPos(0, 0), C.LspPos(0, 1))
     local function range_for(anchor)
         if self.adapter and self.adapter._lsp_range_for and anchor then
-            return self.adapter._lsp_range_for(C.LspRangeQuery(doc.file, anchor))
+            return pvm.one(self.adapter._lsp_range_for(C.LspRangeQuery(doc, anchor)))
         end
         return default_range
     end
@@ -1933,9 +1923,9 @@ function Core:document_symbol(arg)
         return C.LspDocumentSymbol(sym.name, sym.detail or "", sym.kind, range, range, children)
     end
 
-    local raw = pvm.drain(self._docsymbols_engine.doc_symbols(doc.file))
+    local tree = pvm.one(self._docsymbols_engine.doc_symbol_tree(doc))
     local out = {}
-    for i = 1, #raw do out[i] = convert(raw[i]) end
+    for i = 1, #tree.items do out[i] = convert(tree.items[i]) end
     return C.LspDocumentSymbolList(out)
 end
 
@@ -1950,7 +1940,7 @@ function Core:signature_help(arg)
     local callee, active_param = signature_context_at_position(doc.text or "", req.position.line, req.position.character)
     if not callee or callee == "" then return C.LspSignatureHelp({}, 0, 0) end
 
-    local raw = self._sighelp_engine.signature_lookup(C.SignatureLookupQuery(doc.file, callee, active_param or 0))
+    local raw = pvm.one(self._sighelp_engine.signature_lookup(C.SignatureLookupQuery(doc, callee, active_param or 0)))
 
     if (not raw or #raw.signatures == 0) then
         local base, field = callee:match("^([%a_][%w_]*)[%.:]([%a_][%w_]*)$")
@@ -1961,9 +1951,9 @@ function Core:signature_help(arg)
                 local md = self:_module_docs_for_name(mod)
                 local merged, seen = {}, {}
                 for i = 1, #md do
-                    local sub = self._sighelp_engine.signature_lookup(
-                        C.SignatureLookupQuery(md[i].file, field, active_param or 0)
-                    )
+                    local sub = pvm.one(self._sighelp_engine.signature_lookup(
+                        C.SignatureLookupQuery(md[i], field, active_param or 0)
+                    ))
                     for j = 1, #sub.signatures do
                         local s = sub.signatures[j]
                         if not seen[s.label] then
@@ -2017,7 +2007,7 @@ function Core:rename(arg)
     if not subject then return C.RenameFail("no symbol at position") end
     local anchor = type(subject) == "table" and tostring(subject):match("^Lua%.AnchorRef%(") and subject
         or C.AnchorRef(tostring(subject))
-    return self._rename_engine.rename(C.RenameQuery(doc.file, anchor, req.new_name))
+    return pvm.one(self._rename_engine.rename(C.RenameQuery(doc, anchor, req.new_name)))
 end
 
 function Core:prepare_rename(arg)
@@ -2031,8 +2021,8 @@ function Core:prepare_rename(arg)
     if not subject then return nil end
     local anchor = type(subject) == "table" and tostring(subject):match("^Lua%.AnchorRef%(") and subject
         or C.AnchorRef(tostring(subject))
-    return self._rename_engine.prepare_rename(
-        C.RenameQuery(doc.file, anchor, ""))
+    return pvm.one(self._rename_engine.prepare_rename(
+        C.RenameQuery(doc, anchor, "")))
 end
 
 function Core:code_action(arg)
@@ -2045,8 +2035,8 @@ function Core:code_action(arg)
     if not doc or not self._codeaction_engine then return C.LspCodeActionList({}) end
 
     local report = self:diagnostic(C.ReqDiagnostic(C.LspDocIdentifier(doc.uri)))
-    local q = C.CodeActionQuery(doc.file, doc.uri, req.range, report.items or {})
-    return self._codeaction_engine.plan_code_actions(q)
+    local q = C.CodeActionQuery(doc, doc.uri, req.range, report.items or {})
+    return pvm.one(self._codeaction_engine.plan_code_actions(q))
 end
 
 function Core:code_action_resolve(arg)
@@ -2138,9 +2128,9 @@ function Core:semantic_tokens_full(arg)
     local doc = self:_doc(req.doc.uri)
     if not doc or not self._semtokens_engine then return C.LspSemanticTokens({}) end
 
-    local spans = self._semtokens_engine.plan_semantic_tokens(
-        C.LspSemanticTokenQuery(doc.file, doc.uri, doc.text or "")
-    ).items
+    local spans = pvm.one(self._semtokens_engine.plan_semantic_tokens(
+        C.LspSemanticTokenQuery(doc)
+    )).items
 
     return encode_semantic_tokens(C, spans)
 end
@@ -2154,9 +2144,9 @@ function Core:semantic_tokens_range(arg)
     local doc = self:_doc(req.doc.uri)
     if not doc or not self._semtokens_engine then return C.LspSemanticTokens({}) end
 
-    local src = self._semtokens_engine.plan_semantic_tokens(
-        C.LspSemanticTokenQuery(doc.file, doc.uri, doc.text or "")
-    ).items
+    local src = pvm.one(self._semtokens_engine.plan_semantic_tokens(
+        C.LspSemanticTokenQuery(doc)
+    )).items
 
     local out = {}
     local sline, eline = req.range.start.line, req.range.stop.line
@@ -2179,7 +2169,7 @@ function Core:inlay_hint(arg)
     local out, seen = {}, {}
     local function add_hint_for_anchor(anchor, tstr)
         if not anchor or not tstr or tstr == "" or tstr == "any" or tstr == "unknown" then return end
-        local r = self:_range_for(doc.file, anchor)
+        local r = self:_range_for(doc, anchor)
         local pos = C.LspPos(r.stop.line, r.stop.character)
         if not position_in_range(pos, req.range) then return end
         local key = pos.line .. ":" .. pos.character .. ":" .. tstr
@@ -2189,7 +2179,7 @@ function Core:inlay_hint(arg)
     end
 
     if self._type_engine then
-        local ti = self._type_engine.typed_index(doc.file)
+        local ti = pvm.one(self._type_engine.typed_index(doc))
         for i = 1, #ti.symbols do
             local ts = ti.symbols[i]
             local sym = ts.symbol
@@ -2210,8 +2200,8 @@ function Core:inlay_hint(arg)
         return nil
     end
 
-    for i = 1, #doc.file.items do
-        local item = doc.file.items[i]
+    for i = 1, #doc.items do
+        local item = doc.items[i].syntax
         local s = item.stmt
         if s.kind == "LocalAssign" then
             for j = 1, #s.names do
@@ -2244,7 +2234,7 @@ function Core:formatting(arg)
 
     local fr = nil
     if self._format_engine and self._format_engine.format_file then
-        fr = self._format_engine.format_file(C.FormatQuery(doc.file, opts, req.range, req.has_range))
+        fr = pvm.one(self._format_engine.format_file(C.FormatQuery(doc, opts, req.range, req.has_range)))
     end
 
     if not fr then
@@ -2292,12 +2282,12 @@ function Core:folding_range(arg)
     end
 
     -- AST-aware region folds
-    for i = 1, #doc.file.items do
-        local s = doc.file.items[i].stmt
+    for i = 1, #doc.items do
+        local s = doc.items[i].syntax.stmt
         local k = s and s.kind or ""
         if k == "If" or k == "While" or k == "Repeat" or k == "ForNum" or k == "ForIn"
             or k == "Do" or k == "Function" or k == "LocalFunction" then
-            local r = self:_range_for(doc.file, C.AnchorRef(tostring(s)))
+            local r = self:_range_for(doc, C.AnchorRef(tostring(s)))
             if r and r.start and r.stop then
                 add_fold(r.start.line, r.stop.line, C.FoldRegion, r.start.character, r.stop.character)
             end
@@ -2339,7 +2329,7 @@ function Core:selection_range(arg)
     local doc = self:_doc(req.doc.uri)
     if not doc then return C.LspSelectionRangeList({}) end
 
-    local entries = self.adapter:all_anchor_entries(doc.file).items or {}
+    local entries = pvm.drain(self.adapter:all_anchor_entries(doc)) or {}
     local out = {}
 
     for i = 1, #req.positions do
@@ -2397,10 +2387,10 @@ function Core:code_lens(arg)
     if not doc then return C.LspCodeLensList({}) end
 
     local out = {}
-    for i = 1, #doc.file.items do
-        local s = doc.file.items[i].stmt
+    for i = 1, #doc.items do
+        local s = doc.items[i].syntax.stmt
         if s and (s.kind == "Function" or s.kind == "LocalFunction") then
-            local r = self:_range_for(doc.file, C.AnchorRef(tostring(s)))
+            local r = self:_range_for(doc, C.AnchorRef(tostring(s)))
             out[#out + 1] = C.LspCodeLens(
                 C.LspRange(C.LspPos(r.start.line, 0), C.LspPos(r.start.line, 1)),
                 "Run solve",
@@ -2435,24 +2425,21 @@ function Core:document_color(arg)
     end
 
     if self._lexer_engine and self._lexer_engine.lex_with_positions then
-        local src = C.SourceFile(req.doc.uri, text)
-        local lexed = self._lexer_engine.lex_with_positions(src)
-        local tokens = lexed.tokens or {}
-        local positions = lexed.positions or {}
-        local count = lexed.count or #tokens
+        local src = C.OpenDoc(req.doc.uri, doc_version(doc), text)
+        local lexed = pvm.drain(self._lexer_engine.lex_with_positions(src))
 
-        for i = 1, count do
-            local tok = tokens[i]
-            local pos = positions[i]
-            if tok and pos and tok.kind == "<number>" then
+        for i = 1, #lexed do
+            local lt = lexed[i]
+            local tok = lt.token
+            if tok and tok.kind == "<number>" then
                 local v = tostring(tok.value or ""):gsub("_", "")
                 v = v:gsub("[uUlLiI]+$", "")
                 local rr, gg, bb, aa = v:match("^0[xX](%x%x)(%x%x)(%x%x)(%x%x)$")
                 if rr and gg and bb and aa then
-                    local line0 = (pos.line or 1) - 1
+                    local line0 = (lt.line or 1) - 1
                     local line_start = line_bounds(text, line0)
-                    local start_off = pos.offset or line_start
-                    local stop_off = pos.end_offset or start_off
+                    local start_off = lt.start_offset or line_start
+                    local stop_off = lt.end_offset or start_off
                     if stop_off < start_off then stop_off = start_off end
                     local prefix = text:sub(line_start, math.max(line_start, start_off) - 1)
                     local token_txt = text:sub(start_off, stop_off)
@@ -2499,28 +2486,28 @@ function Core:workspace_symbol(arg)
 
     for i = 1, #docs do
         local d = docs[i]
-        local idx = self.engine:index(d.file)
+        local idx = self.engine:index(d)
         for j = 1, #idx.defs do
             local occ = idx.defs[j]
-            add(occ.name, ws_symbol_kind(occ.kind), d.uri, self:_range_for(d.file, occ.anchor), "")
+            add(occ.name, ws_symbol_kind(occ.kind), d.uri, self:_range_for(d, occ.anchor), "")
         end
 
-        local env = self.engine.resolve_named_types(d.file)
+        local env = self.engine.resolve_named_types(d)
         for j = 1, #env.classes do
             local cls = env.classes[j]
-            add(cls.name, 5, d.uri, self:_range_for(d.file, cls.anchor), "")
+            add(cls.name, 5, d.uri, self:_range_for(d, cls.anchor), "")
             for k = 1, #cls.fields do
                 local f = cls.fields[k]
-                add(f.name, 8, d.uri, self:_range_for(d.file, f.anchor), cls.name)
+                add(f.name, 8, d.uri, self:_range_for(d, f.anchor), cls.name)
             end
         end
         for j = 1, #env.aliases do
             local a = env.aliases[j]
-            add(a.name, 13, d.uri, self:_range_for(d.file, a.anchor), "")
+            add(a.name, 13, d.uri, self:_range_for(d, a.anchor), "")
         end
         for j = 1, #env.generics do
             local g = env.generics[j]
-            add(g.name, 26, d.uri, self:_range_for(d.file, g.anchor), "")
+            add(g.name, 26, d.uri, self:_range_for(d, g.anchor), "")
         end
     end
 

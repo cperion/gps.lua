@@ -127,19 +127,19 @@ print("OK!")
 -- ── Test 5: Completions with prefix ────────────────────────
 print("\n=== Completions with prefix ===")
 -- Simulate typing "hel" — should filter to "helper"
-local comp2 = core._complete_engine.complete(
+local comp2 = pvm.drain(core._complete_engine.complete(
     core.engine.C.CompletionQuery(
-        core:_doc(uri).file,
+        core:_doc(uri),
         core.engine.C.LspPos(20, 3),
         "hel"
     )
-)
-print("items matching 'hel':", comp2 and #comp2.items or 0)
+))
+print("items matching 'hel':", comp2 and #comp2 or 0)
 local found_helper2 = false
-if comp2 and comp2.items then
-    for i = 1, #comp2.items do
-        if comp2.items[i].label == "helper" then found_helper2 = true end
-        print("  " .. comp2.items[i].label)
+if comp2 then
+    for i = 1, #comp2 do
+        if comp2[i].label == "helper" then found_helper2 = true end
+        print("  " .. comp2[i].label)
     end
 end
 assert(found_helper2, "should find 'helper' with prefix 'hel'")
