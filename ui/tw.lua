@@ -6,7 +6,9 @@ local S = T.Style
 
 local M = {}
 
-local DEFAULT_COND = S.Cond(S.AnyBp, S.AnyScheme, S.AnyMotion)
+local DEFAULT_STATE_COND = S.StateCond(S.ReqAny, S.ReqAny, S.ReqAny, S.ReqAny, S.ReqAny)
+local DEFAULT_COND = S.Cond(S.AnyBp, S.AnyScheme, S.AnyMotion, DEFAULT_STATE_COND)
+local NO_STATE = S.State(false, false, false, false, false)
 
 local function classof(v)
     return pvm.classof(v)
@@ -28,8 +30,19 @@ local function token(atom, cond)
     return S.Token(cond or DEFAULT_COND, atom)
 end
 
-local function clone_cond(cond, bp, scheme, motion)
-    return S.Cond(bp or cond.bp, scheme or cond.scheme, motion or cond.motion)
+local function clone_state_cond(state_cond, hovered, focused, active, selected, disabled)
+    state_cond = state_cond or DEFAULT_STATE_COND
+    return S.StateCond(
+        hovered or state_cond.hovered,
+        focused or state_cond.focused,
+        active or state_cond.active,
+        selected or state_cond.selected,
+        disabled or state_cond.disabled
+    )
+end
+
+local function clone_cond(cond, bp, scheme, motion, state)
+    return S.Cond(bp or cond.bp, scheme or cond.scheme, motion or cond.motion, state or cond.state)
 end
 
 local function collect_tokens(value, out)
@@ -556,6 +569,56 @@ function M.col_span(n) return token(S.AColSpan(n)) end
 function M.row_start(n) return token(S.ARowStart(n)) end
 function M.row_span(n) return token(S.ARowSpan(n)) end
 
+local function map_state_cond(value, hovered, focused, active, selected, disabled)
+    if value == nil or value == false then
+        return value
+    end
+
+    if is_token(value) then
+        local state_cond = clone_state_cond(value.cond.state, hovered, focused, active, selected, disabled)
+        return S.Token(clone_cond(value.cond, nil, nil, nil, state_cond), value.atom)
+    end
+
+    if is_group(value) then
+        local src = value.items
+        local out = {}
+        for i = 1, #src do
+            out[i] = map_state_cond(src[i], hovered, focused, active, selected, disabled)
+        end
+        return S.Group(out)
+    end
+
+    if is_token_list(value) then
+        local src = value.items
+        local out = {}
+        for i = 1, #src do
+            out[i] = map_state_cond(src[i], hovered, focused, active, selected, disabled)
+        end
+        return S.TokenList(out)
+    end
+
+    if type(value) == "table" and not classof(value) then
+        local out = {}
+        for i = 1, #value do
+            collect_tokens(map_state_cond(value[i], hovered, focused, active, selected, disabled), out)
+        end
+        return S.Group(out)
+    end
+
+    error("expected Style.Token, Style.Group, Style.TokenList, or token array", 2)
+end
+
+function M.state(opts)
+    opts = opts or {}
+    return S.State(
+        not not opts.hovered,
+        not not opts.focused,
+        not not opts.active,
+        not not opts.selected,
+        not not opts.disabled
+    )
+end
+
 function M.sm(v) return map_cond(v, S.SmUp, nil, nil) end
 function M.md(v) return map_cond(v, S.MdUp, nil, nil) end
 function M.lg(v) return map_cond(v, S.LgUp, nil, nil) end
@@ -568,8 +631,17 @@ function M.dark(v) return map_cond(v, nil, S.DarkOnly, nil) end
 function M.motion_safe(v) return map_cond(v, nil, nil, S.MotionSafeOnly) end
 function M.motion_reduce(v) return map_cond(v, nil, nil, S.MotionReduceOnly) end
 
+function M.hover(v) return map_state_cond(v, S.ReqOn, nil, nil, nil, nil) end
+function M.focus(v) return map_state_cond(v, nil, S.ReqOn, nil, nil, nil) end
+function M.active(v) return map_state_cond(v, nil, nil, S.ReqOn, nil, nil) end
+function M.selected(v) return map_state_cond(v, nil, nil, nil, S.ReqOn, nil) end
+function M.disabled(v) return map_state_cond(v, nil, nil, nil, nil, S.ReqOn) end
+function M.enabled(v) return map_state_cond(v, nil, nil, nil, nil, S.ReqOff) end
+
 M.token = token
 M.default_cond = DEFAULT_COND
+M.default_state_cond = DEFAULT_STATE_COND
+M.no_state = NO_STATE
 M.T = T
 
 return M

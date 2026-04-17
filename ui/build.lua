@@ -266,6 +266,16 @@ function M.fragment(items)
     return parse_fragment(expect_table(items, 2))
 end
 
+function M.with_state(state, child)
+    if classof(state) ~= Style.State then
+        error("with_state expects a Style.State as first argument", 2)
+    end
+    if not is_node(child) then
+        error("with_state expects an authored child node as second argument", 2)
+    end
+    return Auth.WithState(state, child)
+end
+
 function M.with_input(id, role, child)
     if not is_id(id) then
         error("with_input expects a ui id as first argument", 2)

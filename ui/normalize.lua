@@ -15,6 +15,9 @@ local BP_RANK = {
     [Env.X2l] = 5,
 }
 
+local ANY_STATE_COND = S.StateCond(S.ReqAny, S.ReqAny, S.ReqAny, S.ReqAny, S.ReqAny)
+local NO_STATE = S.State(false, false, false, false, false)
+
 local ZERO_SPACE = S.S0
 local ZERO_MARGIN = S.MarginSpace(S.S0)
 local EMPTY_TRACKS = {}
@@ -65,6 +68,12 @@ local DEFAULT_SPEC = S.Spec(
     S.GridPlacement(1, 1, 1, 1)
 )
 
+local function req_matches(req, value)
+    return req == S.ReqAny
+        or (req == S.ReqOn and value)
+        or (req == S.ReqOff and not value)
+end
+
 local function bp_matches(cond_bp, env_bp)
     if cond_bp == S.AnyBp or cond_bp == nil then
         return true
@@ -89,10 +98,21 @@ local function motion_matches(cond_motion, env_motion)
         or (cond_motion == S.MotionReduceOnly and env_motion == Env.MotionReduce)
 end
 
-local function cond_matches(cond, env)
+local function state_matches(cond_state, state)
+    cond_state = cond_state or ANY_STATE_COND
+    state = state or NO_STATE
+    return req_matches(cond_state.hovered, state.hovered)
+       and req_matches(cond_state.focused, state.focused)
+       and req_matches(cond_state.active, state.active)
+       and req_matches(cond_state.selected, state.selected)
+       and req_matches(cond_state.disabled, state.disabled)
+end
+
+local function cond_matches(cond, env, state)
     return bp_matches(cond.bp, env.bp)
        and scheme_matches(cond.scheme, env.scheme)
        and motion_matches(cond.motion, env.motion)
+       and state_matches(cond.state, state)
 end
 
 local function pad_top(v)    return S.DPadTop(v) end
@@ -111,8 +131,8 @@ local function grid_gap_x(v) return S.DGridGapX(v) end
 local function grid_gap_y(v) return S.DGridGapY(v) end
 
 local expand_decl_phase = pvm.phase("ui.expand_decl", {
-    [S.Token] = function(self, env)
-        if not cond_matches(self.cond, env) then
+    [S.Token] = function(self, env, state)
+        if not cond_matches(self.cond, env, state) then
             return pvm.empty()
         end
 
@@ -214,7 +234,7 @@ local expand_decl_phase = pvm.phase("ui.expand_decl", {
 })
 
 local expand_decls_phase = pvm.phase("ui.expand_decls", {
-    [S.TokenList] = function(self, env)
+    [S.TokenList] = function(self, env, state)
         local items = self.items
         local n = #items
         if n == 0 then
@@ -222,7 +242,7 @@ local expand_decls_phase = pvm.phase("ui.expand_decls", {
         end
         local trips = {}
         for i = 1, n do
-            local g, p, c = expand_decl_phase(items[i], env)
+            local g, p, c = expand_decl_phase(items[i], env, state)
             trips[i] = { g, p, c }
         end
         return pvm.concat_all(trips)
@@ -312,12 +332,14 @@ local function apply_decl(spec, decl)
     error("ui.normalize: unhandled style decl", 2)
 end
 
-local normalize_phase = pvm.phase("ui.normalize", function(token_list, env)
-    local g, p, c = expand_decls_phase(token_list, env)
+local normalize_phase = pvm.phase("ui.normalize", function(token_list, env, state)
+    local g, p, c = expand_decls_phase(token_list, env, state or NO_STATE)
     return pvm.fold(g, p, c, DEFAULT_SPEC, apply_decl)
 end)
 
 M.default_spec = DEFAULT_SPEC
+M.any_state_cond = ANY_STATE_COND
+M.no_state = NO_STATE
 M.expand_decl_phase = expand_decl_phase
 M.expand_decls_phase = expand_decls_phase
 M.normalize_phase = normalize_phase

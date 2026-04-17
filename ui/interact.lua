@@ -68,9 +68,11 @@ local classify_phase = pvm.phase("ui.interact.classify", {
         emit_hover(parts, report)
         if self.button == Interact.BtnLeft then
             if report.hover_id ~= Core.NoId then
+                parts[#parts + 1] = { pvm.once(Interact.SetPressed(report.hover_id)) }
                 parts[#parts + 1] = { pvm.once(Interact.SetFocus(report.hover_id)) }
                 parts[#parts + 1] = { pvm.once(Interact.Activate(report.hover_id)) }
             else
+                parts[#parts + 1] = { pvm.once(Interact.ClearPressed) }
                 parts[#parts + 1] = { pvm.once(Interact.ClearFocus) }
             end
         end
@@ -82,6 +84,9 @@ local classify_phase = pvm.phase("ui.interact.classify", {
             { pvm.once(Interact.SetPointer(self.x, self.y)) },
         }
         emit_hover(parts, report)
+        if self.button == Interact.BtnLeft then
+            parts[#parts + 1] = { pvm.once(Interact.ClearPressed) }
+        end
         return pvm.concat_all(parts)
     end,
 
@@ -160,6 +165,12 @@ local function apply_event(model, event)
     if event == Interact.ClearFocus then
         return pvm.with(model, { focus_id = Core.NoId })
     end
+    if cls == Interact.SetPressed then
+        return pvm.with(model, { pressed_id = event.id })
+    end
+    if event == Interact.ClearPressed then
+        return pvm.with(model, { pressed_id = Core.NoId })
+    end
     if cls == Interact.ScrollBy then
         return pvm.with(model, { scrolls = update_scrolls(model.scrolls, event.id, event.dx, event.dy) })
     end
@@ -173,6 +184,7 @@ function M.model(opts)
         opts.pointer_y or 0,
         opts.hover_id or Core.NoId,
         opts.focus_id or Core.NoId,
+        opts.pressed_id or Core.NoId,
         opts.scrolls or {}
     )
 end

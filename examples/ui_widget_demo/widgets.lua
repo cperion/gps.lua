@@ -32,45 +32,79 @@ local hex = {
     white = 0xffffffff, black = 0x000000ff,
 }
 
+local function matches_interact_id(value, id_str)
+    return value == id_str
+        or value == id_str .. ":frame"
+        or value == id_str .. ":field"
+        or value == id_str .. ":row"
+        or value == id_str .. ":tab"
+end
+
 local function ctx_from_state(state)
     local mode = state.app.theme_mode
     local ui_model = state.ui_model
     local hover_val = (ui_model.hover_id ~= Core.NoId) and ui_model.hover_id.value or nil
     local focus_val = (ui_model.focus_id ~= Core.NoId) and ui_model.focus_id.value or nil
+    local pressed_val = (ui_model.pressed_id ~= Core.NoId) and ui_model.pressed_id.value or nil
 
     return {
         mode = mode,
         is_dark = mode == W.ThemeDark,
         is_hovered = function(id_str)
-            return hover_val == id_str or hover_val == id_str .. ":frame" or hover_val == id_str .. ":field" or hover_val == id_str .. ":row"
+            return matches_interact_id(hover_val, id_str)
         end,
         is_focused = function(id_str)
-            return focus_val == id_str or focus_val == id_str .. ":frame" or focus_val == id_str .. ":field" or focus_val == id_str .. ":row"
-        end
+            return matches_interact_id(focus_val, id_str)
+        end,
+        is_pressed = function(id_str)
+            return matches_interact_id(pressed_val, id_str)
+        end,
+        state_for = function(id_str, opts)
+            opts = opts or {}
+            return tw.state {
+                hovered = matches_interact_id(hover_val, id_str),
+                focused = matches_interact_id(focus_val, id_str),
+                active = matches_interact_id(pressed_val, id_str),
+                selected = opts.selected,
+                disabled = opts.disabled,
+            }
+        end,
     }
 end
 
-local function fg_main(ctx)    return ctx.is_dark and tw.fg.slate[50]  or tw.fg.slate[950] end
-local function fg_muted(ctx)   return ctx.is_dark and tw.fg.slate[400] or tw.fg.slate[500] end
-local function fg_primary(ctx) return ctx.is_dark and tw.fg.slate[900] or tw.fg.slate[50] end
+local function fg_main(ctx)      return ctx.is_dark and tw.fg.slate[50]   or tw.fg.slate[900] end
+local function fg_muted(ctx)     return ctx.is_dark and tw.fg.slate[300]  or tw.fg.slate[500] end
+local function fg_primary(ctx)   return tw.fg.white end
+local function fg_accent(ctx)    return ctx.is_dark and tw.fg.violet[200] or tw.fg.violet[700] end
 
-local function bg_background(ctx) return ctx.is_dark and tw.bg.slate[950]  or tw.bg.white end
-local function bg_surface(ctx)    return ctx.is_dark and tw.bg.slate[950]  or tw.bg.white end
-local function bg_muted(ctx)      return ctx.is_dark and tw.bg.slate[800]  or tw.bg.slate[100] end
-local function bg_muted_hover(ctx)return ctx.is_dark and tw.bg.slate[700]  or tw.bg.slate[200] end
+local function bg_background(ctx)    return ctx.is_dark and tw.bg.slate[950]   or tw.bg.violet[50] end
+local function bg_surface(ctx)       return ctx.is_dark and tw.bg.slate[900]   or tw.bg.white end
+local function bg_surface_soft(ctx)  return ctx.is_dark and tw.bg.slate[800]   or tw.bg.violet[100] end
+local function bg_muted(ctx)         return ctx.is_dark and tw.bg.slate[800]   or tw.bg.violet[100] end
+local function bg_muted_hover(ctx)   return ctx.is_dark and tw.bg.slate[700]   or tw.bg.violet[200] end
+local function bg_primary(ctx)       return ctx.is_dark and tw.bg.violet[400]  or tw.bg.violet[500] end
+local function bg_primary_hover(ctx) return ctx.is_dark and tw.bg.violet[300]  or tw.bg.violet[400] end
+local function bg_primary_active(ctx)return ctx.is_dark and tw.bg.violet[200]  or tw.bg.violet[300] end
+local function bg_accent_soft(ctx)   return ctx.is_dark and tw.bg.violet[950]  or tw.bg.pink[50] end
+local function bg_info_soft(ctx)     return ctx.is_dark and tw.bg.sky[950]     or tw.bg.sky[50] end
+local function bg_success_soft(ctx)  return ctx.is_dark and tw.bg.emerald[950] or tw.bg.emerald[50] end
+local function bg_warning_soft(ctx)  return ctx.is_dark and tw.bg.amber[950]   or tw.bg.amber[50] end
+local function bg_error_soft(ctx)    return ctx.is_dark and tw.bg.red[950]     or tw.bg.rose[50] end
 
-local function bg_primary(ctx)    return ctx.is_dark and tw.bg.slate[50]   or tw.bg.slate[900] end
-local function bg_primary_hover(ctx) return ctx.is_dark and tw.bg.slate[200] or tw.bg.slate[800] end
+local function border_subtle(ctx) return ctx.is_dark and tw.border_color.slate[700]  or tw.border_color.violet[200] end
+local function border_strong(ctx) return ctx.is_dark and tw.border_color.slate[600]  or tw.border_color.violet[300] end
+local function border_focus(ctx)  return ctx.is_dark and tw.border_color.violet[300] or tw.border_color.violet[500] end
+local function border_info(ctx)   return ctx.is_dark and tw.border_color.sky[800]    or tw.border_color.sky[200] end
+local function border_success(ctx)return ctx.is_dark and tw.border_color.emerald[800] or tw.border_color.emerald[200] end
+local function border_warning(ctx)return ctx.is_dark and tw.border_color.amber[800]   or tw.border_color.amber[200] end
+local function border_error(ctx)  return ctx.is_dark and tw.border_color.red[800]     or tw.border_color.rose[200] end
 
-local function border_subtle(ctx) return ctx.is_dark and tw.border_color.slate[800] or tw.border_color.slate[200] end
-local function border_strong(ctx) return ctx.is_dark and tw.border_color.slate[700] or tw.border_color.slate[300] end
-local function border_focus(ctx)  return ctx.is_dark and tw.border_color.slate[400] or tw.border_color.slate[900] end
-
-local function hex_primary(ctx) return ctx.is_dark and hex.slate[50] or hex.slate[900] end
-local function hex_muted(ctx) return ctx.is_dark and hex.slate[800] or hex.slate[200] end
-local function hex_background(ctx) return ctx.is_dark and hex.slate[950] or hex.white end
-local function hex_border(ctx) return ctx.is_dark and hex.slate[800] or hex.slate[200] end
-local function hex_border_focus(ctx) return ctx.is_dark and hex.slate[400] or hex.slate[900] end
+local function hex_primary(ctx)       return ctx.is_dark and 0xc4b5fdff or 0x8b5cf6ff end
+local function hex_primary_hover(ctx) return ctx.is_dark and 0xddd6feff or 0xa78bfaff end
+local function hex_muted(ctx)         return ctx.is_dark and hex.slate[700] or 0xe9d5ffff end
+local function hex_background(ctx)    return ctx.is_dark and 0x0f172aff or 0xffffffff end
+local function hex_border(ctx)        return ctx.is_dark and hex.slate[700] or 0xc4b5fdff end
+local function hex_border_focus(ctx)  return ctx.is_dark and 0xc4b5fdff or 0x8b5cf6ff end
 
 -- ── Micro-Widgets ──────────────────────────────────────────────────────
 
@@ -78,7 +112,7 @@ local function section_title(ctx, title, subtitle)
     return b.box {
         tw.flow, tw.gap_y_1, tw.mb_6,
         b.text { tw.text_2xl, tw.font_semibold, tw.tracking_tight, fg_main(ctx), title },
-        subtitle and b.text { tw.text_sm, fg_muted(ctx), subtitle } or nil,
+        subtitle and b.text { tw.text_sm, fg_accent(ctx), subtitle } or nil,
     }
 end
 
@@ -91,26 +125,33 @@ local function description(ctx, text)
 end
 
 local function ui_button(ctx, id, text, variant, size)
-    local is_hov = ctx.is_hovered(id)
-    local is_foc = ctx.is_focused(id)
+    local state = ctx.state_for(id)
 
-    local bg, fg, border
+    local bg, fg, border, hover_bg, active_bg
     if variant == "primary" then
-        bg = is_hov and bg_primary_hover(ctx) or bg_primary(ctx)
+        bg = bg_primary(ctx)
         fg = fg_primary(ctx)
+        hover_bg = bg_primary_hover(ctx)
+        active_bg = bg_primary_active(ctx)
     elseif variant == "secondary" then
-        bg = is_hov and bg_muted_hover(ctx) or bg_muted(ctx)
+        bg = bg_muted(ctx)
         fg = fg_main(ctx)
+        hover_bg = bg_muted_hover(ctx)
+        active_bg = bg_muted_hover(ctx)
     elseif variant == "outline" then
-        bg = is_hov and bg_muted(ctx) or nil
         fg = fg_main(ctx)
         border = border_subtle(ctx)
+        hover_bg = bg_muted(ctx)
+        active_bg = bg_muted_hover(ctx)
     elseif variant == "ghost" then
-        bg = is_hov and bg_muted(ctx) or nil
         fg = fg_main(ctx)
+        hover_bg = bg_muted(ctx)
+        active_bg = bg_muted_hover(ctx)
     elseif variant == "destructive" then
-        bg = is_hov and (ctx.is_dark and tw.bg.red[800] or tw.bg.red[800]) or (ctx.is_dark and tw.bg.red[900] or tw.bg.red[600])
+        bg = ctx.is_dark and tw.bg.red[900] or tw.bg.red[600]
         fg = tw.fg.white
+        hover_bg = ctx.is_dark and tw.bg.red[800] or tw.bg.red[800]
+        active_bg = hover_bg
     end
 
     local px, py, text_size, rounded = tw.px_4, tw.py_2, tw.text_sm, tw.rounded_md
@@ -129,64 +170,84 @@ local function ui_button(ctx, id, text, variant, size)
         label_node = b.text { text_size, tw.font_medium, fg, text }
     end
 
-    return b.with_input(b.id(id), T.Interact.ActivateTarget,
-        b.box {
-            b.id(id .. ":frame"),
-            tw.flex, tw.row, tw.items_center, tw.justify_center,
-            px, py, rounded,
-            tw.cursor_pointer,
-            bg,
-            border and tw.border_1 or nil,
-            border,
-            is_foc and tw.border_2 or nil,
-            is_foc and border_focus(ctx) or nil,
-            label_node,
-        })
+    return b.with_state(state,
+        b.with_input(b.id(id), T.Interact.ActivateTarget,
+            b.box {
+                b.id(id .. ":frame"),
+                tw.flex, tw.row, tw.items_center, tw.justify_center,
+                px, py, rounded,
+                tw.cursor_pointer,
+                bg,
+                border and tw.border_1 or nil,
+                border,
+                hover_bg and tw.hover(hover_bg) or nil,
+                active_bg and tw.active(active_bg) or nil,
+                tw.focus(tw.border_2),
+                tw.focus(border_focus(ctx)),
+                label_node,
+            }))
 end
 
 local function ui_switch(ctx, id, is_on)
+    local state = ctx.state_for(id)
     local is_hov = ctx.is_hovered(id)
     local is_foc = ctx.is_focused(id)
-    
-    local track_c = is_on and hex_primary(ctx) or hex_muted(ctx)
+    local is_act = ctx.is_pressed(id)
+
+    local track_c
+    if is_on then
+        track_c = is_act and hex_primary_hover(ctx) or hex_primary(ctx)
+    else
+        track_c = is_hov and hex_border(ctx) or hex_muted(ctx)
+    end
     local knob_c = hex_background(ctx)
-    
-    local w, h = 44, 24
-    local knob_r = 10
-    local knob_x = is_on and (w - knob_r*2 - 2) or 2
+
+    local w, h = 48, 28
+    local knob_r = 11
+    local knob_x = is_on and (w - knob_r * 2 - 3) or 3
+    if is_act then knob_x = knob_x + (is_on and -1 or 1) end
     local knob_cy = h * 0.5
 
-    local ring = is_foc and paint.circle(w*0.5, h*0.5, w*0.5+4, nil, paint.stroke(hex_border_focus(ctx), 2)) or nil
+    local ring = is_foc and paint.circle(w * 0.5, h * 0.5, w * 0.5 + 4, nil, paint.stroke(hex_border_focus(ctx), 2)) or nil
 
     local p = b.paint {
         tw.w_px(w), tw.h_px(h),
-        paint.circle(h*0.5, h*0.5, h*0.5, paint.fill(track_c), nil),
-        paint.circle(w - h*0.5, h*0.5, h*0.5, paint.fill(track_c), nil),
-        paint.polygon({h*0.5, 0, w - h*0.5, 0, w - h*0.5, h, h*0.5, h}, paint.fill(track_c), nil),
-        paint.circle(knob_x + knob_r, knob_cy, knob_r, paint.fill(knob_c), nil),
+        paint.circle(h * 0.5, h * 0.5, h * 0.5, paint.fill(track_c), nil),
+        paint.circle(w - h * 0.5, h * 0.5, h * 0.5, paint.fill(track_c), nil),
+        paint.polygon({ h * 0.5, 0, w - h * 0.5, 0, w - h * 0.5, h, h * 0.5, h }, paint.fill(track_c), nil),
+        paint.circle(knob_x + knob_r, knob_cy, knob_r, paint.fill(knob_c), paint.stroke(hex_border(ctx), 1)),
         ring
     }
-    
-    return b.with_input(b.id(id), T.Interact.ActivateTarget,
-        b.box { b.id(id..":frame"), tw.cursor_pointer, p })
+
+    return b.with_state(state,
+        b.with_input(b.id(id), T.Interact.ActivateTarget,
+            b.box {
+                b.id(id..":frame"),
+                tw.p_1, tw.rounded_full, tw.cursor_pointer,
+                tw.hover(bg_surface_soft(ctx)),
+                tw.active(bg_muted(ctx)),
+                p,
+            }))
 end
 
 local function ui_text_input(ctx, id, value, placeholder)
-    local is_hov = ctx.is_hovered(id)
-    local is_foc = ctx.is_focused(id)
     local has_value = #value > 0
 
-    return b.with_input(b.id(id), T.Interact.EditTarget,
-        b.box {
-            b.id(id..":field"),
-            tw.flex, tw.row, tw.items_center,
-            tw.w_full, tw.px_3, tw.py_2,
-            tw.rounded_md, tw.border_1,
-            is_foc and border_focus(ctx) or border_subtle(ctx),
-            bg_background(ctx),
-            tw.cursor_text,
-            b.text { tw.text_sm, has_value and fg_main(ctx) or fg_muted(ctx), has_value and value or placeholder }
-        })
+    return b.with_state(ctx.state_for(id),
+        b.with_input(b.id(id), T.Interact.EditTarget,
+            b.box {
+                b.id(id..":field"),
+                tw.flex, tw.row, tw.items_center,
+                tw.w_full, tw.px_3, tw.py_2,
+                tw.rounded_md, tw.border_1,
+                border_subtle(ctx),
+                bg_background(ctx),
+                tw.hover(bg_muted(ctx)),
+                tw.focus(tw.border_2),
+                tw.focus(border_focus(ctx)),
+                tw.cursor_text,
+                b.text { tw.text_sm, has_value and fg_main(ctx) or fg_muted(ctx), has_value and value or placeholder }
+            }))
 end
 
 local function ui_slider(ctx, id, value, w)
@@ -228,20 +289,20 @@ end
 local function ui_badge(ctx, label_text, variant)
     local bg, fg, border
     if variant == "primary" then
-        bg = ctx.is_dark and tw.bg.slate[50] or tw.bg.slate[900]
-        fg = ctx.is_dark and tw.fg.slate[900] or tw.fg.slate[50]
+        bg = ctx.is_dark and tw.bg.violet[400] or tw.bg.violet[500]
+        fg = tw.fg.white
         border = nil
     elseif variant == "secondary" then
-        bg = ctx.is_dark and tw.bg.slate[800] or tw.bg.slate[100]
-        fg = ctx.is_dark and tw.fg.slate[50] or tw.fg.slate[900]
-        border = nil
+        bg = bg_surface_soft(ctx)
+        fg = fg_main(ctx)
+        border = border_subtle(ctx)
     elseif variant == "destructive" then
-        bg = ctx.is_dark and tw.bg.red[900] or tw.bg.red[500]
+        bg = ctx.is_dark and tw.bg.rose[900] or tw.bg.rose[500]
         fg = tw.fg.white
         border = nil
     elseif variant == "outline" then
-        bg = nil
-        fg = fg_main(ctx)
+        bg = bg_accent_soft(ctx)
+        fg = fg_accent(ctx)
         border = border_subtle(ctx)
     end
 
@@ -284,12 +345,14 @@ local function section_toggles(ctx, toggles)
     for i = 1, #toggles do
         local t = toggles[i]
         local is_on = t.state == W.On
-        rows[i] = b.box {
-            tw.flex, tw.row, tw.items_center, tw.justify_between,
-            tw.w_full, tw.p_4, tw.rounded_xl, tw.border_1, border_subtle(ctx), bg_surface(ctx),
-            b.box { tw.flow, tw.gap_y_1, label(ctx, t.label), description(ctx, "Manage " .. string.lower(t.label) .. " settings.") },
-            ui_switch(ctx, "toggle:" .. i, is_on)
-        }
+        rows[i] = b.with_state(ctx.state_for("toggle:" .. i),
+            b.box {
+                tw.flex, tw.row, tw.items_center, tw.justify_between,
+                tw.w_full, tw.p_4, tw.rounded_xl, tw.border_1, border_subtle(ctx), bg_surface(ctx),
+                tw.hover(bg_surface_soft(ctx)),
+                b.box { tw.flow, tw.gap_y_1, label(ctx, t.label), description(ctx, "Manage " .. string.lower(t.label) .. " settings.") },
+                ui_switch(ctx, "toggle:" .. i, is_on)
+            })
     end
     return b.box {
         tw.flow, tw.w_full, tw.gap_y_8,
@@ -395,16 +458,22 @@ local function section_alerts(ctx, alerts)
     local rows = {}
     for i = 1, #alerts do
         local a = alerts[i]
-        local is_dest = a.tone == W.AlertError
-        local border_c = is_dest and (ctx.is_dark and tw.border_color.red[900] or tw.border_color.red[500]) or border_subtle(ctx)
-        local bg_c = is_dest and (ctx.is_dark and tw.bg.red[950] or tw.bg.white) or bg_surface(ctx)
-        local text_c = is_dest and (ctx.is_dark and tw.fg.red[50] or tw.fg.red[600]) or fg_main(ctx)
-        
+        local border_c, bg_c, text_c
+        if a.tone == W.AlertInfo then
+            border_c, bg_c, text_c = border_info(ctx), bg_info_soft(ctx), ctx.is_dark and tw.fg.sky[100] or tw.fg.sky[700]
+        elseif a.tone == W.AlertSuccess then
+            border_c, bg_c, text_c = border_success(ctx), bg_success_soft(ctx), ctx.is_dark and tw.fg.emerald[100] or tw.fg.emerald[700]
+        elseif a.tone == W.AlertWarning then
+            border_c, bg_c, text_c = border_warning(ctx), bg_warning_soft(ctx), ctx.is_dark and tw.fg.amber[100] or tw.fg.amber[700]
+        else
+            border_c, bg_c, text_c = border_error(ctx), bg_error_soft(ctx), ctx.is_dark and tw.fg.rose[100] or tw.fg.rose[700]
+        end
+
         rows[i] = b.box {
             tw.flow, tw.w_full, tw.p_4, tw.rounded_lg, tw.border_1, border_c, bg_c,
             b.box { tw.flow, tw.gap_y_1,
                 b.text { tw.text_sm, tw.font_medium, tw.leading_none, tw.tracking_tight, text_c, a.title },
-                b.text { tw.text_sm, is_dest and text_c or fg_muted(ctx), a.body },
+                b.text { tw.text_sm, fg_muted(ctx), a.body },
             }
         }
     end
@@ -427,12 +496,22 @@ local function section_tabs(ctx, active_tab)
     for i = 1, #tabs do
         local t = tabs[i]
         local is_active = active_tab == t.kind
-        tab_items[i] = b.with_input(b.id(t.id), T.Interact.ActivateTarget,
-            b.box {
-                b.id(t.id .. ":tab"), tw.flex, tw.row, tw.items_center, tw.justify_center,
-                tw.px_3, tw.py_1_5, tw.rounded_md, tw.cursor_pointer, is_active and bg_surface(ctx) or nil,
-                b.text { tw.text_sm, tw.font_medium, is_active and fg_main(ctx) or fg_muted(ctx), t.label },
-            })
+        tab_items[i] = b.with_state(ctx.state_for(t.id, { selected = is_active }),
+            b.with_input(b.id(t.id), T.Interact.ActivateTarget,
+                b.box {
+                    b.id(t.id .. ":tab"), tw.flex, tw.row, tw.items_center, tw.justify_center,
+                    tw.px_3, tw.py_1_5, tw.rounded_md, tw.cursor_pointer,
+                    tw.selected(bg_surface(ctx)),
+                    tw.hover(bg_surface(ctx)),
+                    tw.active(bg_surface(ctx)),
+                    b.text {
+                        tw.text_sm, tw.font_medium, fg_muted(ctx),
+                        tw.selected(fg_main(ctx)),
+                        tw.hover(fg_main(ctx)),
+                        tw.active(fg_main(ctx)),
+                        t.label
+                    },
+                }))
     end
 
     local content_title, content_body = "", ""
@@ -505,8 +584,8 @@ local function section_tooltips(ctx, tooltips)
             ui_button(ctx, "tooltip_btn:"..i, t.label, "outline"),
             b.box {
                 tw.flex, tw.row, tw.items_center, tw.px_3, tw.py_1_5,
-                tw.rounded_md, ctx.is_dark and tw.bg.slate[50] or tw.bg.slate[900],
-                b.text { tw.text_xs, tw.font_medium, ctx.is_dark and tw.fg.slate[900] or tw.fg.slate[50], t.tip }
+                tw.rounded_md, tw.border_1, border_subtle(ctx), bg_accent_soft(ctx),
+                b.text { tw.text_xs, tw.font_medium, fg_accent(ctx), t.tip }
             }
         }
     end
@@ -554,18 +633,23 @@ local function build_sidebar(ctx, app)
     for i = 1, #NAV_ITEMS do
         local item = NAV_ITEMS[i]
         local is_selected = app.section == item.section
-        local is_hov = ctx.is_hovered(item.id)
-        
-        local bg = is_selected and bg_muted(ctx) or (is_hov and bg_muted_hover(ctx) or nil)
-        local fg = (is_selected or is_hov) and fg_main(ctx) or fg_muted(ctx)
-        
-        nav_rows[i] = b.with_input(b.id(item.id), T.Interact.ActivateTarget,
-            b.box {
-                b.id(item.id .. ":row"), tw.flex, tw.row, tw.items_center,
-                tw.w_full, tw.px_3, tw.py_2, tw.rounded_md, tw.cursor_pointer,
-                bg,
-                b.text { tw.text_sm, tw.font_medium, fg, item.label },
-            })
+
+        nav_rows[i] = b.with_state(ctx.state_for(item.id, { selected = is_selected }),
+            b.with_input(b.id(item.id), T.Interact.ActivateTarget,
+                b.box {
+                    b.id(item.id .. ":row"), tw.flex, tw.row, tw.items_center,
+                    tw.w_full, tw.px_3, tw.py_2, tw.rounded_md, tw.cursor_pointer,
+                    tw.selected(bg_muted(ctx)),
+                    tw.hover(bg_muted_hover(ctx)),
+                    tw.active(bg_muted_hover(ctx)),
+                    b.text {
+                        tw.text_sm, tw.font_medium, fg_muted(ctx),
+                        tw.selected(fg_main(ctx)),
+                        tw.hover(fg_main(ctx)),
+                        tw.active(fg_main(ctx)),
+                        item.label
+                    },
+                }))
     end
 
     return F.Compose.Raw {
@@ -575,8 +659,8 @@ local function build_sidebar(ctx, app)
             tw.gap_y_8,
             b.box {
                 tw.flow, tw.px_2,
-                b.text { tw.text_lg, tw.font_semibold, tw.tracking_tight, fg_main(ctx), "shadcn/ui" },
-                b.text { tw.text_xs, fg_muted(ctx), "Widget Gallery" },
+                b.text { tw.text_lg, tw.font_semibold, tw.tracking_tight, fg_main(ctx), "petal/ui" },
+                b.text { tw.text_xs, fg_accent(ctx), "Cute Widget Garden" },
             },
             b.box { tw.flow, tw.gap_y_1, b.fragment(nav_rows) },
             b.box { tw.grow_1, tw.basis_px(0), tw.min_h_px(0) },
@@ -593,13 +677,14 @@ function M.compose_root(state, vw, vh)
         styles = tw.list {
             tw.w_px(vw), tw.h_px(vh),
             bg_background(ctx),
-            tw.fg.slate[950],
+            ctx.is_dark and tw.fg.slate[100] or tw.fg.slate[900],
         },
         
         left = build_sidebar(ctx, state.app),
         left_styles = tw.list {
             tw.w_px(SIDEBAR_W),
             tw.px_4, tw.py_6,
+            bg_surface_soft(ctx),
             tw.border_r_1, border_subtle(ctx),
         },
         
@@ -611,8 +696,11 @@ function M.compose_root(state, vw, vh)
             body_styles = tw.list { tw.flex, tw.row, tw.justify_center, tw.w_full },
             body = F.Compose.Raw {
                 child = b.box {
-                    tw.w_full, tw.max_w_px(800),
+                    tw.w_full, tw.max_w_px(860),
                     tw.py_10, tw.px_8,
+                    tw.rounded_3xl,
+                    tw.border_1, border_subtle(ctx),
+                    bg_surface(ctx),
                     build_section(ctx, state.app)
                 }
             }
