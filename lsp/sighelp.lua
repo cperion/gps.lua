@@ -1,7 +1,8 @@
 -- lsp/sighelp.lua
 --
 -- Signature catalog + lookup.
--- pvm.phase("signature_catalog"): File -> SignatureCatalog
+-- pvm.phase("item_signature_entries"): Item -> SignatureEntry*
+-- pvm.phase("signature_catalog"): SemanticDoc -> SignatureCatalog
 -- pvm.phase("signature_lookup"): SignatureLookupQuery -> SignatureHelp
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
@@ -71,6 +72,105 @@ function M.new(semantics_engine, type_engine)
         return C.SignatureInfo(label, params, 0)
     end
 
+    local item_signature_entries = pvm.phase("item_signature_entries", {
+        [C.Item] = function(item)
+            local by_name, order = {}, {}
+
+            local function ensure_entry(name)
+                if not name or name == "" then return nil end
+                local e = by_name[name]
+                if e then return e end
+                e = { name = name, signatures = {}, seen = {} }
+                by_name[name] = e
+                order[#order + 1] = name
+                return e
+            end
+
+            local function add_signature(name, params, ret)
+                local entry = ensure_entry(name)
+                if not entry then return end
+                local sig = signature_from_parts(name, params, ret)
+                if entry.seen[sig.label] then return end
+                entry.seen[sig.label] = true
+                entry.signatures[#entry.signatures + 1] = sig
+            end
+
+            local function add_overloads(name)
+                local entry = ensure_entry(name)
+                if not entry then return end
+                for di = 1, #(item.docs or {}) do
+                    local tags = item.docs[di].tags
+                    for ti = 1, #tags do
+                        local tag = tags[ti]
+                        if tag.kind == "OverloadTag" and tag.sig then
+                            local params = {}
+                            for pi = 1, #tag.sig.params do
+                                params[#params + 1] = C.ParamLabel("arg" .. tostring(pi) .. ": " .. type_to_string(tag.sig.params[pi]))
+                            end
+                            local ret = (#tag.sig.returns > 0) and type_to_string(tag.sig.returns[1]) or nil
+                            local sig = signature_from_parts(name, params, ret)
+                            if not entry.seen[sig.label] then
+                                entry.seen[sig.label] = true
+                                entry.signatures[#entry.signatures + 1] = sig
+                            end
+                        end
+                    end
+                end
+            end
+
+            local stmt = item.stmt
+            if stmt then
+                if stmt.kind == "LocalFunction" then
+                    local ptypes = docs_param_types(item)
+                    add_signature(stmt.name, params_from_body(stmt.body, ptypes, false), docs_return(item))
+                    add_overloads(stmt.name)
+                elseif stmt.kind == "Function" then
+                    local ptypes = docs_param_types(item)
+                    local ret = docs_return(item)
+                    if stmt.name.kind == "LName" then
+                        add_signature(stmt.name.name, params_from_body(stmt.body, ptypes, false), ret)
+                        add_overloads(stmt.name.name)
+                    elseif stmt.name.kind == "LField" then
+                        add_signature(stmt.name.key, params_from_body(stmt.body, ptypes, false), ret)
+                        add_overloads(stmt.name.key)
+                        if stmt.name.base and stmt.name.base.kind == "NameRef" then
+                            local full = stmt.name.base.name .. "." .. stmt.name.key
+                            add_signature(full, params_from_body(stmt.body, ptypes, false), ret)
+                            add_overloads(full)
+                        end
+                    elseif stmt.name.kind == "LMethod" then
+                        add_signature(stmt.name.method, params_from_body(stmt.body, ptypes, true), ret)
+                        add_overloads(stmt.name.method)
+                        if stmt.name.base and stmt.name.base.kind == "NameRef" then
+                            local full = stmt.name.base.name .. ":" .. stmt.name.method
+                            add_signature(full, params_from_body(stmt.body, ptypes, true), ret)
+                            add_overloads(full)
+                        end
+                    end
+                elseif stmt.kind == "LocalAssign" then
+                    for i = 1, #stmt.names do
+                        local v = stmt.values[i]
+                        if v and v.kind == "FunctionExpr" then
+                            local n = stmt.names[i] and stmt.names[i].value or nil
+                            if n then
+                                local ptypes = docs_param_types(item)
+                                add_signature(n, params_from_body(v.body, ptypes, false), docs_return(item))
+                                add_overloads(n)
+                            end
+                        end
+                    end
+                end
+            end
+
+            local out = {}
+            for i = 1, #order do
+                local e = by_name[order[i]]
+                out[#out + 1] = C.SignatureEntry(e.name, e.signatures)
+            end
+            return pvm.seq(out)
+        end,
+    })
+
     local signature_catalog = pvm.phase("signature_catalog", function(file)
         local by_name, order = {}, {}
 
@@ -84,119 +184,19 @@ function M.new(semantics_engine, type_engine)
             return e
         end
 
-        local function add_signature(name, params, ret)
-            local entry = ensure_entry(name)
-            if not entry then return end
-            local sig = signature_from_parts(name, params, ret)
-            if entry.seen[sig.label] then return end
-            entry.seen[sig.label] = true
-            entry.signatures[#entry.signatures + 1] = sig
-        end
-
-        local function add_overloads(item, name)
-            local entry = ensure_entry(name)
-            if not entry then return end
-            for di = 1, #(item.docs or {}) do
-                local tags = item.docs[di].tags
-                for ti = 1, #tags do
-                    local tag = tags[ti]
-                    if tag.kind == "OverloadTag" and tag.sig then
-                        local params = {}
-                        for pi = 1, #tag.sig.params do
-                            params[#params + 1] = C.ParamLabel("arg" .. tostring(pi) .. ": " .. type_to_string(tag.sig.params[pi]))
-                        end
-                        local ret = (#tag.sig.returns > 0) and type_to_string(tag.sig.returns[1]) or nil
-                        local sig = signature_from_parts(name, params, ret)
-                        if not entry.seen[sig.label] then
-                            entry.seen[sig.label] = true
-                            entry.signatures[#entry.signatures + 1] = sig
-                        end
-                    end
-                end
-            end
-        end
-
-        local visit_block, visit_item
-
-        local function add_stmt(item, stmt)
-            if not stmt then return end
-
-            if stmt.kind == "LocalFunction" then
-                local ptypes = docs_param_types(item)
-                add_signature(stmt.name, params_from_body(stmt.body, ptypes, false), docs_return(item))
-                add_overloads(item, stmt.name)
-                return
-            end
-
-            if stmt.kind == "Function" then
-                local ptypes = docs_param_types(item)
-                local ret = docs_return(item)
-                if stmt.name.kind == "LName" then
-                    add_signature(stmt.name.name, params_from_body(stmt.body, ptypes, false), ret)
-                    add_overloads(item, stmt.name.name)
-                elseif stmt.name.kind == "LField" then
-                    add_signature(stmt.name.key, params_from_body(stmt.body, ptypes, false), ret)
-                    add_overloads(item, stmt.name.key)
-                    if stmt.name.base and stmt.name.base.kind == "NameRef" then
-                        local full = stmt.name.base.name .. "." .. stmt.name.key
-                        add_signature(full, params_from_body(stmt.body, ptypes, false), ret)
-                        add_overloads(item, full)
-                    end
-                elseif stmt.name.kind == "LMethod" then
-                    add_signature(stmt.name.method, params_from_body(stmt.body, ptypes, true), ret)
-                    add_overloads(item, stmt.name.method)
-                    if stmt.name.base and stmt.name.base.kind == "NameRef" then
-                        local full = stmt.name.base.name .. ":" .. stmt.name.method
-                        add_signature(full, params_from_body(stmt.body, ptypes, true), ret)
-                        add_overloads(item, full)
-                    end
-                end
-                return
-            end
-
-            if stmt.kind == "LocalAssign" then
-                for i = 1, #stmt.names do
-                    local v = stmt.values[i]
-                    if v and v.kind == "FunctionExpr" then
-                        local n = stmt.names[i] and stmt.names[i].value or nil
-                        if n then
-                            local ptypes = docs_param_types(item)
-                            add_signature(n, params_from_body(v.body, ptypes, false), docs_return(item))
-                            add_overloads(item, n)
-                        end
-                    end
-                end
-            end
-        end
-
-        function visit_item(item)
-            if not item then return end
-            local stmt = item.stmt
-            add_stmt(item, stmt)
-
-            if not stmt then return end
-            if stmt.kind == "LocalFunction" then visit_block(stmt.body and stmt.body.body)
-            elseif stmt.kind == "Function" then visit_block(stmt.body and stmt.body.body)
-            elseif stmt.kind == "LocalAssign" then
-                for i = 1, #stmt.values do
-                    local v = stmt.values[i]
-                    if v and v.kind == "FunctionExpr" then visit_block(v.body and v.body.body) end
-                end
-            elseif stmt.kind == "If" then
-                for i = 1, #stmt.arms do visit_block(stmt.arms[i].body) end
-                if stmt.else_block then visit_block(stmt.else_block) end
-            elseif stmt.kind == "While" or stmt.kind == "Repeat" or stmt.kind == "ForNum" or stmt.kind == "ForIn" or stmt.kind == "Do" then
-                visit_block(stmt.body)
-            end
-        end
-
-        function visit_block(block)
-            if not block or not block.items then return end
-            for i = 1, #block.items do visit_item(block.items[i]) end
-        end
-
         for i = 1, #file.items do
-            visit_item(file.items[i].syntax)
+            local entries = pvm.drain(item_signature_entries(file.items[i].syntax))
+            for j = 1, #entries do
+                local src = entries[j]
+                local dst = ensure_entry(src.name)
+                for k = 1, #src.signatures do
+                    local sig = src.signatures[k]
+                    if not dst.seen[sig.label] then
+                        dst.seen[sig.label] = true
+                        dst.signatures[#dst.signatures + 1] = sig
+                    end
+                end
+            end
         end
 
         local items = {}
@@ -238,9 +238,11 @@ function M.new(semantics_engine, type_engine)
     end)
 
     return {
+        item_signature_entries_phase = item_signature_entries,
         signature_catalog_phase = signature_catalog,
         signature_lookup_phase = signature_lookup,
         sig_help_phase = sig_help,
+        item_signature_entries = item_signature_entries,
         signature_catalog = signature_catalog,
         signature_lookup = signature_lookup,
         sig_help = sig_help,
