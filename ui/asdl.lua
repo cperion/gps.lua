@@ -106,9 +106,18 @@ function M.Define(T)
             SchemeCond = AnyScheme | LightOnly | DarkOnly
             MotionCond = AnyMotion | MotionSafeOnly | MotionReduceOnly
 
+            FlagReq = ReqAny | ReqOn | ReqOff
+
+            StateCond = (Style.FlagReq hovered,
+                         Style.FlagReq focused,
+                         Style.FlagReq active,
+                         Style.FlagReq selected,
+                         Style.FlagReq disabled) unique
+
             Cond = (Style.BpCond bp,
                     Style.SchemeCond scheme,
-                    Style.MotionCond motion) unique
+                    Style.MotionCond motion,
+                    Style.StateCond state) unique
 
             Atom = ADisplay(Style.Display value) unique
                  | AAxis(Style.Axis value) unique
@@ -183,6 +192,12 @@ function M.Define(T)
 
             TokenList = (Style.Token* items) unique
             Group = (Style.Token* items) unique
+
+            State = (boolean hovered,
+                     boolean focused,
+                     boolean active,
+                     boolean selected,
+                     boolean disabled) unique
 
             MarginVal = MarginAuto
                       | MarginSpace(Style.Space value) unique
@@ -439,6 +454,8 @@ function M.Define(T)
                           Style.TokenList styles,
                           Style.ScrollAxis axis,
                           Auth.Node child) unique
+                 | WithState(Style.State state,
+                             Auth.Node child) unique
                  | WithInput(Core.Id id,
                              Interact.Role role,
                              Auth.Node child) unique
@@ -744,6 +761,8 @@ function M.Define(T)
                   | ClearHover
                   | SetFocus(Core.Id id) unique
                   | ClearFocus
+                  | SetPressed(Core.Id id) unique
+                  | ClearPressed
                   | Activate(Core.Id id) unique
                   | ScrollBy(Core.Id id,
                              number dx,
@@ -753,6 +772,7 @@ function M.Define(T)
                      number pointer_y,
                      Core.Id hover_id,
                      Core.Id focus_id,
+                     Core.Id pressed_id,
                      Solve.Scroll* scrolls) unique
 
             State = (Interact.Hover hover,

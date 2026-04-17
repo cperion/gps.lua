@@ -11,25 +11,39 @@ local Layout = T.Layout
 
 local M = {}
 
+local NO_STATE = T.Style.State(false, false, false, false, false)
+
 local lower_phase
 
-local function resolve_style(tokens, theme, env)
-    local sg, sp, sc = norm.normalize_phase(tokens, env)
+local function merge_state(parent, child)
+    parent = parent or NO_STATE
+    child = child or NO_STATE
+    return T.Style.State(
+        parent.hovered or child.hovered,
+        parent.focused or child.focused,
+        parent.active or child.active,
+        parent.selected or child.selected,
+        parent.disabled or child.disabled
+    )
+end
+
+local function resolve_style(tokens, theme, env, state)
+    local sg, sp, sc = norm.normalize_phase(tokens, env, state or NO_STATE)
     local spec = pvm.one(sg, sp, sc)
     local rg, rp, rc = resolve.phase(spec, theme)
     return pvm.one(rg, rp, rc)
 end
 
-local function lower_children_into(out, children, theme, env)
+local function lower_children_into(out, children, theme, env, state)
     for i = 1, #children do
-        local g, p, c = lower_phase(children[i], theme, env)
+        local g, p, c = lower_phase(children[i], theme, env, state)
         pvm.drain_into(g, p, c, out)
     end
 end
 
 local function placement_source(auth_node)
     local cls = pvm.classof(auth_node)
-    if cls == Auth.WithInput then
+    if cls == Auth.WithInput or cls == Auth.WithState then
         return placement_source(auth_node.child)
     end
     return auth_node
@@ -96,7 +110,7 @@ local function maybe_wrap_scroll(id, box, axis, child)
     return Layout.Scroll(id, visible_box(box), axis, child)
 end
 
-local function append_grid_items(out, auth_node, theme, env)
+local function append_grid_items(out, auth_node, theme, env, state)
     local cls = pvm.classof(auth_node)
 
     if cls == Auth.Empty then
@@ -106,15 +120,15 @@ local function append_grid_items(out, auth_node, theme, env)
     if cls == Auth.Fragment then
         local children = auth_node.children
         for i = 1, #children do
-            append_grid_items(out, children[i], theme, env)
+            append_grid_items(out, children[i], theme, env, state)
         end
         return
     end
 
     local source = placement_source(auth_node)
-    local resolved = resolve_style(source.styles, theme, env)
+    local resolved = resolve_style(source.styles, theme, env, state)
     local gp = resolved.placement
-    local nodes = pvm.drain(lower_phase(auth_node, theme, env))
+    local nodes = pvm.drain(lower_phase(auth_node, theme, env, state))
 
     for i = 1, #nodes do
         out[#out + 1] = Layout.GridItem(
@@ -130,11 +144,11 @@ local function append_grid_items(out, auth_node, theme, env)
 end
 
 lower_phase = pvm.phase("ui.lower", {
-    [Auth.Empty] = function(self, theme, env)
+    [Auth.Empty] = function(self, theme, env, state)
         return pvm.empty()
     end,
 
-    [Auth.Fragment] = function(self, theme, env)
+    [Auth.Fragment] = function(self, theme, env, state)
         local children = self.children
         local n = #children
         if n == 0 then
@@ -142,14 +156,18 @@ lower_phase = pvm.phase("ui.lower", {
         end
         local trips = {}
         for i = 1, n do
-            local g, p, c = lower_phase(children[i], theme, env)
+            local g, p, c = lower_phase(children[i], theme, env, state)
             trips[i] = { g, p, c }
         end
         return pvm.concat_all(trips)
     end,
 
-    [Auth.WithInput] = function(self, theme, env)
-        local lowered = pvm.drain(lower_phase(self.child, theme, env))
+    [Auth.WithState] = function(self, theme, env, state)
+        return lower_phase(self.child, theme, env, merge_state(state, self.state))
+    end,
+
+    [Auth.WithInput] = function(self, theme, env, state)
+        local lowered = pvm.drain(lower_phase(self.child, theme, env, state))
         if #lowered == 0 then
             return pvm.empty()
         end
@@ -163,8 +181,8 @@ lower_phase = pvm.phase("ui.lower", {
         return pvm.concat_all(trips)
     end,
 
-    [Auth.Text] = function(self, theme, env)
-        local r = resolve_style(self.styles, theme, env)
+    [Auth.Text] = function(self, theme, env, state)
+        local r = resolve_style(self.styles, theme, env, state)
         local text = Layout.TextStyle(
             r.text.font_id,
             r.text.font_size,
@@ -183,8 +201,8 @@ lower_phase = pvm.phase("ui.lower", {
         return pvm.once(Layout.Leaf(self.id, r.box, text))
     end,
 
-    [Auth.Paint] = function(self, theme, env)
-        local r = resolve_style(self.styles, theme, env)
+    [Auth.Paint] = function(self, theme, env, state)
+        local r = resolve_style(self.styles, theme, env, state)
         if has_scroll_overflow(r.box) then
             local axis = scroll_axis_from_box(r.box)
             local inner = Layout.Paint(Core.NoId, content_box_for_scroll(axis), self.paint)
@@ -193,9 +211,9 @@ lower_phase = pvm.phase("ui.lower", {
         return pvm.once(Layout.Paint(self.id, r.box, self.paint))
     end,
 
-    [Auth.Scroll] = function(self, theme, env)
-        local r = resolve_style(self.styles, theme, env)
-        local lowered = pvm.drain(lower_phase(self.child, theme, env))
+    [Auth.Scroll] = function(self, theme, env, state)
+        local r = resolve_style(self.styles, theme, env, state)
+        local lowered = pvm.drain(lower_phase(self.child, theme, env, state))
         return pvm.once(Layout.Scroll(
             self.id,
             visible_box(r.box),
@@ -204,14 +222,14 @@ lower_phase = pvm.phase("ui.lower", {
         ))
     end,
 
-    [Auth.Box] = function(self, theme, env)
-        local r = resolve_style(self.styles, theme, env)
+    [Auth.Box] = function(self, theme, env, state)
+        local r = resolve_style(self.styles, theme, env, state)
 
         if has_scroll_overflow(r.box) then
             local axis = scroll_axis_from_box(r.box)
             if r.display == S.DisplayGrid then
                 local items = {}
-                append_grid_items(items, Auth.Fragment(self.children), theme, env)
+                append_grid_items(items, Auth.Fragment(self.children), theme, env, state)
                 return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, Layout.Grid(
                     Core.NoId,
                     content_box_for_scroll(axis),
@@ -224,7 +242,7 @@ lower_phase = pvm.phase("ui.lower", {
             end
 
             local children = {}
-            lower_children_into(children, self.children, theme, env)
+            lower_children_into(children, self.children, theme, env, state)
             if r.display == S.DisplayFlex then
                 return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, Layout.Flex(
                     Core.NoId,
@@ -251,7 +269,7 @@ lower_phase = pvm.phase("ui.lower", {
 
         if r.display == S.DisplayGrid then
             local items = {}
-            append_grid_items(items, Auth.Fragment(self.children), theme, env)
+            append_grid_items(items, Auth.Fragment(self.children), theme, env, state)
             return pvm.once(Layout.Grid(
                 self.id,
                 r.box,
@@ -264,7 +282,7 @@ lower_phase = pvm.phase("ui.lower", {
         end
 
         local children = {}
-        lower_children_into(children, self.children, theme, env)
+        lower_children_into(children, self.children, theme, env, state)
 
         if r.display == S.DisplayFlex then
             return pvm.once(Layout.Flex(

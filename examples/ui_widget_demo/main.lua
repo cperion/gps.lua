@@ -152,10 +152,10 @@ end
 
 function love.draw()
     local mode = state.app.theme_mode
-    love.graphics.setBackgroundColor(
-        mode == T.Widget.ThemeLight and 0.96 or 0.03,
-        mode == T.Widget.ThemeLight and 0.98 or 0.05,
-        mode == T.Widget.ThemeLight and 1.00 or 0.08,
-        1)
+    if mode == T.Widget.ThemeLight then
+        love.graphics.setBackgroundColor(0.97, 0.95, 1.00, 1)
+    else
+        love.graphics.setBackgroundColor(0.07, 0.07, 0.11, 1)
+    end
     compile_and_draw()
 end
