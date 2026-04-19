@@ -59,7 +59,7 @@ for _, path in ipairs(files) do
         local sem_ok, sem_err, diag_count
         if parse_ok and parse_result then
             sem_ok, sem_err = pcall(function()
-                local sdoc = sem:compile(parse_result)
+                local sdoc = parse_result
                 local diags = pvm.drain(sem.diagnostics(sdoc))
                 diag_count = #diags
             end)
@@ -69,7 +69,7 @@ for _, path in ipairs(files) do
         local idx_ok, idx_err, sym_count
         if parse_ok and parse_result then
             idx_ok, idx_err = pcall(function()
-                local idx = sem:index(sem:compile(parse_result))
+                local idx = sem:index(parse_result)
                 sym_count = #idx.symbols
             end)
         end

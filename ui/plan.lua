@@ -247,7 +247,10 @@ end
 
 local function node_box(node)
     local cls = pvm.classof(node)
-    if cls == Layout.WithInput then
+    if cls == Layout.WithInput
+        or cls == Layout.WithDragSource
+        or cls == Layout.WithDropTarget
+        or cls == Layout.WithDropSlot then
         return node_box(node.child)
     end
     return node.box
@@ -255,7 +258,10 @@ end
 
 local function node_with_main_size(node, axis, px)
     local cls = pvm.classof(node)
-    if cls == Layout.WithInput then
+    if cls == Layout.WithInput
+        or cls == Layout.WithDragSource
+        or cls == Layout.WithDropTarget
+        or cls == Layout.WithDropSlot then
         return pvm.with(node, { child = node_with_main_size(node.child, axis, px) })
     end
 

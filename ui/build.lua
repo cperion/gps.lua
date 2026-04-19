@@ -152,6 +152,35 @@ local function parse_text(items)
     return Auth.Text(id, finish_styles(styles), table.concat(parts))
 end
 
+local function parse_text_ref(content_id, items)
+    if not is_id(content_id) then
+        error("text_ref expects a ui id as first argument", 3)
+    end
+
+    local id = content_id
+    local seen_id = false
+    local styles = {}
+
+    for i = 1, #items do
+        local v = items[i]
+        if v ~= nil and v ~= false then
+            if is_id(v) then
+                if seen_id then
+                    error("duplicate ui id in text_ref builder input", 3)
+                end
+                id = v
+                seen_id = true
+            elseif append_style_value(v, styles) then
+                -- collected
+            else
+                error("text_ref builder accepts only id, style tokens/groups, nil, or false", 3)
+            end
+        end
+    end
+
+    return Auth.TextRef(id, finish_styles(styles), content_id)
+end
+
 local function parse_paint(items)
     local id = NO_ID
     local seen_id = false
@@ -236,6 +265,10 @@ function M.text(items)
     return parse_text(expect_table(items, 2))
 end
 
+function M.text_ref(content_id, items)
+    return parse_text_ref(content_id, expect_table(items, 2))
+end
+
 function M.paint(items)
     return parse_paint(expect_table(items, 2))
 end
@@ -287,6 +320,30 @@ function M.with_input(id, role, child)
         error("with_input expects an authored child node as third argument", 2)
     end
     return Auth.WithInput(id, role, child)
+end
+
+local function expect_surface_args(name, id, child)
+    if not is_id(id) then
+        error(name .. " expects a ui id as first argument", 3)
+    end
+    if not is_node(child) then
+        error(name .. " expects an authored child node as second argument", 3)
+    end
+end
+
+function M.drag_source(id, child)
+    expect_surface_args("drag_source", id, child)
+    return Auth.WithDragSource(id, child)
+end
+
+function M.drop_target(id, child)
+    expect_surface_args("drop_target", id, child)
+    return Auth.WithDropTarget(id, child)
+end
+
+function M.drop_slot(id, child)
+    expect_surface_args("drop_slot", id, child)
+    return Auth.WithDropSlot(id, child)
 end
 
 function M.each(items, fn)

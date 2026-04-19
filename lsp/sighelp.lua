@@ -2,7 +2,8 @@
 --
 -- Signature catalog + lookup.
 -- pvm.phase("item_signature_entries"): Item -> SignatureEntry*
--- pvm.phase("signature_catalog"): SemanticDoc -> SignatureCatalog
+-- pvm.phase("located_item_signature_entries"): LocatedItem -> SignatureEntry*
+-- pvm.phase("signature_catalog"): ParsedDoc -> SignatureCatalog
 -- pvm.phase("signature_lookup"): SignatureLookupQuery -> SignatureHelp
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
@@ -185,7 +186,7 @@ function M.new(semantics_engine, type_engine)
         end
 
         for i = 1, #file.items do
-            local entries = pvm.drain(item_signature_entries(file.items[i].syntax))
+            local entries = pvm.drain(item_signature_entries(file.items[i].core))
             for j = 1, #entries do
                 local src = entries[j]
                 local dst = ensure_entry(src.name)

@@ -50,13 +50,13 @@ local source2 = C.OpenDoc("file:///test.lua", 0, src2)
 local r3 = pvm.one(engine.parse(source2))
 
 -- Check which item syntax nodes are shared
-print("Item 1 (local x = 42):", r1.items[1].syntax == r3.items[1].syntax and "SHARED" or "different")
-print("Item 2 (local y = ...):", r1.items[2].syntax == r3.items[2].syntax and "shared" or "DIFFERENT (expected)")
-print("Item 3 (print(x + y)):", r1.items[3].syntax == r3.items[3].syntax and "SHARED" or "different")
+print("Item 1 (local x = 42):", r1.items[1].core == r3.items[1].core and "SHARED" or "different")
+print("Item 2 (local y = ...):", r1.items[2].core == r3.items[2].core and "shared" or "DIFFERENT (expected)")
+print("Item 3 (print(x + y)):", r1.items[3].core == r3.items[3].core and "SHARED" or "different")
 
-assert(r1.items[1].syntax == r3.items[1].syntax, "item 1 should be shared")
-assert(r1.items[2].syntax ~= r3.items[2].syntax, "item 2 should differ")
-assert(r1.items[3].syntax == r3.items[3].syntax, "item 3 should be shared")
+assert(r1.items[1].core == r3.items[1].core, "item 1 core should be shared")
+assert(r1.items[2].core ~= r3.items[2].core, "item 2 core should differ")
+assert(r1.items[3].core == r3.items[3].core, "item 3 core should be shared")
 
 -- Now simulate what downstream phases would see:
 -- A pvm.phase("bind_symbols") dispatching per-Item would get cache hits
@@ -66,9 +66,10 @@ local bind_count = 0
 local bind
 bind = pvm.phase("test_bind", {
     [C.ParsedDoc] = function(n)
-        local items = {}
-        for i = 1, #n.items do items[i] = n.items[i].syntax end
-        return pvm.children(bind, items)
+        return pvm.children(bind, n.items)
+    end,
+    [C.LocatedItem] = function(n)
+        return bind(n.core)
     end,
     [C.Item] = function(n)
         bind_count = bind_count + 1

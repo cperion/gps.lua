@@ -301,24 +301,6 @@ local function utf16_len(s)
     return n
 end
 
-local function pos_leq(a, b)
-    if a.line ~= b.line then return a.line < b.line end
-    return a.character <= b.character
-end
-
-local function position_in_range(pos, r)
-    if not pos or not r or not r.start or not r.stop then return false end
-    return pos_leq(r.start, pos) and pos_leq(pos, r.stop)
-end
-
-local function range_size_key(r)
-    if not r or not r.start or not r.stop then return math.huge end
-    local dl = (r.stop.line or 0) - (r.start.line or 0)
-    local dc = (r.stop.character or 0) - (r.start.character or 0)
-    if dc < 0 then dc = 0 end
-    return dl * 100000 + dc
-end
-
 local function lsp_range_from_params(C, r)
     if type(r) ~= "table" or type(r.start) ~= "table" or type(r["end"]) ~= "table" then
         return C.LspRange(C.LspPos(0, 0), C.LspPos(0, 0))
@@ -327,17 +309,6 @@ local function lsp_range_from_params(C, r)
         C.LspPos(r.start.line or 0, r.start.character or 0),
         C.LspPos(r["end"].line or 0, r["end"].character or 0)
     )
-end
-
-local function split_lines(text)
-    local raw_lines = {}
-    local n = 0
-    for line in ((text or "") .. "\n"):gmatch("([^\n]*)\n") do
-        n = n + 1
-        raw_lines[n] = line
-    end
-    if n > 0 then n = n - 1 end -- drop synthetic split line
-    return raw_lines, n
 end
 
 local function byte_to_utf16_col_in_line(line_text, byte_index)
@@ -575,25 +546,15 @@ local function signature_context_at_position(text, line0, char0)
     return callee, arg_index
 end
 
-local function ws_symbol_kind(sk)
-    if sk == nil then return 13 end
-    local k = tostring(sk):match("^Lua%.([%w_]+)") or ""
-    if k == "SymBuiltin" then return 12 end
-    if k == "SymTypeClass" then return 5 end
-    if k == "SymTypeGeneric" then return 26 end
-    return 13
-end
-
 function Core.new(opts)
     opts = opts or {}
     local self = setmetatable({}, Core)
     self.engine = opts.engine or Semantics.new(opts.context)
     self.parse = opts.parse
-    self.compile = opts.compile
     self.position_to_anchor = opts.position_to_anchor
 
     local C = self.engine.C
-    self.docs = C.SemanticDocStore({})
+    self.docs = C.ParsedDocStore({})
 
     if opts.adapter then
         self.adapter = opts.adapter
@@ -604,9 +565,9 @@ function Core.new(opts)
     self._doc_lookup = pvm.phase("core_doc_lookup", function(q)
         local docs = q.store.docs
         for i = 1, #docs do
-            if doc_uri(docs[i]) == q.uri then return C.SemanticDocHit(docs[i]) end
+            if doc_uri(docs[i]) == q.uri then return C.ParsedDocHit(docs[i]) end
         end
-        return C.SemanticDocMiss
+        return C.ParsedDocMiss
     end)
 
     return self
@@ -622,14 +583,14 @@ function Core:_set_doc(doc)
         else out[#out + 1] = old[i] end
     end
     if not replaced then out[#out + 1] = doc end
-    self.docs = C.SemanticDocStore(out)
+    self.docs = C.ParsedDocStore(out)
     return doc
 end
 
 function Core:_doc(uri)
     local C = self.engine.C
-    local hit = pvm.one(self._doc_lookup(C.SemanticDocQuery(self.docs, uri)))
-    if hit.kind == "SemanticDocHit" then return hit.doc end
+    local hit = pvm.one(self._doc_lookup(C.ParsedDocQuery(self.docs, uri)))
+    if hit.kind == "ParsedDocHit" then return hit.doc end
     return nil
 end
 
@@ -642,252 +603,48 @@ function Core:_range_for(doc, anchor)
 end
 
 function Core:_workspace_global_locations(name, include_declaration)
+    if self._workspace_engine then
+        return self._workspace_engine:global_locations(self.docs, name, include_declaration)
+    end
     local C = self.engine.C
-    local out, seen = {}, {}
-    local docs = self.docs.docs
-
-    local function add(uri, file, anchor)
-        if not uri or not file or not anchor then return end
-        local r = self:_range_for(file, anchor)
-        local key = uri .. ":" .. r.start.line .. ":" .. r.start.character .. ":" .. r.stop.line .. ":" .. r.stop.character
-        if seen[key] then return end
-        seen[key] = true
-        out[#out + 1] = C.LspLocation(uri, r)
-    end
-
-    for i = 1, #docs do
-        local d = docs[i]
-        local idx = self.engine:index(d)
-        if include_declaration then
-            for j = 1, #idx.defs do
-                local occ = idx.defs[j]
-                if occ.name == name and occ.kind == C.SymGlobal then
-                    add(d.uri, d, occ.anchor)
-                end
-            end
-        end
-        for j = 1, #idx.uses do
-            local occ = idx.uses[j]
-            if occ.name == name and occ.kind == C.SymGlobal then
-                add(d.uri, d, occ.anchor)
-            end
-        end
-        for j = 1, #idx.unresolved do
-            local occ = idx.unresolved[j]
-            if occ.name == name then
-                add(d.uri, d, occ.anchor)
-            end
-        end
-    end
-
-    return C.LspLocationList(out)
-end
-
-local function collect_named_from_typeexpr(t, out, seen)
-    if not t or type(t) ~= "table" then return end
-    local k = t.kind
-    if k == "TNamed" then
-        local nm = t.name
-        if nm and nm ~= "" and not seen[nm] then
-            seen[nm] = true
-            out[#out + 1] = nm
-        end
-        return
-    end
-    if k == "TOptional" then return collect_named_from_typeexpr(t.inner, out, seen) end
-    if k == "TArray" then return collect_named_from_typeexpr(t.item, out, seen) end
-    if k == "TMap" then
-        collect_named_from_typeexpr(t.key, out, seen)
-        collect_named_from_typeexpr(t.value, out, seen)
-        return
-    end
-    if k == "TTuple" then
-        for i = 1, #t.items do collect_named_from_typeexpr(t.items[i], out, seen) end
-        return
-    end
-    if k == "TUnion" then
-        for i = 1, #t.parts do collect_named_from_typeexpr(t.parts[i], out, seen) end
-        return
-    end
-    if k == "TTable" then
-        for i = 1, #t.fields do collect_named_from_typeexpr(t.fields[i].typ, out, seen) end
-        return
-    end
-    if k == "TFunc" and t.sig then
-        for i = 1, #t.sig.params do collect_named_from_typeexpr(t.sig.params[i], out, seen) end
-        for i = 1, #t.sig.returns do collect_named_from_typeexpr(t.sig.returns[i], out, seen) end
-        return
-    end
+    return C.LspLocationList({})
 end
 
 function Core:_workspace_type_target(name)
-    local docs = self.docs.docs
-    for i = 1, #docs do
-        local d = docs[i]
-        local tt = pvm.one(self.engine:type_target(d, name))
-        if tt and tt.kind ~= "TypeTargetMissing" then return tt end
+    if self._workspace_engine then
+        return self._workspace_engine:workspace_type_target(self.docs, name)
     end
     return nil
 end
 
 function Core:_expand_type_names(seed)
-    local out, seen = {}, {}
-    local q = {}
-    for i = 1, #seed do
-        local n = seed[i]
-        if n and n ~= "" and not seen[n] then
-            seen[n] = true
-            out[#out + 1] = n
-            q[#q + 1] = n
-        end
+    if self._workspace_engine then
+        return self._workspace_engine:expand_type_names(self.docs, seed)
     end
-
-    local qi = 1
-    while qi <= #q and qi <= 64 do
-        local n = q[qi]; qi = qi + 1
-        local tt = self:_workspace_type_target(n)
-        if tt and tt.kind == "TypeAliasTarget" and tt.value and tt.value.typ then
-            local names = {}
-            collect_named_from_typeexpr(tt.value.typ, names, {})
-            for i = 1, #names do
-                local nm = names[i]
-                if not seen[nm] then
-                    seen[nm] = true
-                    out[#out + 1] = nm
-                    q[#q + 1] = nm
-                end
-            end
-        end
-    end
-
-    return out
+    return seed or {}
 end
 
 function Core:_workspace_type_locations(name)
+    if self._workspace_engine then
+        return self._workspace_engine:type_locations(self.docs, name)
+    end
     local C = self.engine.C
-    local out, seen = {}, {}
-    local docs = self.docs.docs
-
-    local function add(uri, file, anchor)
-        if not uri or not file or not anchor then return end
-        local r = self:_range_for(file, anchor)
-        local key = uri .. ":" .. r.start.line .. ":" .. r.start.character .. ":" .. r.stop.line .. ":" .. r.stop.character
-        if seen[key] then return end
-        seen[key] = true
-        out[#out + 1] = C.LspLocation(uri, r)
-    end
-
-    for i = 1, #docs do
-        local d = docs[i]
-        local tt = pvm.one(self.engine:type_target(d, name))
-        if tt and tt.kind ~= "TypeTargetMissing" and tt.anchor then
-            add(d.uri, d, tt.anchor)
-        end
-    end
-
-    return C.LspLocationList(out)
+    return C.LspLocationList({})
 end
 
 function Core:_workspace_class_field_type_names(class_name, field_name)
-    local out, seen = {}, {}
-    local docs = self.docs.docs
-
-    local function expr_terminal_name(e)
-        if not e or type(e) ~= "table" then return nil end
-        if e.kind == "NameRef" then return e.name end
-        if e.kind == "Field" then return e.key end
-        return nil
+    if self._workspace_engine then
+        return self._workspace_engine:class_field_type_names(self.docs, class_name, field_name)
     end
-
-    local function collect_return_names_from_item(item)
-        for d = 1, #item.docs do
-            local tags = item.docs[d].tags
-            for t = 1, #tags do
-                if tags[t].kind == "ReturnTag" then
-                    for r = 1, #tags[t].values do
-                        collect_named_from_typeexpr(tags[t].values[r], out, seen)
-                    end
-                end
-            end
-        end
-    end
-
-    local function gather_for_class(cname, visited)
-        if not cname or cname == "" then return end
-        visited = visited or {}
-        if visited[cname] then return end
-        visited[cname] = true
-
-        for i = 1, #docs do
-            local d = docs[i]
-            local env = self.engine.resolve_named_types(d)
-
-            for j = 1, #env.classes do
-                local cls = env.classes[j]
-                if cls.name == cname then
-                    for k = 1, #cls.fields do
-                        local f = cls.fields[k]
-                        if f.name == field_name then
-                            collect_named_from_typeexpr(f.typ, out, seen)
-                        end
-                    end
-                    for k = 1, #cls.extends do
-                        local ex = cls.extends[k]
-                        if ex and ex.kind == "TNamed" and ex.name then
-                            gather_for_class(ex.name, visited)
-                        end
-                    end
-                end
-            end
-
-            for j = 1, #d.items do
-                local item = d.items[j].syntax
-                local s = item.stmt
-                if s and s.kind == "Function" and s.name and (s.name.kind == "LMethod" or s.name.kind == "LField") then
-                    local base_name = expr_terminal_name(s.name.base)
-                    local member = (s.name.kind == "LMethod") and s.name.method or s.name.key
-                    if base_name == cname and member == field_name then
-                        collect_return_names_from_item(item)
-                    end
-                end
-            end
-        end
-    end
-
-    gather_for_class(class_name, {})
-    return out
+    return {}
 end
 
 function Core:_workspace_type_implementations(name)
+    if self._workspace_engine then
+        return self._workspace_engine:type_implementations(self.docs, name)
+    end
     local C = self.engine.C
-    local out, seen = {}, {}
-    local docs = self.docs.docs
-
-    local function add(uri, file, anchor)
-        if not uri or not file or not anchor then return end
-        local r = self:_range_for(file, anchor)
-        local key = uri .. ":" .. r.start.line .. ":" .. r.start.character .. ":" .. r.stop.line .. ":" .. r.stop.character
-        if seen[key] then return end
-        seen[key] = true
-        out[#out + 1] = C.LspLocation(uri, r)
-    end
-
-    for i = 1, #docs do
-        local d = docs[i]
-        local env = self.engine.resolve_named_types(d)
-        for j = 1, #env.classes do
-            local cls = env.classes[j]
-            for k = 1, #cls.extends do
-                local ex = cls.extends[k]
-                if type(ex) == "table" and ex.kind == "TNamed" and ex.name == name then
-                    add(d.uri, d, cls.anchor)
-                    break
-                end
-            end
-        end
-    end
-
-    return C.LspLocationList(out)
+    return C.LspLocationList({})
 end
 
 function Core:_module_docs_for_name(name)
@@ -910,89 +667,19 @@ function Core:_module_docs_for_name(name)
 end
 
 function Core:_module_doc_locations(name)
-    local C = self.engine.C
-    local docs = self:_module_docs_for_name(name)
-    local out = {}
-    for i = 1, #docs do
-        out[#out + 1] = C.LspLocation(
-            docs[i].uri,
-            C.LspRange(C.LspPos(0, 0), C.LspPos(0, 1))
-        )
+    if self._workspace_engine then
+        return self._workspace_engine:module_locations(self.docs, name)
     end
-    return C.LspLocationList(out)
+    local C = self.engine.C
+    return C.LspLocationList({})
 end
 
 function Core:_workspace_module_field_locations(module_name, field, include_declaration)
+    if self._workspace_engine then
+        return self._workspace_engine:module_field_locations(self.docs, module_name, field, include_declaration)
+    end
     local C = self.engine.C
-    local mod = normalize_module_name(module_name)
-    local fname = tostring(field or "")
-    if mod == nil or mod == "" or fname == "" then return C.LspLocationList({}) end
-
-    local out, seen = {}, {}
-
-    local function add(uri, line, scol, ecol)
-        local key = uri .. ":" .. line .. ":" .. scol .. ":" .. ecol
-        if seen[key] then return end
-        seen[key] = true
-        out[#out + 1] = C.LspLocation(uri,
-            C.LspRange(C.LspPos(line, scol), C.LspPos(line, ecol)))
-    end
-
-    local module_docs = self:_module_docs_for_name(mod)
-    local module_set = {}
-    for i = 1, #module_docs do module_set[module_docs[i].uri] = true end
-
-    -- Declarations/definitions inside module files.
-    if include_declaration then
-        for i = 1, #module_docs do
-            local d = module_docs[i]
-            local text = d.text or ""
-
-            local module_vars = {}
-            for v in text:gmatch("local%s+([%a_][%w_]*)%s*=%s*{}") do module_vars[v] = true end
-            for v in text:gmatch("return%s+([%a_][%w_]*)") do module_vars[v] = true end
-
-            local line_no = 0
-            for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-                for v in pairs(module_vars) do
-                    local p1 = "^%s*" .. v .. "%.(" .. fname .. ")%s*="
-                    local p2 = "^%s*function%s+" .. v .. "[:%.](" .. fname .. ")"
-                    if line:match(p1) or line:match(p2) then
-                        local fs = line:find(fname, 1, true)
-                        if fs then add(d.uri, line_no, fs - 1, fs - 1 + #fname) end
-                    end
-                end
-                line_no = line_no + 1
-            end
-        end
-    end
-
-    -- References in files that require this module.
-    local docs = self.docs.docs
-    for i = 1, #docs do
-        local d = docs[i]
-        local aliases = require_alias_map(d.text or "")
-        local alias_list = {}
-        for a, m in pairs(aliases) do
-            if m == mod then alias_list[#alias_list + 1] = a end
-        end
-        if #alias_list > 0 then
-            local line_no = 0
-            for line in ((d.text or "") .. "\n"):gmatch("([^\n]*)\n") do
-                for j = 1, #alias_list do
-                    local a = alias_list[j]
-                    local s, e = line:find(a .. "%s*[%.:]%s*" .. fname)
-                    if s then
-                        local fs = line:find(fname, s, true)
-                        if fs then add(d.uri, line_no, fs - 1, fs - 1 + #fname) end
-                    end
-                end
-                line_no = line_no + 1
-            end
-        end
-    end
-
-    return C.LspLocationList(out)
+    return C.LspLocationList({})
 end
 
 function Core:_parse(uri, version, text, prev_doc, params)
@@ -1009,13 +696,6 @@ function Core:_parse(uri, version, text, prev_doc, params)
     parse_params.prev_doc = prev_doc
     local doc = self.parse(uri, version, text, prev_doc, self.engine.C, parse_params)
     if not doc then error("lsp/server: parse callback returned nil doc", 2) end
-    return doc
-end
-
-function Core:_compile(parsed)
-    if not self.compile then return parsed end
-    local doc = self.compile(parsed, self.engine.C)
-    if not doc then error("lsp/server: compile callback returned nil doc", 2) end
     return doc
 end
 
@@ -1191,7 +871,7 @@ function Core:did_open(arg)
     local raw = is_plain_table(arg) and arg or nil
     local doc = raw and raw.doc or nil
     if not doc then
-        doc = self:_compile(self:_parse(req.doc.uri, req.doc.version or 0, req.doc.text or "", nil, raw or req))
+        doc = self:_parse(req.doc.uri, req.doc.version or 0, req.doc.text or "", nil, raw or req)
     end
     return self:_set_doc(doc)
 end
@@ -1212,7 +892,7 @@ function Core:did_change(arg)
         end
     end
     if not next_doc then
-        next_doc = self:_compile(self:_parse(uri, req.doc.version or doc_version(doc), next_text, doc, raw or req))
+        next_doc = self:_parse(uri, req.doc.version or doc_version(doc), next_text, doc, raw or req)
     end
     return self:_set_doc(next_doc)
 end
@@ -1225,7 +905,7 @@ function Core:did_close(arg)
     local old = self.docs.docs
     local out = {}
     for i = 1, #old do if doc_uri(old[i]) ~= req.doc.uri then out[#out + 1] = old[i] end end
-    self.docs = C.SemanticDocStore(out)
+    self.docs = C.ParsedDocStore(out)
     return true
 end
 
@@ -1406,8 +1086,9 @@ function Core:implementation(arg)
             local sk = binding.symbol.kind
             if sk == C.SymTypeClass or sk == C.SymTypeAlias or sk == C.SymTypeGeneric then
                 seeds[#seeds + 1] = binding.symbol.name
-            elseif self._type_engine then
-                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc, subject), seeds, {})
+            elseif self._type_engine and self._workspace_engine then
+                local names = self._workspace_engine:named_type_names(self._type_engine.type_for_anchor(doc, subject))
+                for i = 1, #names do seeds[#seeds + 1] = names[i] end
             end
         end
     end
@@ -1459,8 +1140,12 @@ function Core:type_definition(arg)
                 local n = binding.symbol.name
                 seeds[#seeds + 1] = n
                 seen[n] = true
-            elseif self._type_engine then
-                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc, subject), seeds, seen)
+            elseif self._type_engine and self._workspace_engine then
+                local names = self._workspace_engine:named_type_names(self._type_engine.type_for_anchor(doc, subject))
+                for i = 1, #names do
+                    local n = names[i]
+                    if not seen[n] then seen[n] = true; seeds[#seeds + 1] = n end
+                end
             end
         elseif binding.kind == "AnchorUnresolved" and binding.name and binding.name ~= "" then
             seeds[#seeds + 1] = binding.name
@@ -1477,8 +1162,7 @@ function Core:type_definition(arg)
             local base_char = byte_to_utf16_col_in_line(line_text, bs)
             local pick = pvm.one(self.adapter:anchor_at_position(doc, { line = req.position.line, character = base_char }, "use"))
             if pick and pick.kind == "AnchorPickHit" then
-                local base_names = {}
-                collect_named_from_typeexpr(self._type_engine.type_for_anchor(doc, pick.anchor), base_names, {})
+                local base_names = self._workspace_engine and self._workspace_engine:named_type_names(self._type_engine.type_for_anchor(doc, pick.anchor)) or {}
                 local expanded_base = self:_expand_type_names(base_names)
                 for i = 1, #expanded_base do
                     local fnames = self:_workspace_class_field_type_names(expanded_base[i], field)
@@ -2162,63 +1846,12 @@ function Core:inlay_hint(arg)
     local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
     local req = (tag == "ReqInlayHint") and arg or self:request_from_lsp("textDocument/inlayHint", arg)
     if req.kind ~= "ReqInlayHint" then error("inlay_hint: invalid request", 2) end
-
     local doc = self:_doc(req.doc.uri)
     if not doc then return C.LspInlayHintList({}) end
-
-    local out, seen = {}, {}
-    local function add_hint_for_anchor(anchor, tstr)
-        if not anchor or not tstr or tstr == "" or tstr == "any" or tstr == "unknown" then return end
-        local r = self:_range_for(doc, anchor)
-        local pos = C.LspPos(r.stop.line, r.stop.character)
-        if not position_in_range(pos, req.range) then return end
-        local key = pos.line .. ":" .. pos.character .. ":" .. tstr
-        if seen[key] then return end
-        seen[key] = true
-        out[#out + 1] = C.LspInlayHint(pos, ": " .. tstr, C.InlayType)
+    if self._editor_engine then
+        return pvm.one(self._editor_engine.inlay_hints(C.InlayHintQuery(doc, req.range)))
     end
-
-    if self._type_engine then
-        local ti = pvm.one(self._type_engine.typed_index(doc))
-        for i = 1, #ti.symbols do
-            local ts = ti.symbols[i]
-            local sym = ts.symbol
-            if sym and sym.decl_anchor and (sym.kind == C.SymLocal or sym.kind == C.SymParam) then
-                add_hint_for_anchor(sym.decl_anchor, self._type_engine.type_to_string(ts.typ))
-            end
-        end
-    end
-
-    local function expr_type_name(e)
-        if not e then return nil end
-        if e.kind == "Number" then return "number" end
-        if e.kind == "String" then return "string" end
-        if e.kind == "True" or e.kind == "False" then return "boolean" end
-        if e.kind == "Nil" then return "nil" end
-        if e.kind == "TableCtor" then return "table" end
-        if e.kind == "FunctionExpr" then return "fun" end
-        return nil
-    end
-
-    for i = 1, #doc.items do
-        local item = doc.items[i].syntax
-        local s = item.stmt
-        if s.kind == "LocalAssign" then
-            for j = 1, #s.names do
-                local tname = expr_type_name(s.values[j])
-                add_hint_for_anchor(C.AnchorRef(tostring(s.names[j])), tname)
-            end
-        elseif s.kind == "LocalFunction" then
-            add_hint_for_anchor(C.AnchorRef(tostring(s)), "fun")
-        end
-    end
-
-    table.sort(out, function(a, b)
-        if a.position.line ~= b.position.line then return a.position.line < b.position.line end
-        return a.position.character < b.position.character
-    end)
-
-    return C.LspInlayHintList(out)
+    return C.LspInlayHintList({})
 end
 
 function Core:formatting(arg)
@@ -2264,60 +1897,12 @@ function Core:folding_range(arg)
     local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
     local req = (tag == "ReqFoldingRange") and arg or self:request_from_lsp("textDocument/foldingRange", arg)
     if req.kind ~= "ReqFoldingRange" then error("folding_range: invalid request", 2) end
-
     local doc = self:_doc(req.doc.uri)
     if not doc then return C.LspFoldingRangeList({}) end
-
-    local lines, n = split_lines(doc.text or "")
-    local out, seen = {}, {}
-
-    local function add_fold(line0s, line0e, kind, scol, ecol)
-        if not line0s or not line0e or line0e <= line0s then return end
-        local end_line_text = lines[line0e + 1] or ""
-        local ec = ecol or byte_to_utf16_col_in_line(end_line_text, #end_line_text + 1)
-        local key = line0s .. ":" .. line0e .. ":" .. (kind and tostring(kind) or "")
-        if seen[key] then return end
-        seen[key] = true
-        out[#out + 1] = C.LspFoldingRange(line0s, scol or 0, line0e, ec, kind or C.FoldRegion)
+    if self._editor_engine then
+        return pvm.one(self._editor_engine.folding_ranges(C.FoldingRangeQuery(doc)))
     end
-
-    -- AST-aware region folds
-    for i = 1, #doc.items do
-        local s = doc.items[i].syntax.stmt
-        local k = s and s.kind or ""
-        if k == "If" or k == "While" or k == "Repeat" or k == "ForNum" or k == "ForIn"
-            or k == "Do" or k == "Function" or k == "LocalFunction" then
-            local r = self:_range_for(doc, C.AnchorRef(tostring(s)))
-            if r and r.start and r.stop then
-                add_fold(r.start.line, r.stop.line, C.FoldRegion, r.start.character, r.stop.character)
-            end
-        end
-    end
-
-    -- Comment-block folds
-    local comment_start = nil
-    for i = 1, n do
-        local s = (lines[i] or ""):match("^%s*(.-)%s*$")
-        if s:match("^%-%-") then
-            if not comment_start then comment_start = i end
-        else
-            if comment_start and (i - comment_start) >= 2 then
-                add_fold(comment_start - 1, i - 2, C.FoldComment, 0, nil)
-            end
-            comment_start = nil
-        end
-    end
-    if comment_start and (n - comment_start + 1) >= 2 then
-        add_fold(comment_start - 1, n - 1, C.FoldComment, 0, nil)
-    end
-
-    table.sort(out, function(a, b)
-        if a.start_line ~= b.start_line then return a.start_line < b.start_line end
-        if a.end_line ~= b.end_line then return a.end_line < b.end_line end
-        return a.start_character < b.start_character
-    end)
-
-    return C.LspFoldingRangeList(out)
+    return C.LspFoldingRangeList({})
 end
 
 function Core:selection_range(arg)
@@ -2325,56 +1910,12 @@ function Core:selection_range(arg)
     local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
     local req = (tag == "ReqSelectionRange") and arg or self:request_from_lsp("textDocument/selectionRange", arg)
     if req.kind ~= "ReqSelectionRange" then error("selection_range: invalid request", 2) end
-
     local doc = self:_doc(req.doc.uri)
     if not doc then return C.LspSelectionRangeList({}) end
-
-    local entries = pvm.drain(self.adapter:all_anchor_entries(doc)) or {}
-    local out = {}
-
-    for i = 1, #req.positions do
-        local p = req.positions[i]
-        local pos = C.LspPos(p.line, p.character)
-
-        local hits = {}
-        for j = 1, #entries do
-            local e = entries[j]
-            if position_in_range(pos, e.range) then hits[#hits + 1] = e.range end
-        end
-        table.sort(hits, function(a, b) return range_size_key(a) < range_size_key(b) end)
-
-        if #hits > 0 then
-            local primary = hits[1]
-            local parents = {}
-            for j = 2, #hits do parents[#parents + 1] = hits[j] end
-            out[#out + 1] = C.LspSelectionRange(primary, parents)
-        else
-            local line_start, line_end = line_bounds(doc.text or "", p.line)
-            local line_text = (doc.text or ""):sub(line_start, line_end - 1)
-            local bi = utf16_col_to_byte_in_line(line_text, p.character)
-            if bi < 1 then bi = 1 end
-            if bi > #line_text then bi = #line_text end
-
-            local l, r = bi, bi
-            local function ident(ch) return ch and ch:match("[%w_]") ~= nil end
-            if #line_text > 0 and not ident(line_text:sub(bi, bi)) and bi > 1 and ident(line_text:sub(bi - 1, bi - 1)) then
-                l, r = bi - 1, bi - 1
-            end
-            if #line_text > 0 and ident(line_text:sub(l, l)) then
-                while l > 1 and ident(line_text:sub(l - 1, l - 1)) do l = l - 1 end
-                while r < #line_text and ident(line_text:sub(r + 1, r + 1)) do r = r + 1 end
-            end
-
-            local sc = byte_to_utf16_col_in_line(line_text, l)
-            local ec = byte_to_utf16_col_in_line(line_text, r + 1)
-            if ec < sc then ec = sc end
-            local rr = C.LspRange(C.LspPos(p.line, sc), C.LspPos(p.line, ec))
-            local line_rr = C.LspRange(C.LspPos(p.line, 0), C.LspPos(p.line, byte_to_utf16_col_in_line(line_text, #line_text + 1)))
-            out[#out + 1] = C.LspSelectionRange(rr, { line_rr })
-        end
+    if self._editor_engine then
+        return pvm.one(self._editor_engine.selection_ranges(C.SelectionRangeQuery(doc, req.positions)))
     end
-
-    return C.LspSelectionRangeList(out)
+    return C.LspSelectionRangeList({})
 end
 
 function Core:code_lens(arg)
@@ -2382,23 +1923,12 @@ function Core:code_lens(arg)
     local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
     local req = (tag == "ReqCodeLens") and arg or self:request_from_lsp("textDocument/codeLens", arg)
     if req.kind ~= "ReqCodeLens" then error("code_lens: invalid request", 2) end
-
     local doc = self:_doc(req.doc.uri)
     if not doc then return C.LspCodeLensList({}) end
-
-    local out = {}
-    for i = 1, #doc.items do
-        local s = doc.items[i].syntax.stmt
-        if s and (s.kind == "Function" or s.kind == "LocalFunction") then
-            local r = self:_range_for(doc, C.AnchorRef(tostring(s)))
-            out[#out + 1] = C.LspCodeLens(
-                C.LspRange(C.LspPos(r.start.line, 0), C.LspPos(r.start.line, 1)),
-                "Run solve",
-                "lua.solve"
-            )
-        end
+    if self._editor_engine then
+        return pvm.one(self._editor_engine.code_lenses(C.CodeLensQuery(doc)))
     end
-    return C.LspCodeLensList(out)
+    return C.LspCodeLensList({})
 end
 
 function Core:document_color(arg)
@@ -2406,53 +1936,12 @@ function Core:document_color(arg)
     local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
     local req = (tag == "ReqDocumentColor") and arg or self:request_from_lsp("textDocument/documentColor", arg)
     if req.kind ~= "ReqDocumentColor" then error("document_color: invalid request", 2) end
-
     local doc = self:_doc(req.doc.uri)
     if not doc then return C.LspColorInfoList({}) end
-
-    local out = {}
-    local seen = {}
-    local text = doc.text or ""
-
-    local function add_color(line0, startc, endc, r, g, b, a)
-        local key = line0 .. ":" .. startc .. ":" .. endc
-        if seen[key] then return end
-        seen[key] = true
-        out[#out + 1] = C.LspColorInfo(
-            C.LspRange(C.LspPos(line0, startc), C.LspPos(line0, endc)),
-            C.LspColor(r / 255, g / 255, b / 255, a / 255)
-        )
+    if self._editor_engine then
+        return pvm.one(self._editor_engine.document_colors(C.ColorQuery(doc)))
     end
-
-    if self._lexer_engine and self._lexer_engine.lex_with_positions then
-        local src = C.OpenDoc(req.doc.uri, doc_version(doc), text)
-        local lexed = pvm.drain(self._lexer_engine.lex_with_positions(src))
-
-        for i = 1, #lexed do
-            local lt = lexed[i]
-            local tok = lt.token
-            if tok and tok.kind == "<number>" then
-                local v = tostring(tok.value or ""):gsub("_", "")
-                v = v:gsub("[uUlLiI]+$", "")
-                local rr, gg, bb, aa = v:match("^0[xX](%x%x)(%x%x)(%x%x)(%x%x)$")
-                if rr and gg and bb and aa then
-                    local line0 = (lt.line or 1) - 1
-                    local line_start = line_bounds(text, line0)
-                    local start_off = lt.start_offset or line_start
-                    local stop_off = lt.end_offset or start_off
-                    if stop_off < start_off then stop_off = start_off end
-                    local prefix = text:sub(line_start, math.max(line_start, start_off) - 1)
-                    local token_txt = text:sub(start_off, stop_off)
-                    local startc = utf16_len(prefix)
-                    local endc = startc + utf16_len(token_txt)
-                    add_color(line0, startc, endc,
-                        tonumber(rr, 16), tonumber(gg, 16), tonumber(bb, 16), tonumber(aa, 16))
-                end
-            end
-        end
-    end
-
-    return C.LspColorInfoList(out)
+    return C.LspColorInfoList({})
 end
 
 function Core:execute_command(arg)
@@ -2473,52 +1962,10 @@ function Core:workspace_symbol(arg)
     local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
     local req = (tag == "ReqWorkspaceSymbol") and arg or self:request_from_lsp("workspace/symbol", arg)
     if req.kind ~= "ReqWorkspaceSymbol" then error("workspace_symbol: invalid request", 2) end
-
-    local q = (req.query or ""):lower()
-    local out = {}
-    local docs = self.docs.docs
-
-    local function add(name, kind, uri, range, container)
-        if not name or name == "" then return end
-        if q ~= "" and not name:lower():find(q, 1, true) then return end
-        out[#out + 1] = C.LspWorkspaceSymbol(name, kind or 13, uri or "", range, container or "")
+    if self._workspace_engine then
+        return self._workspace_engine:workspace_symbols(self.docs, req.query or "")
     end
-
-    for i = 1, #docs do
-        local d = docs[i]
-        local idx = self.engine:index(d)
-        for j = 1, #idx.defs do
-            local occ = idx.defs[j]
-            add(occ.name, ws_symbol_kind(occ.kind), d.uri, self:_range_for(d, occ.anchor), "")
-        end
-
-        local env = self.engine.resolve_named_types(d)
-        for j = 1, #env.classes do
-            local cls = env.classes[j]
-            add(cls.name, 5, d.uri, self:_range_for(d, cls.anchor), "")
-            for k = 1, #cls.fields do
-                local f = cls.fields[k]
-                add(f.name, 8, d.uri, self:_range_for(d, f.anchor), cls.name)
-            end
-        end
-        for j = 1, #env.aliases do
-            local a = env.aliases[j]
-            add(a.name, 13, d.uri, self:_range_for(d, a.anchor), "")
-        end
-        for j = 1, #env.generics do
-            local g = env.generics[j]
-            add(g.name, 26, d.uri, self:_range_for(d, g.anchor), "")
-        end
-    end
-
-    table.sort(out, function(a, b)
-        if a.name ~= b.name then return a.name < b.name end
-        if a.uri ~= b.uri then return a.uri < b.uri end
-        if a.range.start.line ~= b.range.start.line then return a.range.start.line < b.range.start.line end
-        return a.range.start.character < b.range.start.character
-    end)
-
-    return C.LspWorkspaceSymbolList(out)
+    return C.LspWorkspaceSymbolList({})
 end
 
 function Core:workspace_diagnostic(arg)
@@ -2526,17 +1973,10 @@ function Core:workspace_diagnostic(arg)
     local tag = tostring(arg):match("^Lua%.([%w_]+)%(")
     local req = (tag == "ReqWorkspaceDiagnostic") and arg or self:request_from_lsp("workspace/diagnostic", arg)
     if req.kind ~= "ReqWorkspaceDiagnostic" then error("workspace_diagnostic: invalid request", 2) end
-
-    local out = {}
-    local docs = self.docs.docs
-    for i = 1, #docs do
-        local d = docs[i]
-        local rep = self:diagnostic(C.ReqDiagnostic(C.LspDocIdentifier(d.uri)))
-        local wk = C.WsDiagFull
-        if rep.kind == C.DiagReportUnchanged then wk = C.WsDiagUnchanged end
-        out[#out + 1] = C.LspWorkspaceDiagnosticItem(d.uri, d.version or 0, wk, rep.items or {})
+    if self._workspace_engine then
+        return self._workspace_engine:workspace_diagnostics(self.docs)
     end
-    return C.LspWorkspaceDiagnostic(out)
+    return C.LspWorkspaceDiagnostic({})
 end
 
 function Core:handle_request(req)

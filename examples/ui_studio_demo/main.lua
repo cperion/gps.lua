@@ -179,6 +179,7 @@ local function compile_and_draw()
     end
 
     last_report = run_frame(vw, vh, accum)
+    apply_ui_model(ui.interact.clamp_model(state.ui_model, last_report))
 
     local next_state = demo_apply.step(
         state,
@@ -280,10 +281,10 @@ function love.keypressed(key)
         dispatch_raw(ui.interact.activate_focus(), "activate-focus")
     elseif key == "down" then
         mark_action("scroll-down")
-        apply_ui_model(ui.interact.apply(state.ui_model, T.Interact.ScrollBy(BROWSER_SCROLL_ID, 0, 32)))
+        apply_ui_model(ui.interact.apply(state.ui_model, T.Interact.ScrollBy(BROWSER_SCROLL_ID, 0, 32), last_report))
     elseif key == "up" then
         mark_action("scroll-up")
-        apply_ui_model(ui.interact.apply(state.ui_model, T.Interact.ScrollBy(BROWSER_SCROLL_ID, 0, -32)))
+        apply_ui_model(ui.interact.apply(state.ui_model, T.Interact.ScrollBy(BROWSER_SCROLL_ID, 0, -32), last_report))
     elseif key == "t" then
         mark_action("toggle-theme")
         state = demo_apply.apply(state, T.Studio.ToggleTheme)

@@ -14,8 +14,7 @@ local sem = Semantics.new(ctx)
 -- ── Helper: parse source and run semantics ─────────────────
 local function analyze(uri, text)
     local source = C.OpenDoc(uri, 0, text)
-    local parsed = pvm.one(parser.parse(source))
-    return sem:compile(parsed)
+    return pvm.one(parser.parse(source))
 end
 
 -- ── Test 1: basic diagnostics ──────────────────────────────
@@ -162,14 +161,70 @@ local file4b = analyze("file:///inc.lua", table.concat({
 local diags_b = pvm.drain(sem.diagnostics(file4b))
 
 -- Items should share identity where unchanged
-assert(file4a.items[1].syntax == file4b.items[1].syntax, "item 1 syntax should be shared (local a = 1)")
-assert(file4a.items[2].syntax ~= file4b.items[2].syntax, "item 2 should differ")
-assert(file4a.items[3].syntax == file4b.items[3].syntax, "item 3 syntax should be shared (print(a, b))")
-print("Item sharing: OK")
+assert(file4a.items[1].core == file4b.items[1].core, "item 1 core should be shared (local a = 1)")
+assert(file4a.items[2].core ~= file4b.items[2].core, "item 2 core should differ")
+assert(file4a.items[3].core.stmt == file4b.items[3].core.stmt, "item 3 statement should be shared even if span shifts")
+print("Semantic cache boundary sharing: OK")
 print("Diags before:", #diags_a, "after:", #diags_b)
 
--- ── Test 8: cache report ───────────────────────────────────
-print("\n=== Test 8: cache report ===")
+-- ── Test 8: function-body semantic caching ─────────────────
+print("\n=== Test 8: function-body semantic caching ===")
+local file5a = analyze("file:///funcs.lua", table.concat({
+    "local function keep(x)",
+    "  local y = x + 1",
+    "  return y",
+    "end",
+    "",
+    "local function edit(z)",
+    "  local w = z + 2",
+    "  return w",
+    "end",
+}, "\n"))
+local file5b = analyze("file:///funcs.lua", table.concat({
+    "local function keep(x)",
+    "  local y = x + 1",
+    "  return y",
+    "end",
+    "",
+    "local function edit(z)",
+    "  local w = z + 999",
+    "  return w",
+    "end",
+}, "\n"))
+local keep_a = file5a.items[1].core.stmt.body
+local keep_b = file5b.items[1].core.stmt.body
+local edit_a = file5a.items[2].core.stmt.body
+local edit_b = file5b.items[2].core.stmt.body
+assert(keep_a == keep_b, "unchanged function body should be shared")
+assert(edit_a ~= edit_b, "changed function body should differ")
+assert(sem:func_semantics(keep_a) == sem:func_semantics(keep_b), "func_semantics should cache on unchanged body")
+print("FuncSemantics caching: OK")
+
+-- ── Test 9: cached whole-file assemblies ───────────────────
+print("\n=== Test 9: cached whole-file assemblies ===")
+local env_a = sem:type_env(file3)
+local env_b = sem:type_env(file3)
+assert(env_a == env_b, "type_env should be cached per ParsedDoc")
+
+local idx_a = sem:index(file3)
+local idx_b = sem:index(file3)
+assert(idx_a == idx_b, "symbol_index should be cached per ParsedDoc")
+
+local local_diags_a = sem:local_scope_diagnostics(file3)
+local local_diags_b = sem:local_scope_diagnostics(file3)
+assert(local_diags_a == local_diags_b, "local_scope_diagnostics should be cached per ParsedDoc")
+
+local type_diags_a = sem:type_diagnostics(file3)
+local type_diags_b = sem:type_diagnostics(file3)
+assert(type_diags_a == type_diags_b, "type_diagnostics should be cached per ParsedDoc")
+
+local diags_cached_a = pvm.drain(sem:diagnostics(file3))
+local diags_cached_b = pvm.drain(sem:diagnostics(file3))
+assert(#diags_cached_a == #diags_cached_b, "diagnostics should replay stably from cache")
+print("Cached assemblies: OK")
+
+-- ── Test 10: cache report ──────────────────────────────────
+print("\n=== Test 10: cache report ===")
 print(sem:report_string())
 
 print("\nAll semantics tests passed!")

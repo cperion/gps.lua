@@ -358,6 +358,7 @@ local function gen_ctor_factory(n, trusted)
     q("  local cache = plan.cache")
     q("  local ctor_name = plan.name")
     q("  local mt = plan.instance_mt")
+    q("  local alloc_instance = plan.alloc_instance")
     if not trusted then
         q("  local fields = plan.fields")
     end
@@ -390,7 +391,7 @@ local function gen_ctor_factory(n, trusted)
     q("        node[%s] = nil", _LEAF)
     q("      end")
     q("    end")
-    q("    local obj = %s({", _setmetatable)
+    q("    local obj = alloc_instance({")
     for i = 1, n do
         q("      [%s] = v%d,", "k" .. i, i)
     end
@@ -423,7 +424,7 @@ local function make_ctor(plan)
             keys[i] = key
         end
         return intern_value(plan.cache, keys, function()
-            return setmetatable(values, plan.instance_mt)
+            return plan.alloc_instance(values, plan.instance_mt)
         end)
     end
 end
@@ -515,6 +516,19 @@ local function build_ctor_plan(ctx, name, class, unique, fields, instance_tostri
     end
 
     local instance_mt = make_instance_mt(class, instance_tostring, field_lookup)
+    local alloc_instance
+    if rawget(class, "__ref_class_id") ~= nil then
+        alloc_instance = function(values, mt)
+            local slot = rawget(class, "__next_ref_slot") or 1
+            rawset(class, "__next_ref_slot", slot + 1)
+            values.__slot = slot
+            return setmetatable(values, mt)
+        end
+    else
+        alloc_instance = function(values, mt)
+            return setmetatable(values, mt)
+        end
+    end
 
     return {
         name = name,
@@ -527,6 +541,7 @@ local function build_ctor_plan(ctx, name, class, unique, fields, instance_tostri
         backend = "gc_object",
         field_lookup = field_lookup,
         instance_mt = instance_mt,
+        alloc_instance = alloc_instance,
     }
 end
 
@@ -534,6 +549,11 @@ end
 
 local function build_class(ctx, name, unique, fields)
     local class = ctx.definitions[name]
+    if unique and rawget(class, "__ref_class_id") == nil then
+        class.__ref_class_id = ctx._next_ref_class_id
+        class.__next_ref_slot = 1
+        ctx._next_ref_class_id = ctx._next_ref_class_id + 1
+    end
     class.__fields = fields
     class.__index = class
     class.__class = class
@@ -598,7 +618,12 @@ local function build_class(ctx, name, unique, fields)
             __tostring = instance_tostring,
         }
 
-        local singleton = setmetatable({}, instance_mt)
+        local singleton = {}
+        if rawget(class, "__ref_class_id") ~= nil then
+            singleton.__slot = 1
+            rawset(class, "__next_ref_slot", 2)
+        end
+        singleton = setmetatable(singleton, instance_mt)
 
         function mt:__call()
             return singleton
@@ -686,11 +711,14 @@ end
 
 -- ── NewContext ───────────────────────────────────────────────
 
-function M.NewContext()
+function M.NewContext(opts)
+    opts = opts or {}
     local ctx = setmetatable({
         definitions = {},
         namespaces = {},
         checks = setmetatable({}, { __index = builtin_checks }),
+        _next_ref_class_id = 1,
+        opts = opts,
     }, Context)
 
     function ctx:Define(text)

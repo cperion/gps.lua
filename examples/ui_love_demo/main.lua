@@ -253,6 +253,7 @@ local function compile_and_draw()
     end
 
     last_report = run_once()
+    ui_model = ui.interact.clamp_model(ui_model, last_report)
     local next_model = ui.interact.step(ui_model, last_report, ui.interact.pointer_moved(ui_model.pointer_x, ui_model.pointer_y))
     if next_model ~= ui_model then
         ui_model = next_model
@@ -314,9 +315,9 @@ function love.keypressed(key)
     elseif key == "return" or key == "space" then
         dispatch_raw(ui.interact.activate_focus())
     elseif key == "down" then
-        ui_model = ui.interact.apply(ui_model, T.Interact.ScrollBy(LIST_SCROLL_ID, 0, 28))
+        ui_model = ui.interact.apply(ui_model, T.Interact.ScrollBy(LIST_SCROLL_ID, 0, 28), last_report)
     elseif key == "up" then
-        ui_model = ui.interact.apply(ui_model, T.Interact.ScrollBy(LIST_SCROLL_ID, 0, -28))
+        ui_model = ui.interact.apply(ui_model, T.Interact.ScrollBy(LIST_SCROLL_ID, 0, -28), last_report)
     end
 end
 

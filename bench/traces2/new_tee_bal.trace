@@ -1,0 +1,378 @@
+---- TRACE 6 start triplet_bench_lib.lua:343
+0001  TGETS    2   0   0  ; "tee"
+0002  KSHORT   4   2
+0003  TGETS    5   0   1  ; "seq"
+0004  TGETS    7   1   2  ; "values"
+0005  CALL     5   0   2
+0000  . FUNCF    4          ; triplet.lua:51
+0001  . UGET     1   0      ; seq_gen
+0002  . MOV      2   0
+0003  . KSHORT   3   0
+0004  . RET      1   4
+0006  CALLM    2   2   1
+0000  . FUNCF   15          ; triplet.lua:1072
+0001  . ISNEN    0   0      ; 2
+0002  . JMP      4 => 0023
+0003  . TDUP     4   0
+0004  . TSETB    1   4   1
+0005  . TSETB    2   4   2
+0006  . TSETB    3   4   3
+0007  . TNEW     5   0
+0008  . TSETB    5   4   5
+0009  . TNEW     5   0
+0010  . TSETB    5   4   8
+0011  . TNEW     5   3
+0012  . TDUP     6   1
+0013  . UGET     7   0      ; tee2_branch1_gen
+0014  . TSETB    7   6   1
+0015  . TSETB    4   6   2
+0016  . TSETB    6   5   1
+0017  . TDUP     6   2
+0018  . UGET     7   1      ; tee2_branch2_gen
+0019  . TSETB    7   6   1
+0020  . TSETB    4   6   2
+0021  . TSETB    6   5   2
+0022  . RET1     5   2
+0007  UGET     3   0      ; sum_tee_balanced
+0008  MOV      5   2
+0009  CALLT    3   2
+0000  FUNCF   15          ; triplet_bench_lib.lua:110
+0001  TGETB    1   0   1
+0002  TGETB    1   1   1
+0003  TGETB    2   0   1
+0004  TGETB    2   2   2
+0005  TGETB    3   0   1
+0006  TGETB    3   3   3
+0007  TGETB    4   0   2
+0008  TGETB    4   4   1
+0009  TGETB    5   0   2
+0010  TGETB    5   5   2
+0011  TGETB    6   0   2
+0012  TGETB    6   6   3
+0013  KSHORT   7   0
+0014  JLOOP    8   3
+---- TRACE 6 abort triplet_bench_lib.lua:116 -- inner loop in root trace
+
+---- TRACE 6 start 3/10 triplet.lua:46
+0005  . . KPRI     2   0
+0006  . . RET1     2   2
+0040  . ISNEP    3   0
+0041  . JMP      5 => 0047
+0042  . UGET     5   7      ; TEE2_DONE
+0043  . KPRI     6   2
+0044  . TSETV    6   0   5
+0045  . KPRI     5   0
+0046  . RET1     5   2
+0019  MOV     10   4
+0020  MOV     12   5
+0021  MOV     13   6
+0022  CALL    10   3   3
+0000  . FUNCF   13          ; triplet.lua:1045
+0001  . UGET     2   0      ; TEE2_HAS2
+0002  . TGETV    2   0   2
+0003  . ISF          2
+0004  . JMP      3 => 0016
+0016  . UGET     2   3      ; tee2_pop_queue
+0017  . MOV      4   0
+0018  . UGET     5   4      ; TEE2_Q2
+0019  . UGET     6   5      ; TEE2_H2
+0020  . UGET     7   6      ; TEE2_T2
+0021  . CALL     2   2   5
+0000  . . FUNCF    9          ; triplet.lua:999
+0001  . . TGETV    4   0   2
+0002  . . TGETV    5   0   3
+0003  . . ISGT     4   5
+0004  . . JMP      6 => 0017
+0017  . . KPRI     6   0
+0018  . . RET1     6   2
+0022  . ISEQP    2   0
+0023  . JMP      3 => 0027
+0027  . UGET     3   7      ; TEE2_DONE
+0028  . TGETV    3   0   3
+0029  . ISF          3
+0030  . JMP      4 => 0033
+0031  . KPRI     3   0
+0032  . RET1     3   2
+0023  ISNEP    8   0
+0024  JMP     12 => 0031
+0025  ISEQP   10   0
+0026  JMP     12 => 0030
+0030  RET1     7   2
+0099  ADDVV   13  13  18
+0100  FORL    14 => 0097
+0097  MOV     18  12
+0098  CALL    18   2   1
+0000  . FUNCF    5          ; triplet_trace.lua:19
+0001  . UGET     0   0      ; lib
+0002  . TGETS    0   0   0  ; "run_once"
+0003  . UGET     2   1      ; T
+0004  . UGET     3   2      ; scenario_name
+0005  . UGET     4   3      ; payload
+0006  . CALLT    0   4
+0000  . FUNCF    7          ; triplet_bench_lib.lua:426
+0001  . UGET     3   0      ; M
+0002  . TGETS    3   3   0  ; "get_scenario"
+0003  . MOV      5   1
+0004  . CALL     3   2   2
+0000  . . FUNCF    8          ; triplet_bench_lib.lua:413
+0001  . . UGET     1   0      ; scenarios
+0002  . . TGETV    1   1   0
+0003  . . IST          1
+0004  . . JMP      2 => 0013
+0013  . . RET1     1   2
+0005  . TGETS    3   3   1  ; "run_once"
+0006  . MOV      5   0
+0007  . MOV      6   2
+0008  . CALLT    3   3
+0000  . FUNCF    8          ; triplet_bench_lib.lua:343
+0001  . TGETS    2   0   0  ; "tee"
+0002  . KSHORT   4   2
+0003  . TGETS    5   0   1  ; "seq"
+0004  . TGETS    7   1   2  ; "values"
+0005  . CALL     5   0   2
+0000  . . FUNCF    4          ; triplet.lua:51
+0001  . . UGET     1   0      ; seq_gen
+0002  . . MOV      2   0
+0003  . . KSHORT   3   0
+0004  . . RET      1   4
+0006  . CALLM    2   2   1
+0000  . . FUNCF   15          ; triplet.lua:1072
+0001  . . ISNEN    0   0      ; 2
+0002  . . JMP      4 => 0023
+0003  . . TDUP     4   0
+0004  . . TSETB    1   4   1
+0005  . . TSETB    2   4   2
+0006  . . TSETB    3   4   3
+0007  . . TNEW     5   0
+0008  . . TSETB    5   4   5
+0009  . . TNEW     5   0
+0010  . . TSETB    5   4   8
+0011  . . TNEW     5   3
+0012  . . TDUP     6   1
+0013  . . UGET     7   0      ; tee2_branch1_gen
+0014  . . TSETB    7   6   1
+0015  . . TSETB    4   6   2
+0016  . . TSETB    6   5   1
+0017  . . TDUP     6   2
+0018  . . UGET     7   1      ; tee2_branch2_gen
+0019  . . TSETB    7   6   1
+0020  . . TSETB    4   6   2
+0021  . . TSETB    6   5   2
+0022  . . RET1     5   2
+0007  . UGET     3   0      ; sum_tee_balanced
+0008  . MOV      5   2
+0009  . CALLT    3   2
+0000  . FUNCF   15          ; triplet_bench_lib.lua:110
+0001  . TGETB    1   0   1
+0002  . TGETB    1   1   1
+0003  . TGETB    2   0   1
+0004  . TGETB    2   2   2
+0005  . TGETB    3   0   1
+0006  . TGETB    3   3   3
+0007  . TGETB    4   0   2
+0008  . TGETB    4   4   1
+0009  . TGETB    5   0   2
+0010  . TGETB    5   5   2
+0011  . TGETB    6   0   2
+0012  . TGETB    6   6   3
+0013  . KSHORT   7   0
+0014  . JLOOP    8   3
+---- TRACE 6 IR
+0001    [34mnum[m SLOAD  #9    PI
+0002    [31mtab[m SLOAD  #12   PI
+....        SNAP   #0   [ ---- ---- ---- ---- ---- [35m+1  [m ---- ---- [35m+1  [m [34m0001[m [1mtriplet.lua:1018[m [34mftsz[m|[31m0002[m [34m+1  [m nil  [1mtriplet.lua:43[m [34mftsz[m|---- ---- ]
+0003    [35mint[m FLOAD  0002  tab.asize
+0004 >  [35mint[m ABC    0003  [35m+4  [m
+0005    p64 FLOAD  0002  tab.array
+0006    p64 AREF   0005  [35m+4  [m
+0007    [31mtab[m FLOAD  0002  tab.meta
+0008 >  [31mtab[m EQ     0007  [31mNULL[m
+0009    tru ASTORE 0006  true
+....        SNAP   #1   [ ---- ---- ---- ---- ---- [35m+1  [m ---- ---- [35m+1  [m [34m0001[m [1mtriplet.lua:1018[m [34mftsz[m|---- ---- ---- ---- ---- ---- ---- ]
+0010 >  [1mfun[m SLOAD  #6    T
+0011 >  [31mtab[m SLOAD  #7    T
+0012 >  [1mfun[m EQ     0010  [1mtriplet.lua:1045[m
+0013    [35mint[m FLOAD  0011  tab.asize
+0014 >  [35mint[m ABC    0013  [35m+13 [m
+0015    p64 FLOAD  0011  tab.array
+0016    p64 AREF   0015  [35m+13 [m
+0017 >  fal ALOAD  0016
+0018    p64 AREF   0015  [35m+9  [m
+0019 >  [34mnum[m ALOAD  0018
+0020    p64 AREF   0015  [35m+10 [m
+0021 >  [34mnum[m ALOAD  0020
+....        SNAP   #2   [ ---- ---- ---- ---- ---- [35m+1  [m ---- ---- [35m+1  [m [34m0001[m nil  nil  [1mtriplet.lua:1045[m [34mftsz[m|[31m0011[m [35m+1  [m [1mtriplet.lua:999[m [34mftsz[m|[31m0011[m [35m+8  [m [35m+9  [m [35m+10 [m [34m0019[m [34m0021[m ]
+0022 >  [34mnum[m ULT    0021  0019
+....        SNAP   #3   [ ---- ---- ---- ---- ---- [35m+1  [m ---- ---- [35m+1  [m [34m0001[m nil  nil  [1mtriplet.lua:1045[m [34mftsz[m|[31m0011[m [35m+1  [m [1mtriplet.lua:999[m [34mftsz[m|---- ---- ---- ---- ---- ---- ]
+0023    p64 AREF   0015  [35m+4  [m
+0024 >  tru ALOAD  0023
+....        SNAP   #4   [ ---- ---- ---- ---- ---- [35m+1  [m ---- ---- [35m+1  [m [34m0001[m nil  nil  nil  nil  ]
+0025 >  p64 RETF   proto: 0x7fefe9ac9728  [0x7fefe9ac991c]
+....        SNAP   #5   [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0001[m ]
+0026 >  [34mnum[m SLOAD  #15   T
+0027    [34mnum[m ADD    0026  0001
+0028    [34mnum[m SLOAD  #17   RI
+0029    [34mnum[m SLOAD  #16   I
+0030    [34mnum[m ADD    0029  [34m+1  [m
+....        SNAP   #6   [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0027[m ]
+0031 >  [34mnum[m LE     0030  0028
+....        SNAP   #7   [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0027[m [34m0030[m [34m0028[m ---- ---- ]
+0032 >  [1mfun[m SLOAD  #14   T
+0033 >  [1mfun[m EQ     0032  [1mtriplet_trace.lua:19[m
+0034    p64 UREFO  [1mtriplet_trace.lua:19[m  #0  
+0035    p64 ADD    0034  [35m-16 [m
+0036 >  p64 EQ     0035  0000
+0037 >  [31mtab[m SLOAD  #4    T
+0038    [35mint[m FLOAD  0037  tab.hmask
+0039 >  [35mint[m EQ     0038  [35m+15 [m
+0040    p64 FLOAD  0037  tab.node
+0041 >  p64 HREFK  0040  [32m"run_once"[m @2
+0042 >  [1mfun[m HLOAD  0041
+0043    p64 UREFO  [1mtriplet_trace.lua:19[m  #1  
+0044    p64 ADD    0043  [35m-80 [m
+0045 >  p64 EQ     0044  0000
+0046 >  [31mtab[m SLOAD  #12   T
+0047    p64 UREFO  [1mtriplet_trace.lua:19[m  #3  
+0048    p64 ADD    0047  [35m-88 [m
+0049 >  p64 EQ     0048  0000
+0050 >  [31mtab[m SLOAD  #13   T
+0051 >  [1mfun[m EQ     0042  [1mtriplet_bench_lib.lua:426[m
+0052    p64 UREFC  [1mtriplet_bench_lib.lua:426[m  #0  
+0053 >  [31mtab[m ULOAD  0052
+0054    [35mint[m FLOAD  0053  tab.hmask
+0055 >  [35mint[m EQ     0054  [35m+15 [m
+0056    p64 FLOAD  0053  tab.node
+0057 >  p64 HREFK  0056  [32m"get_scenario"[m @4
+0058 >  [1mfun[m HLOAD  0057
+0059 >  [1mfun[m EQ     0058  [1mtriplet_bench_lib.lua:413[m
+0060    p64 UREFC  [1mtriplet_bench_lib.lua:413[m  #0  
+0061 >  [31mtab[m ULOAD  0060
+0062    [35mint[m FLOAD  0061  tab.hmask
+0063 >  [35mint[m EQ     0062  [35m+15 [m
+0064    p64 FLOAD  0061  tab.node
+0065 >  p64 HREFK  0064  [32m"drain_tee_balanced"[m @8
+0066 >  [31mtab[m HLOAD  0065
+0067    [35mint[m FLOAD  0066  tab.hmask
+0068 >  [35mint[m EQ     0067  [35m+7  [m
+0069    p64 FLOAD  0066  tab.node
+0070 >  p64 HREFK  0069  [32m"run_once"[m @5
+0071 >  [1mfun[m HLOAD  0070
+0072 >  [1mfun[m EQ     0071  [1mtriplet_bench_lib.lua:343[m
+0073    [35mint[m FLOAD  0046  tab.hmask
+0074 >  [35mint[m EQ     0073  [35m+63 [m
+0075    p64 FLOAD  0046  tab.node
+0076 >  p64 HREFK  0075  [32m"tee"[m @11
+0077 >  [1mfun[m HLOAD  0076
+0078 >  p64 HREFK  0075  [32m"seq"[m @47
+0079 >  [1mfun[m HLOAD  0078
+0080    [35mint[m FLOAD  0050  tab.hmask
+0081 >  [35mint[m EQ     0080  [35m+1  [m
+0082    p64 FLOAD  0050  tab.node
+0083 >  p64 HREFK  0082  [32m"values"[m @1
+0084 >  [31mtab[m HLOAD  0083
+0085 >  [1mfun[m EQ     0079  [1mtriplet.lua:51[m
+0086 >  [1mfun[m EQ     0077  [1mtriplet.lua:1072[m
+0087 >  [31mtab[m TDUP   [31m{0x7fefe9a82768}[m
+0088    p64 FLOAD  0087  tab.array
+0089    p64 AREF   0088  [35m+1  [m
+0090    [1mfun[m ASTORE 0089  [1mtriplet.lua:43[m
+0091    p64 AREF   0088  [35m+2  [m
+0092    [31mtab[m ASTORE 0091  0084
+0093    p64 AREF   0088  [35m+3  [m
+0094    [34mnum[m ASTORE 0093  [34m+0  [m
+....        SNAP   #8   [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0027[m [34m0030[m [34m0028[m ---- ---- [1mtriplet_bench_lib.lua:343[m [34mftsz[m|[31m0046[m [31m0050[m [1mtriplet.lua:1072[m [34mftsz[m|---- ---- ---- ---- [31m0087[m ]
+0095 >  [31mtab[m TNEW   #0    #0  
+0096    p64 AREF   0088  [35m+5  [m
+0097    [31mtab[m ASTORE 0096  0095
+....        SNAP   #9   [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0027[m [34m0030[m [34m0028[m ---- ---- [1mtriplet_bench_lib.lua:343[m [34mftsz[m|[31m0046[m [31m0050[m [1mtriplet.lua:1072[m [34mftsz[m|---- ---- ---- ---- [31m0087[m ---- ]
+0098 >  [31mtab[m TNEW   #0    #0  
+0099    p64 AREF   0088  [35m+8  [m
+0100    [31mtab[m ASTORE 0099  0098
+....        SNAP   #10  [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0027[m [34m0030[m [34m0028[m ---- ---- [1mtriplet_bench_lib.lua:343[m [34mftsz[m|[31m0046[m [31m0050[m [1mtriplet.lua:1072[m [34mftsz[m|---- ---- ---- ---- [31m0087[m ---- ]
+0101 >  [31mtab[m TNEW   #3    #0  
+0102 >  [31mtab[m TDUP   [31m{0x7fefe9a828f0}[m
+0103    p64 FLOAD  0102  tab.array
+0104    p64 AREF   0103  [35m+1  [m
+0105    [1mfun[m ASTORE 0104  [1mtriplet.lua:1018[m
+0106    p64 AREF   0103  [35m+2  [m
+0107    [31mtab[m ASTORE 0106  0087
+0108    p64 FLOAD  0101  tab.array
+0109    p64 AREF   0108  [35m+1  [m
+0110    [31mtab[m ASTORE 0109  0102
+....        SNAP   #11  [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0027[m [34m0030[m [34m0028[m ---- ---- [1mtriplet_bench_lib.lua:343[m [34mftsz[m|[31m0046[m [31m0050[m [1mtriplet.lua:1072[m [34mftsz[m|---- ---- ---- ---- [31m0087[m [31m0101[m ---- ---- ]
+0111 >  [31mtab[m TDUP   [31m{0x7fefe9a82958}[m
+0112    p64 FLOAD  0111  tab.array
+0113    p64 AREF   0112  [35m+1  [m
+0114    [1mfun[m ASTORE 0113  [1mtriplet.lua:1045[m
+0115    p64 AREF   0112  [35m+2  [m
+0116    [31mtab[m ASTORE 0115  0087
+0117    p64 AREF   0108  [35m+2  [m
+0118    [31mtab[m ASTORE 0117  0111
+0119    p64 AREF   0103  [35m+3  [m
+0120    p64 AREF   0112  [35m+3  [m
+....        SNAP   #12  [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0027[m [34m0030[m [34m0028[m ---- ---- [1mtriplet_bench_lib.lua:110[m [34mftsz[m|[31m0101[m [1mtriplet.lua:1018[m [31m0087[m [34m+0  [m [1mtriplet.lua:1045[m [31m0087[m [34m+0  [m [34m+0  [m ]
+---- TRACE 6 stop -> 3
+
+---- TRACE 7 start 6/6 triplet_trace.lua:35
+0101  GGET    14  26      ; "print"
+0102  GGET    16  14      ; "string"
+0103  TGETS   16  16  15  ; "format"
+0104  KSTR    18  27      ; "wrote trace dump to %s  impl=%s scenario"~
+0105  MOV     19   9
+0106  MOV     20   3
+0107  MOV     21   4
+0108  MOV     22   5
+0109  MOV     23   6
+0110  GGET    24  28      ; "tostring"
+0111  MOV     26  13
+0112  CALL    24   0   2
+0000  . FUNCC               ; tostring
+0113  CALLM   16   0   6
+0000  . FUNCC               ; string.format
+0114  CALLM   14   1   0
+0000  . FUNCC               ; print
+---- TRACE 7 IR
+0001    [34mnum[m SLOAD  #15   PI
+....        SNAP   #0   [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0001[m ]
+0002    [1mfun[m SLOAD  #0    R
+0003    [31mtab[m FLOAD  0002  func.env
+0004    [35mint[m FLOAD  0003  tab.hmask
+0005 >  [35mint[m EQ     0004  [35m+63 [m
+0006    p64 FLOAD  0003  tab.node
+0007 >  p64 HREFK  0006  [32m"print"[m @21
+0008 >  [1mfun[m HLOAD  0007
+0009 >  p64 HREFK  0006  [32m"string"[m @48
+0010 >  [31mtab[m HLOAD  0009
+0011    [35mint[m FLOAD  0010  tab.hmask
+0012 >  [35mint[m EQ     0011  [35m+15 [m
+0013    p64 FLOAD  0010  tab.node
+0014 >  p64 HREFK  0013  [32m"format"[m @8
+0015 >  [1mfun[m HLOAD  0014
+0016 >  [32mstr[m SLOAD  #11   T
+0017 >  [32mstr[m SLOAD  #5    T
+0018 >  [32mstr[m SLOAD  #6    T
+0019 >  [34mnum[m SLOAD  #7    T
+0020 >  [34mnum[m SLOAD  #8    T
+0021 >  p64 HREFK  0006  [32m"tostring"[m @10
+0022 >  [1mfun[m HLOAD  0021
+0023 >  [1mfun[m EQ     0022  [1mtostring[m
+0024    [32mstr[m TOSTR  0001  NUM
+0025 >  [1mfun[m EQ     0015  [1mstring.format[m
+0026    p64 BUFHDR [0x7fefe9abd4a8]  RESET
+0027 >  p64 BUFPUT 0026  [32m"wrote trace dump to "[m
+0028 >  p64 BUFPUT 0027  0016
+0029 >  p64 BUFPUT 0028  [32m"  impl="[m
+0030 >  p64 BUFPUT 0029  0017
+0031 >  p64 BUFPUT 0030  [32m" scenario="[m
+0032 >  p64 BUFPUT 0031  0018
+0033 >  p64 BUFPUT 0032  [32m" n="[m
+0036 >  p64 CALLL  lj_strfmt_putfnum_int  (0033 [35m+3  [m 0019)
+0037 >  p64 BUFPUT 0036  [32m" iters="[m
+0040 >  p64 CALLL  lj_strfmt_putfnum_int  (0037 [35m+3  [m 0020)
+0041 >  p64 BUFPUT 0040  [32m" checksum="[m
+0042 >  p64 BUFPUT 0041  0024
+0043 >  [32mstr[m BUFSTR 0042  0026
+0044 >  [1mfun[m EQ     0008  [1mprint[m
+....        SNAP   #1   [ ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- [34m0001[m trace: 0x7fefe9aa8cd0 [34m+0x1.582d8c1cec74p-1028[m [34mcontpc[m [1mprint[m [34mftsz[m|[32m0043[m ]
+---- TRACE 7 stop -> stitch
+

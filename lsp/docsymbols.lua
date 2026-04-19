@@ -2,8 +2,8 @@
 --
 -- Document symbols as phases.
 --
---   SemanticDoc:doc_symbol_facts() -> DocSymbolFact*
---   SemanticDoc:doc_symbol_tree()  -> DocSymbolTree
+--   ParsedDoc:doc_symbol_facts() -> DocSymbolFact*
+--   ParsedDoc:doc_symbol_tree()  -> DocSymbolTree
 --
 -- Facts are streamed flat with explicit parent ids. Tree assembly is a later
 -- one-yield phase.
@@ -65,10 +65,12 @@ function M.new(semantics_engine)
     end
 
     doc_symbol_facts = pvm.phase("doc_symbol_facts", {
-        [C.SemanticDoc] = function(n, parent_id)
-            local items = {}
-            for i = 1, #n.items do items[i] = n.items[i].syntax end
-            return children_with_parent(items, parent_id or "")
+        [C.ParsedDoc] = function(n, parent_id)
+            return children_with_parent(n.items, parent_id or "")
+        end,
+
+        [C.LocatedItem] = function(n, parent_id)
+            return doc_symbol_facts(n.core, parent_id or "")
         end,
 
         [C.Item] = function(n, parent_id)

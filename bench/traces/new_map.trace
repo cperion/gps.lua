@@ -1,0 +1,830 @@
+---- TRACE 8 start triplet.lua:140
+0001  UGET     4   0      ; map_gen
+0002  TNEW     5   5
+0003  TSETB    0   5   1
+0004  TSETB    1   5   2
+0005  TSETB    2   5   3
+0006  TSETB    3   5   4
+0007  KSHORT   6   0
+0008  RET      4   4
+---- TRACE 8 IR
+....        SNAP   #0   [ ---- ---- ---- ---- ---- ---- ]
+0001    [1mfun[m SLOAD  #0    R
+0002 >  [1mfun[m EQ     0001  [1mtriplet.lua:140[m
+0003 >  [31mtab[m TNEW   #5    #0  
+0004 >  [1mfun[m SLOAD  #2    T
+0005    p64 FLOAD  0003  tab.array
+0006    p64 AREF   0005  [35m+1  [m
+0007    [1mfun[m ASTORE 0006  0004
+....        SNAP   #1   [ [1mtriplet.lua:140[m ---- ---- ---- ---- ---- [1mtriplet.lua:131[m [31m0003[m ]
+0008 >  [1mfun[m SLOAD  #3    T
+0009    p64 AREF   0005  [35m+2  [m
+0010    [1mfun[m ASTORE 0009  0008
+....        SNAP   #2   [ [1mtriplet.lua:140[m ---- ---- ---- ---- ---- [1mtriplet.lua:131[m [31m0003[m ]
+0011 >  [31mtab[m SLOAD  #4    T
+0012    p64 AREF   0005  [35m+3  [m
+0013    [31mtab[m ASTORE 0012  0011
+....        SNAP   #3   [ [1mtriplet.lua:140[m ---- ---- ---- ---- ---- [1mtriplet.lua:131[m [31m0003[m ]
+0014 >  [34mnum[m SLOAD  #5    T
+0015    p64 AREF   0005  [35m+4  [m
+0016    [34mnum[m ASTORE 0015  0014
+....        SNAP   #4   [ [1mtriplet.lua:140[m ---- ---- ---- ---- ---- [1mtriplet.lua:131[m [31m0003[m [34m+0  [m ]
+---- TRACE 8 stop -> return
+
+---- TRACE 9 start triplet.lua:131
+0001  UGET     2   0      ; MAP_G
+0002  TGETV    2   0   2
+0003  UGET     4   1      ; MAP_P
+0004  TGETV    4   0   4
+0005  UGET     5   2      ; MAP_C
+0006  TGETV    5   0   5
+0007  CALL     2   3   3
+0000  . FUNCF    7          ; triplet.lua:168
+0001  . JLOOP    2   3
+---- TRACE 9 abort triplet.lua:170 -- inner loop in root trace
+
+---- TRACE 9 start triplet.lua:168
+0001  JLOOP    2   3
+---- TRACE 9 abort triplet.lua:170 -- inner loop in root trace
+
+---- TRACE 9 start 3/1 triplet.lua:46
+0005  . . KPRI     2   0
+0006  . . RET1     2   2
+0008  . ISNEP    2   0
+0009  . JMP      4 => 0012
+0010  . KPRI     4   0
+0011  . RET1     4   2
+0009  ISNEP    2   0
+0010  JMP      4 => 0013
+0011  KPRI     4   0
+0012  RET1     4   2
+0008  ISNEP    2   0
+0009  JMP      4 => 0012
+0010  KPRI     4   0
+0011  RET1     4   2
+0007  ISNEP    4   0
+0008  JMP      6 => 0010
+0009  RET1     3   2
+0099  ADDVV   13  13  18
+0100  FORL    14 => 0097
+0097  MOV     18  12
+0098  CALL    18   2   1
+0000  . FUNCF    5          ; triplet_trace.lua:19
+0001  . UGET     0   0      ; lib
+0002  . TGETS    0   0   0  ; "run_once"
+0003  . UGET     2   1      ; T
+0004  . UGET     3   2      ; scenario_name
+0005  . UGET     4   3      ; payload
+0006  . CALLT    0   4
+0000  . FUNCF    7          ; triplet_bench_lib.lua:426
+0001  . UGET     3   0      ; M
+0002  . TGETS    3   3   0  ; "get_scenario"
+0003  . MOV      5   1
+0004  . CALL     3   2   2
+0000  . . FUNCF    8          ; triplet_bench_lib.lua:413
+0001  . . UGET     1   0      ; scenarios
+0002  . . TGETV    1   1   0
+0003  . . IST          1
+0004  . . JMP      2 => 0013
+0013  . . RET1     1   2
+0005  . TGETS    3   3   1  ; "run_once"
+0006  . MOV      5   0
+0007  . MOV      6   2
+0008  . CALLT    3   3
+0000  . FUNCF   11          ; triplet_bench_lib.lua:238
+0001  . TGETS    2   0   0  ; "seq"
+0002  . TGETS    4   1   1  ; "values"
+0003  . CALL     2   4   2
+0000  . . FUNCF    4          ; triplet.lua:51
+0001  . . UGET     1   0      ; seq_gen
+0002  . . MOV      2   0
+0003  . . KSHORT   3   0
+0004  . . RET      1   4
+0004  . TGETS    5   0   2  ; "map"
+0005  . UGET     7   0      ; mf_map1
+0006  . MOV      8   2
+0007  . MOV      9   3
+0008  . MOV     10   4
+0009  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0010  . MOV      4   7
+0011  . MOV      3   6
+0012  . MOV      2   5
+0013  . TGETS    5   0   3  ; "filter"
+0014  . UGET     7   1      ; mf_pred
+0015  . MOV      8   2
+0016  . MOV      9   3
+0017  . MOV     10   4
+0018  . CALL     5   4   5
+0000  . . FUNCF    7          ; triplet.lua:181
+0001  . . UGET     4   0      ; filter_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0019  . MOV      4   7
+0020  . MOV      3   6
+0021  . MOV      2   5
+0022  . TGETS    5   0   2  ; "map"
+0023  . UGET     7   2      ; mf_map2
+0024  . MOV      8   2
+0025  . MOV      9   3
+0026  . MOV     10   4
+0027  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0028  . MOV      4   7
+0029  . MOV      3   6
+0030  . MOV      2   5
+0031  . UGET     5   3      ; sum_numeric
+0032  . MOV      7   2
+0033  . MOV      8   3
+0034  . MOV      9   4
+0035  . CALLT    5   4
+0000  . FUNCF    8          ; triplet_bench_lib.lua:33
+0001  . KSHORT   3   0
+0002  . ILOOP    4 => 0013
+---- TRACE 9 abort triplet_bench_lib.lua:35 -- blacklisted
+
+---- TRACE 9 start 3/1 triplet.lua:46
+0005  . . KPRI     2   0
+0006  . . RET1     2   2
+0008  . ISNEP    2   0
+0009  . JMP      4 => 0012
+0010  . KPRI     4   0
+0011  . RET1     4   2
+0009  ISNEP    2   0
+0010  JMP      4 => 0013
+0011  KPRI     4   0
+0012  RET1     4   2
+0008  ISNEP    2   0
+0009  JMP      4 => 0012
+0010  KPRI     4   0
+0011  RET1     4   2
+0007  ISNEP    4   0
+0008  JMP      6 => 0010
+0009  RET1     3   2
+0099  ADDVV   13  13  18
+0100  FORL    14 => 0097
+0097  MOV     18  12
+0098  CALL    18   2   1
+0000  . FUNCF    5          ; triplet_trace.lua:19
+0001  . UGET     0   0      ; lib
+0002  . TGETS    0   0   0  ; "run_once"
+0003  . UGET     2   1      ; T
+0004  . UGET     3   2      ; scenario_name
+0005  . UGET     4   3      ; payload
+0006  . CALLT    0   4
+0000  . FUNCF    7          ; triplet_bench_lib.lua:426
+0001  . UGET     3   0      ; M
+0002  . TGETS    3   3   0  ; "get_scenario"
+0003  . MOV      5   1
+0004  . CALL     3   2   2
+0000  . . FUNCF    8          ; triplet_bench_lib.lua:413
+0001  . . UGET     1   0      ; scenarios
+0002  . . TGETV    1   1   0
+0003  . . IST          1
+0004  . . JMP      2 => 0013
+0013  . . RET1     1   2
+0005  . TGETS    3   3   1  ; "run_once"
+0006  . MOV      5   0
+0007  . MOV      6   2
+0008  . CALLT    3   3
+0000  . FUNCF   11          ; triplet_bench_lib.lua:238
+0001  . TGETS    2   0   0  ; "seq"
+0002  . TGETS    4   1   1  ; "values"
+0003  . CALL     2   4   2
+0000  . . FUNCF    4          ; triplet.lua:51
+0001  . . UGET     1   0      ; seq_gen
+0002  . . MOV      2   0
+0003  . . KSHORT   3   0
+0004  . . RET      1   4
+0004  . TGETS    5   0   2  ; "map"
+0005  . UGET     7   0      ; mf_map1
+0006  . MOV      8   2
+0007  . MOV      9   3
+0008  . MOV     10   4
+0009  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0010  . MOV      4   7
+0011  . MOV      3   6
+0012  . MOV      2   5
+0013  . TGETS    5   0   3  ; "filter"
+0014  . UGET     7   1      ; mf_pred
+0015  . MOV      8   2
+0016  . MOV      9   3
+0017  . MOV     10   4
+0018  . CALL     5   4   5
+0000  . . FUNCF    7          ; triplet.lua:181
+0001  . . UGET     4   0      ; filter_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0019  . MOV      4   7
+0020  . MOV      3   6
+0021  . MOV      2   5
+0022  . TGETS    5   0   2  ; "map"
+0023  . UGET     7   2      ; mf_map2
+0024  . MOV      8   2
+0025  . MOV      9   3
+0026  . MOV     10   4
+0027  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0028  . MOV      4   7
+0029  . MOV      3   6
+0030  . MOV      2   5
+0031  . UGET     5   3      ; sum_numeric
+0032  . MOV      7   2
+0033  . MOV      8   3
+0034  . MOV      9   4
+0035  . CALLT    5   4
+0000  . FUNCF    8          ; triplet_bench_lib.lua:33
+0001  . KSHORT   3   0
+0002  . ILOOP    4 => 0013
+---- TRACE 9 abort triplet_bench_lib.lua:35 -- blacklisted
+
+---- TRACE 9 start 3/1 triplet.lua:46
+0005  . . KPRI     2   0
+0006  . . RET1     2   2
+0008  . ISNEP    2   0
+0009  . JMP      4 => 0012
+0010  . KPRI     4   0
+0011  . RET1     4   2
+0009  ISNEP    2   0
+0010  JMP      4 => 0013
+0011  KPRI     4   0
+0012  RET1     4   2
+0008  ISNEP    2   0
+0009  JMP      4 => 0012
+0010  KPRI     4   0
+0011  RET1     4   2
+0007  ISNEP    4   0
+0008  JMP      6 => 0010
+0009  RET1     3   2
+0099  ADDVV   13  13  18
+0100  FORL    14 => 0097
+0097  MOV     18  12
+0098  CALL    18   2   1
+0000  . FUNCF    5          ; triplet_trace.lua:19
+0001  . UGET     0   0      ; lib
+0002  . TGETS    0   0   0  ; "run_once"
+0003  . UGET     2   1      ; T
+0004  . UGET     3   2      ; scenario_name
+0005  . UGET     4   3      ; payload
+0006  . CALLT    0   4
+0000  . FUNCF    7          ; triplet_bench_lib.lua:426
+0001  . UGET     3   0      ; M
+0002  . TGETS    3   3   0  ; "get_scenario"
+0003  . MOV      5   1
+0004  . CALL     3   2   2
+0000  . . FUNCF    8          ; triplet_bench_lib.lua:413
+0001  . . UGET     1   0      ; scenarios
+0002  . . TGETV    1   1   0
+0003  . . IST          1
+0004  . . JMP      2 => 0013
+0013  . . RET1     1   2
+0005  . TGETS    3   3   1  ; "run_once"
+0006  . MOV      5   0
+0007  . MOV      6   2
+0008  . CALLT    3   3
+0000  . FUNCF   11          ; triplet_bench_lib.lua:238
+0001  . TGETS    2   0   0  ; "seq"
+0002  . TGETS    4   1   1  ; "values"
+0003  . CALL     2   4   2
+0000  . . FUNCF    4          ; triplet.lua:51
+0001  . . UGET     1   0      ; seq_gen
+0002  . . MOV      2   0
+0003  . . KSHORT   3   0
+0004  . . RET      1   4
+0004  . TGETS    5   0   2  ; "map"
+0005  . UGET     7   0      ; mf_map1
+0006  . MOV      8   2
+0007  . MOV      9   3
+0008  . MOV     10   4
+0009  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0010  . MOV      4   7
+0011  . MOV      3   6
+0012  . MOV      2   5
+0013  . TGETS    5   0   3  ; "filter"
+0014  . UGET     7   1      ; mf_pred
+0015  . MOV      8   2
+0016  . MOV      9   3
+0017  . MOV     10   4
+0018  . CALL     5   4   5
+0000  . . FUNCF    7          ; triplet.lua:181
+0001  . . UGET     4   0      ; filter_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0019  . MOV      4   7
+0020  . MOV      3   6
+0021  . MOV      2   5
+0022  . TGETS    5   0   2  ; "map"
+0023  . UGET     7   2      ; mf_map2
+0024  . MOV      8   2
+0025  . MOV      9   3
+0026  . MOV     10   4
+0027  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0028  . MOV      4   7
+0029  . MOV      3   6
+0030  . MOV      2   5
+0031  . UGET     5   3      ; sum_numeric
+0032  . MOV      7   2
+0033  . MOV      8   3
+0034  . MOV      9   4
+0035  . CALLT    5   4
+0000  . FUNCF    8          ; triplet_bench_lib.lua:33
+0001  . KSHORT   3   0
+0002  . ILOOP    4 => 0013
+---- TRACE 9 abort triplet_bench_lib.lua:35 -- blacklisted
+
+---- TRACE 9 start 3/1 triplet.lua:46
+---- TRACE 9 IR
+0001    [31mtab[m SLOAD  #6    PI
+0002    [34mnum[m SLOAD  #7    PI
+....        SNAP   #0   [ [1mtriplet.lua:168[m ---- ---- ---- [1mtriplet.lua:131[m [34mftsz[m|[31m0001[m [34m0002[m [1mtriplet.lua:43[m [34mftsz[m|---- ---- ]
+....        SNAP   #1   [ [1mtriplet.lua:168[m ---- ---- ---- [1mtriplet.lua:131[m [34mftsz[m|[31m0001[m [34m0002[m [1mtriplet.lua:43[m [34mftsz[m|---- ---- ]
+---- TRACE 9 stop -> interpreter
+
+---- TRACE 10 start triplet_trace.lua:31
+0097  MOV     18  12
+0098  CALL    18   2   1
+0000  . FUNCF    5          ; triplet_trace.lua:19
+0001  . UGET     0   0      ; lib
+0002  . TGETS    0   0   0  ; "run_once"
+0003  . UGET     2   1      ; T
+0004  . UGET     3   2      ; scenario_name
+0005  . UGET     4   3      ; payload
+0006  . CALLT    0   4
+0000  . FUNCF    7          ; triplet_bench_lib.lua:426
+0001  . UGET     3   0      ; M
+0002  . TGETS    3   3   0  ; "get_scenario"
+0003  . MOV      5   1
+0004  . CALL     3   2   2
+0000  . . FUNCF    8          ; triplet_bench_lib.lua:413
+0001  . . UGET     1   0      ; scenarios
+0002  . . TGETV    1   1   0
+0003  . . IST          1
+0004  . . JMP      2 => 0013
+0013  . . RET1     1   2
+0005  . TGETS    3   3   1  ; "run_once"
+0006  . MOV      5   0
+0007  . MOV      6   2
+0008  . CALLT    3   3
+0000  . FUNCF   11          ; triplet_bench_lib.lua:238
+0001  . TGETS    2   0   0  ; "seq"
+0002  . TGETS    4   1   1  ; "values"
+0003  . CALL     2   4   2
+0000  . . FUNCF    4          ; triplet.lua:51
+0001  . . UGET     1   0      ; seq_gen
+0002  . . MOV      2   0
+0003  . . KSHORT   3   0
+0004  . . RET      1   4
+0004  . TGETS    5   0   2  ; "map"
+0005  . UGET     7   0      ; mf_map1
+0006  . MOV      8   2
+0007  . MOV      9   3
+0008  . MOV     10   4
+0009  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0010  . MOV      4   7
+0011  . MOV      3   6
+0012  . MOV      2   5
+0013  . TGETS    5   0   3  ; "filter"
+0014  . UGET     7   1      ; mf_pred
+0015  . MOV      8   2
+0016  . MOV      9   3
+0017  . MOV     10   4
+0018  . CALL     5   4   5
+0000  . . FUNCF    7          ; triplet.lua:181
+0001  . . UGET     4   0      ; filter_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0019  . MOV      4   7
+0020  . MOV      3   6
+0021  . MOV      2   5
+0022  . TGETS    5   0   2  ; "map"
+0023  . UGET     7   2      ; mf_map2
+0024  . MOV      8   2
+0025  . MOV      9   3
+0026  . MOV     10   4
+0027  . CALL     5   4   5
+0000  . . JFUNCF   7   8         ; triplet.lua:140
+0001  . . UGET     4   0      ; map_gen
+0002  . . TNEW     5   5
+0003  . . TSETB    0   5   1
+0004  . . TSETB    1   5   2
+0005  . . TSETB    2   5   3
+0006  . . TSETB    3   5   4
+0007  . . KSHORT   6   0
+0008  . . RET      4   4
+0028  . MOV      4   7
+0029  . MOV      3   6
+0030  . MOV      2   5
+0031  . UGET     5   3      ; sum_numeric
+0032  . MOV      7   2
+0033  . MOV      8   3
+0034  . MOV      9   4
+0035  . CALLT    5   4
+0000  . FUNCF    8          ; triplet_bench_lib.lua:33
+0001  . KSHORT   3   0
+0002  . ILOOP    4 => 0013
+---- TRACE 10 abort triplet_bench_lib.lua:35 -- blacklisted
+
+---- TRACE 10 start triplet_trace.lua:19
+0001  UGET     0   0      ; lib
+0002  TGETS    0   0   0  ; "run_once"
+0003  UGET     2   1      ; T
+0004  UGET     3   2      ; scenario_name
+0005  UGET     4   3      ; payload
+0006  CALLT    0   4
+0000  FUNCF    7          ; triplet_bench_lib.lua:426
+0001  UGET     3   0      ; M
+0002  TGETS    3   3   0  ; "get_scenario"
+0003  MOV      5   1
+0004  CALL     3   2   2
+0000  . FUNCF    8          ; triplet_bench_lib.lua:413
+0001  . UGET     1   0      ; scenarios
+0002  . TGETV    1   1   0
+0003  . IST          1
+0004  . JMP      2 => 0013
+0013  . RET1     1   2
+0005  TGETS    3   3   1  ; "run_once"
+0006  MOV      5   0
+0007  MOV      6   2
+0008  CALLT    3   3
+0000  FUNCF   11          ; triplet_bench_lib.lua:238
+0001  TGETS    2   0   0  ; "seq"
+0002  TGETS    4   1   1  ; "values"
+0003  CALL     2   4   2
+0000  . FUNCF    4          ; triplet.lua:51
+0001  . UGET     1   0      ; seq_gen
+0002  . MOV      2   0
+0003  . KSHORT   3   0
+0004  . RET      1   4
+0004  TGETS    5   0   2  ; "map"
+0005  UGET     7   0      ; mf_map1
+0006  MOV      8   2
+0007  MOV      9   3
+0008  MOV     10   4
+0009  CALL     5   4   5
+0000  . JFUNCF   7   8         ; triplet.lua:140
+0001  . UGET     4   0      ; map_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0010  MOV      4   7
+0011  MOV      3   6
+0012  MOV      2   5
+0013  TGETS    5   0   3  ; "filter"
+0014  UGET     7   1      ; mf_pred
+0015  MOV      8   2
+0016  MOV      9   3
+0017  MOV     10   4
+0018  CALL     5   4   5
+0000  . FUNCF    7          ; triplet.lua:181
+0001  . UGET     4   0      ; filter_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0019  MOV      4   7
+0020  MOV      3   6
+0021  MOV      2   5
+0022  TGETS    5   0   2  ; "map"
+0023  UGET     7   2      ; mf_map2
+0024  MOV      8   2
+0025  MOV      9   3
+0026  MOV     10   4
+0027  CALL     5   4   5
+0000  . JFUNCF   7   8         ; triplet.lua:140
+0001  . UGET     4   0      ; map_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0028  MOV      4   7
+0029  MOV      3   6
+0030  MOV      2   5
+0031  UGET     5   3      ; sum_numeric
+0032  MOV      7   2
+0033  MOV      8   3
+0034  MOV      9   4
+0035  CALLT    5   4
+0000  FUNCF    8          ; triplet_bench_lib.lua:33
+0001  KSHORT   3   0
+0002  ILOOP    4 => 0013
+---- TRACE 10 abort triplet_bench_lib.lua:35 -- blacklisted
+
+---- TRACE 10 start triplet_bench_lib.lua:426
+0001  UGET     3   0      ; M
+0002  TGETS    3   3   0  ; "get_scenario"
+0003  MOV      5   1
+0004  CALL     3   2   2
+0000  . FUNCF    8          ; triplet_bench_lib.lua:413
+0001  . UGET     1   0      ; scenarios
+0002  . TGETV    1   1   0
+0003  . IST          1
+0004  . JMP      2 => 0013
+0013  . RET1     1   2
+0005  TGETS    3   3   1  ; "run_once"
+0006  MOV      5   0
+0007  MOV      6   2
+0008  CALLT    3   3
+0000  FUNCF   11          ; triplet_bench_lib.lua:238
+0001  TGETS    2   0   0  ; "seq"
+0002  TGETS    4   1   1  ; "values"
+0003  CALL     2   4   2
+0000  . FUNCF    4          ; triplet.lua:51
+0001  . UGET     1   0      ; seq_gen
+0002  . MOV      2   0
+0003  . KSHORT   3   0
+0004  . RET      1   4
+0004  TGETS    5   0   2  ; "map"
+0005  UGET     7   0      ; mf_map1
+0006  MOV      8   2
+0007  MOV      9   3
+0008  MOV     10   4
+0009  CALL     5   4   5
+0000  . JFUNCF   7   8         ; triplet.lua:140
+0001  . UGET     4   0      ; map_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0010  MOV      4   7
+0011  MOV      3   6
+0012  MOV      2   5
+0013  TGETS    5   0   3  ; "filter"
+0014  UGET     7   1      ; mf_pred
+0015  MOV      8   2
+0016  MOV      9   3
+0017  MOV     10   4
+0018  CALL     5   4   5
+0000  . FUNCF    7          ; triplet.lua:181
+0001  . UGET     4   0      ; filter_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0019  MOV      4   7
+0020  MOV      3   6
+0021  MOV      2   5
+0022  TGETS    5   0   2  ; "map"
+0023  UGET     7   2      ; mf_map2
+0024  MOV      8   2
+0025  MOV      9   3
+0026  MOV     10   4
+0027  CALL     5   4   5
+0000  . JFUNCF   7   8         ; triplet.lua:140
+0001  . UGET     4   0      ; map_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0028  MOV      4   7
+0029  MOV      3   6
+0030  MOV      2   5
+0031  UGET     5   3      ; sum_numeric
+0032  MOV      7   2
+0033  MOV      8   3
+0034  MOV      9   4
+0035  CALLT    5   4
+0000  FUNCF    8          ; triplet_bench_lib.lua:33
+0001  KSHORT   3   0
+0002  ILOOP    4 => 0013
+---- TRACE 10 abort triplet_bench_lib.lua:35 -- blacklisted
+
+---- TRACE 10 start triplet_bench_lib.lua:413
+0001  UGET     1   0      ; scenarios
+0002  TGETV    1   1   0
+0003  IST          1
+0004  JMP      2 => 0013
+0013  RET1     1   2
+---- TRACE 10 IR
+....        SNAP   #0   [ ---- ---- ---- ]
+0001    [1mfun[m SLOAD  #0    R
+0002 >  p64 UREFC  0001  #0  
+0003 >  [31mtab[m ULOAD  0002
+0004 >  [32mstr[m SLOAD  #2    T
+0005    p64 HREF   0003  0004
+0006 >  [31mtab[m HLOAD  0005
+....        SNAP   #1   [ ---- ---- ---- [31m0006[m ]
+---- TRACE 10 stop -> return
+
+---- TRACE 11 start triplet.lua:51
+0001  UGET     1   0      ; seq_gen
+0002  MOV      2   0
+0003  KSHORT   3   0
+0004  RET      1   4
+---- TRACE 11 IR
+....        SNAP   #0   [ ---- ---- ---- ]
+0001    [1mfun[m SLOAD  #0    R
+0002 >  [1mfun[m EQ     0001  [1mtriplet.lua:51[m
+0003 >  [31mtab[m SLOAD  #2    T
+....        SNAP   #1   [ [1mtriplet.lua:51[m ---- ---- [1mtriplet.lua:43[m [31m0003[m [34m+0  [m ]
+---- TRACE 11 stop -> return
+
+---- TRACE 12 start triplet.lua:181
+0001  UGET     4   0      ; filter_gen
+0002  TNEW     5   5
+0003  TSETB    0   5   1
+0004  TSETB    1   5   2
+0005  TSETB    2   5   3
+0006  TSETB    3   5   4
+0007  KSHORT   6   0
+0008  RET      4   4
+---- TRACE 12 IR
+....        SNAP   #0   [ ---- ---- ---- ---- ---- ---- ]
+0001    [1mfun[m SLOAD  #0    R
+0002 >  [1mfun[m EQ     0001  [1mtriplet.lua:181[m
+0003 >  [31mtab[m TNEW   #5    #0  
+0004 >  [1mfun[m SLOAD  #2    T
+0005    p64 FLOAD  0003  tab.array
+0006    p64 AREF   0005  [35m+1  [m
+0007    [1mfun[m ASTORE 0006  0004
+....        SNAP   #1   [ [1mtriplet.lua:181[m ---- ---- ---- ---- ---- [1mtriplet.lua:168[m [31m0003[m ]
+0008 >  [1mfun[m SLOAD  #3    T
+0009    p64 AREF   0005  [35m+2  [m
+0010    [1mfun[m ASTORE 0009  0008
+....        SNAP   #2   [ [1mtriplet.lua:181[m ---- ---- ---- ---- ---- [1mtriplet.lua:168[m [31m0003[m ]
+0011 >  [31mtab[m SLOAD  #4    T
+0012    p64 AREF   0005  [35m+3  [m
+0013    [31mtab[m ASTORE 0012  0011
+....        SNAP   #3   [ [1mtriplet.lua:181[m ---- ---- ---- ---- ---- [1mtriplet.lua:168[m [31m0003[m ]
+0014 >  [34mnum[m SLOAD  #5    T
+0015    p64 AREF   0005  [35m+4  [m
+0016    [34mnum[m ASTORE 0015  0014
+....        SNAP   #4   [ [1mtriplet.lua:181[m ---- ---- ---- ---- ---- [1mtriplet.lua:168[m [31m0003[m [34m+0  [m ]
+---- TRACE 12 stop -> return
+
+---- TRACE 13 start triplet_bench_lib.lua:33
+0001  KSHORT   3   0
+0002  ILOOP    4 => 0013
+---- TRACE 13 abort triplet_bench_lib.lua:35 -- blacklisted
+
+---- TRACE 13 start triplet_bench_lib.lua:238
+0001  TGETS    2   0   0  ; "seq"
+0002  TGETS    4   1   1  ; "values"
+0003  CALL     2   4   2
+0000  . JFUNCF   4  11         ; triplet.lua:51
+0001  . UGET     1   0      ; seq_gen
+0002  . MOV      2   0
+0003  . KSHORT   3   0
+0004  . RET      1   4
+0004  TGETS    5   0   2  ; "map"
+0005  UGET     7   0      ; mf_map1
+0006  MOV      8   2
+0007  MOV      9   3
+0008  MOV     10   4
+0009  CALL     5   4   5
+0000  . JFUNCF   7   8         ; triplet.lua:140
+0001  . UGET     4   0      ; map_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0010  MOV      4   7
+0011  MOV      3   6
+0012  MOV      2   5
+0013  TGETS    5   0   3  ; "filter"
+0014  UGET     7   1      ; mf_pred
+0015  MOV      8   2
+0016  MOV      9   3
+0017  MOV     10   4
+0018  CALL     5   4   5
+0000  . JFUNCF   7  12         ; triplet.lua:181
+0001  . UGET     4   0      ; filter_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0019  MOV      4   7
+0020  MOV      3   6
+0021  MOV      2   5
+0022  TGETS    5   0   2  ; "map"
+0023  UGET     7   2      ; mf_map2
+0024  MOV      8   2
+0025  MOV      9   3
+0026  MOV     10   4
+0027  CALL     5   4   5
+0000  . JFUNCF   7   8         ; triplet.lua:140
+0001  . UGET     4   0      ; map_gen
+0002  . TNEW     5   5
+0003  . TSETB    0   5   1
+0004  . TSETB    1   5   2
+0005  . TSETB    2   5   3
+0006  . TSETB    3   5   4
+0007  . KSHORT   6   0
+0008  . RET      4   4
+0028  MOV      4   7
+0029  MOV      3   6
+0030  MOV      2   5
+0031  UGET     5   3      ; sum_numeric
+0032  MOV      7   2
+0033  MOV      8   3
+0034  MOV      9   4
+0035  CALLT    5   4
+0000  FUNCF    8          ; triplet_bench_lib.lua:33
+0001  KSHORT   3   0
+0002  ILOOP    4 => 0013
+---- TRACE 13 abort triplet_bench_lib.lua:35 -- blacklisted
+

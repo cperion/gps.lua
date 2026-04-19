@@ -43,7 +43,11 @@ end
 
 local function placement_source(auth_node)
     local cls = pvm.classof(auth_node)
-    if cls == Auth.WithInput or cls == Auth.WithState then
+    if cls == Auth.WithInput
+        or cls == Auth.WithState
+        or cls == Auth.WithDragSource
+        or cls == Auth.WithDropTarget
+        or cls == Auth.WithDropSlot then
         return placement_source(auth_node.child)
     end
     return auth_node
@@ -181,9 +185,54 @@ lower_phase = pvm.phase("ui.lower", {
         return pvm.concat_all(trips)
     end,
 
+    [Auth.WithDragSource] = function(self, theme, env, state)
+        local lowered = pvm.drain(lower_phase(self.child, theme, env, state))
+        if #lowered == 0 then
+            return pvm.empty()
+        end
+        if #lowered == 1 then
+            return pvm.once(Layout.WithDragSource(self.id, lowered[1]))
+        end
+        local trips = {}
+        for i = 1, #lowered do
+            trips[i] = { pvm.once(Layout.WithDragSource(self.id, lowered[i])) }
+        end
+        return pvm.concat_all(trips)
+    end,
+
+    [Auth.WithDropTarget] = function(self, theme, env, state)
+        local lowered = pvm.drain(lower_phase(self.child, theme, env, state))
+        if #lowered == 0 then
+            return pvm.empty()
+        end
+        if #lowered == 1 then
+            return pvm.once(Layout.WithDropTarget(self.id, lowered[1]))
+        end
+        local trips = {}
+        for i = 1, #lowered do
+            trips[i] = { pvm.once(Layout.WithDropTarget(self.id, lowered[i])) }
+        end
+        return pvm.concat_all(trips)
+    end,
+
+    [Auth.WithDropSlot] = function(self, theme, env, state)
+        local lowered = pvm.drain(lower_phase(self.child, theme, env, state))
+        if #lowered == 0 then
+            return pvm.empty()
+        end
+        if #lowered == 1 then
+            return pvm.once(Layout.WithDropSlot(self.id, lowered[1]))
+        end
+        local trips = {}
+        for i = 1, #lowered do
+            trips[i] = { pvm.once(Layout.WithDropSlot(self.id, lowered[i])) }
+        end
+        return pvm.concat_all(trips)
+    end,
+
     [Auth.Text] = function(self, theme, env, state)
         local r = resolve_style(self.styles, theme, env, state)
-        local text = Layout.TextStyle(
+        local text = Layout.TextLiteral(Layout.TextStyle(
             r.text.font_id,
             r.text.font_size,
             r.text.font_weight,
@@ -192,7 +241,18 @@ lower_phase = pvm.phase("ui.lower", {
             r.text.leading,
             r.text.tracking,
             self.content
-        )
+        ))
+        if has_scroll_overflow(r.box) then
+            local axis = scroll_axis_from_box(r.box)
+            local inner = Layout.Leaf(Core.NoId, content_box_for_scroll(axis), text)
+            return pvm.once(maybe_wrap_scroll(self.id, r.box, axis, inner))
+        end
+        return pvm.once(Layout.Leaf(self.id, r.box, text))
+    end,
+
+    [Auth.TextRef] = function(self, theme, env, state)
+        local r = resolve_style(self.styles, theme, env, state)
+        local text = Layout.TextBinding(self.content_id, r.text)
         if has_scroll_overflow(r.box) then
             local axis = scroll_axis_from_box(r.box)
             local inner = Layout.Leaf(Core.NoId, content_box_for_scroll(axis), text)

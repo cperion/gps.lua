@@ -7,6 +7,29 @@ recording-triplet phase boundaries. You define domain types, connect them
 with lazy memoized boundaries, and drain the result into a flat command
 array that a for-loop executes.
 
+The repo now also contains adjacent projects:
+
+- **`watjit/`** — a typed Lua→WAT/Wasmtime low-level language toolkit with
+  scalar integer types, structs/arrays/unions/tagged unions, packed/aligned
+  layouts, imports, SIMD, memory helpers, a fixed-capacity hashtable, and
+  stream compilation
+- **`iwatjit/`** — a bounded-memory phase-caching/runtime layer on top of
+  `watjit`, plus a newer spec-first machine-definition surface
+- **`asdljit/`** — an early native-ASDL subproject scaffold exploring schema
+  parsing + quote/inlining/codegen-driven kernel generation on top of `watjit`
+
+For current `watjit` / `iwatjit` direction, see:
+
+- `iwatjit/README.md`
+- `new/IWATJIT_MACHINE_SPEC.md`
+- `new/IWATJIT_RUNTIME_LAYOUT.md`
+- `new/IWATJIT_PVM_PARITY_CHECKLIST.md`
+- `new/ASDLJIT.md`
+- `asdljit/README.md`
+
+- `watjit/README.md`
+- `new/WATJIT_LANGUAGE.md` for the broader target design
+
 ---
 
 ## The core idea
@@ -263,7 +286,11 @@ asdl_context.lua     — ASDL type system: GC-backed objects, interning, sum typ
 asdl_lexer.lua       — ASDL schema lexer
 asdl_parser.lua      — ASDL schema parser (recursive descent, lexer-fused)
 
-archive/             — historical files (gps/mgps era, experimental parsers, ...)
+watjit/              — typed Lua→WAT/Wasmtime toolkit: kernels, structs,
+                        arrays, arena/slab/LRU helpers, SIMD, stream compilation
+
+archive/             — historical files (gps/mgps era, experimental parsers,
+                        retired iwatjit experiment, ...)
 
 docs/
   COMPILER_PATTERN.md    — the paradigm: interactive software as compilers,

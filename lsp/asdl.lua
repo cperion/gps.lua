@@ -1,73 +1,25 @@
 -- lsp/asdl.lua
 --
--- ASDL schema for the Lua LSP.
+-- Clean-slate ASDL for the Lua LSP.
 --
--- This file is the architectural source of truth.
--- The comments here describe both the value layers and the intended pvm.phase
--- boundaries installed as methods on the handled ASDL type families.
+-- Architectural center:
+--   text -> ParsedDoc -> contribution facts -> file assemblies -> queries -> LSP
 --
--- Core rules:
---   1. All internal boundaries are pvm.phase boundaries.
---   2. There is no pvm.lower world here anymore.
---   3. Facts stream lazily; aggregates exist only when they are the intended
---      compiled layer or an unavoidable protocol boundary.
---   4. If a value matters to the system, it must be ASDL, not a plain Lua table.
---   5. One-yield phases are still phases. Cardinality does not create a second
---      execution model.
+-- Semantic center:
+--   Item:type_decls()       -> TypeDecl*
+--   Item:doc_hints()        -> DocHint*
+--   Item:item_semantics()   -> ItemSemantics
+--   FuncBody:func_semantics() -> FuncSemantics
+--   Item:item_analysis()    -> ItemAnalysis
+--   ParsedDoc:file_analysis() -> FileAnalysis
 --
--- Reading convention used in comments:
---   X -> Y*   means a streaming phase yielding zero or more Y values
---   X -> Y    means a one-yield phase returning one Y via pvm.once(...)
+-- Parsed syntax distinction:
+--   Item        = semantic syntax core (docs + stmt, no location)
+--   LocatedItem = top-level parsed item with span
 --
--- Architectural rule for this file:
---   The persistent semantic unit is the authored Item.
---   File-level aggregates exist only as assemblies over per-item products.
---   If a file-level layer cannot be explained as assembly from item products,
---   it is architecturally suspect.
---
--- Important cached phase methods and assembly helpers (target architecture):
---
---   OpenDoc:lex()                     -> Token*
---   OpenDoc:lex_with_positions()      -> LexTok*
---   OpenDoc:parse()                   -> ParsedDoc
---
---   SemanticDoc:collect_doc_types()     -> DocEvent*
---   Item:collect_doc_types()          -> DocEvent*
---   Item:item_scope_events()          -> ScopeEvent*
---   SemanticDoc:file_scope_events()     -> ScopeEvent*
---   Item:item_type_env()              -> ItemTypeEnv
---   Item:item_symbol_index()          -> ItemSymbolIndex
---   Item:item_scope_summary()         -> ItemScopeSummary
---   Item:item_semantics()             -> ItemSemantics
---   Item:item_unknown_type_diagnostics(KnownTypeSet) -> Diagnostic*
---   SemanticDoc:scope_diagnostics()     -> Diagnostic*   -- assembly helper
---   SemanticDoc:diagnostics()           -> Diagnostic*   -- assembly helper
---
---   SemanticDoc:resolve_named_types()   -> TypeEnv       -- assembly helper
---   SemanticDoc:symbol_index()          -> SymbolIndex   -- assembly helper
---   SymbolIdQuery:definitions_of()    -> Occurrence*
---   SymbolIdQuery:references_of()     -> Occurrence*
---   SubjectQuery:symbol_for_anchor()  -> AnchorBinding
---   TypeNameQuery:type_target()       -> TypeTarget
---   SubjectQuery:goto_definition()    -> DefinitionResult
---   RefQuery:find_references()        -> Occurrence*
---   SubjectQuery:hover()              -> HoverInfo
---
---   SemanticDoc:typed_index()           -> TypedIndex
---   CompletionQuery:complete()        -> CompletionItem*
---   SemanticDoc:doc_symbol_facts()      -> DocSymbolFact*
---   SemanticDoc:doc_symbol_tree()       -> DocSymbolTree
---   SemanticDoc:signature_catalog()     -> SignatureEntry*
---   SignatureLookupQuery:signature_lookup() -> SignatureHelp
---   RenameQuery:rename()              -> RenameResult
---   RenamePrepareQuery:prepare_rename() -> RenamePrepareResult
---   FormatQuery:format_file()         -> FormatResult
---   CodeActionQuery:plan_code_actions() -> LspCodeAction*
---   LspSemanticTokenQuery:plan_semantic_tokens() -> LspSemanticTokenSpan*
---
--- Legacy list/product wrappers remain where current code still uses them or
--- where the external protocol wants a whole aggregate. They should not be used
--- as excuses to materialize internal intermediate layers eagerly.
+-- Whole-file products like TypeEnv, SymbolIndex, TypedIndex, diagnostics,
+-- signature catalogs, and protocol outputs are assemblies over those cached
+-- contribution boundaries. They are not the semantic center.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -95,31 +47,31 @@ end
 
 add [[
 module Lua {
-]]
-
--- Source / parsed document layer.
--- Parsing yields one coherent compiled document product.
-add [[
     OpenDoc = (string uri, number version, string text) unique
-    Token = (string kind, string value) unique
-    AnchorRef = (string id) unique
+    Workspace = (Lua.OpenDoc* docs) unique
 
-    -- OpenDoc -> LexTok*
+    Token = (string kind, string value) unique
     LexTok = (Lua.Token token, number line, number col, number start_offset, number end_offset) unique
 
-    Span = (Lua.LspRange range, number start_offset, number stop_offset) unique
+    AnchorRef = (string id) unique
+    LspPos   = (number line, number character) unique
+    LspRange = (Lua.LspPos start, Lua.LspPos stop) unique
+    Span     = (Lua.LspRange range, number start_offset, number stop_offset) unique
     AnchorPoint = (Lua.AnchorRef anchor, string label, Lua.Span span) unique
-    ParsedItem = (Lua.Item syntax, Lua.Span span) unique
 
     ParseStatus = ParseOk
                 | ParseError(string message) unique
 
-    -- OpenDoc -> ParsedDoc
-    -- Parsing no longer splits syntax from coordinate metadata.
-    ParsedDoc = (string uri, number version, string text, Lua.ParsedItem* items, Lua.AnchorPoint* anchors, Lua.ParseStatus status) unique
+    ParsedDoc = (
+        string uri,
+        number version,
+        string text,
+        Lua.LocatedItem* items,
+        Lua.AnchorPoint* anchors,
+        Lua.ParseStatus status
+    ) unique
 ]]
 
--- Core syntax layer.
 add [[
     ScopeKind = ScopeFile
               | ScopeFunction
@@ -133,6 +85,9 @@ add [[
 
     DeclKind = DeclLocal
              | DeclParam
+
+    AccessKind = AccessRead
+               | AccessWrite
 
     SymbolKind = SymLocal
                | SymParam
@@ -154,13 +109,8 @@ add [[
                    | DiagUnusedLocal
                    | DiagUnusedParam
 
-    NameOcc = OccDecl(Lua.DeclKind decl_kind, string name) unique
-            | OccRef(string name) unique
-            | OccWrite(string name) unique
-            | OccScopeEnter(Lua.ScopeKind scope) unique
-            | OccScopeExit(Lua.ScopeKind scope) unique
-
     Item  = (Lua.DocBlock* docs, Lua.Stmt stmt) unique
+    LocatedItem = (Lua.Item core, Lua.Span span) unique
     Block = (Lua.Item* items) unique
 
     CondBlock = (Lua.Expr cond, Lua.Block body) unique
@@ -212,7 +162,6 @@ add [[
     Param    = PName(string name) unique
 ]]
 
--- Documentation/type language layer.
 add [[
     DocBlock = (Lua.DocTag* tags) unique
 
@@ -250,97 +199,105 @@ add [[
 
     TypeField = (string name, Lua.TypeExpr typ, boolean optional) unique
     FuncType  = (Lua.TypeExpr* params, Lua.TypeExpr* returns, boolean vararg) unique
-
-    -- ParsedDoc -> DocEvent*
-    -- Streaming facts extracted from doc blocks.
-    DocEvent = DClass(string name, Lua.TypeExpr* extends, Lua.AnchorRef anchor) unique
-             | DField(string name, Lua.TypeExpr typ, boolean optional, Lua.AnchorRef anchor) unique
-             | DAlias(string name, Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
-             | DGeneric(string name, Lua.TypeExpr* bounds, Lua.AnchorRef anchor) unique
-             | DType(Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
-             | DParam(string name, Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
-             | DReturn(Lua.TypeExpr* values, Lua.AnchorRef anchor) unique
-             | DOverload(Lua.FuncType sig, Lua.AnchorRef anchor) unique
-             | DCast(Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
-             | DMeta(string name, string text, Lua.AnchorRef anchor) unique
 ]]
 
--- Semantic fact layers.
 add [[
-    -- Item -> ScopeEvent*
-    -- ParsedDoc -> ScopeEvent* (assembled from Item -> ScopeEvent*)
-    ScopeEvent = ScopeEnter(Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
-               | ScopeExit(Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
-               | ScopeDeclLocal(Lua.DeclKind decl_kind, string name, Lua.AnchorRef anchor) unique
-               | ScopeDeclGlobal(string name, Lua.AnchorRef anchor) unique
-               | ScopeRef(string name, Lua.AnchorRef anchor) unique
-               | ScopeWrite(string name, Lua.AnchorRef anchor) unique
-
-    ScopeLocalState = (string name, Lua.DeclKind decl_kind, number used, Lua.AnchorRef anchor) unique
-    ScopeDiagFrame  = (Lua.ScopeKind scope, Lua.ScopeLocalState* locals) unique
-
-    ScopeSymbolBinding = (string name, Lua.Symbol symbol) unique
-    ScopeSymbolFrame   = (Lua.ScopeKind scope, string id, Lua.ScopeSymbolBinding* locals) unique
-
     TypeClassField = (string name, Lua.TypeExpr typ, boolean optional, Lua.AnchorRef anchor) unique
-    TypeClass  = (string name, Lua.TypeExpr* extends, Lua.TypeClassField* fields, Lua.AnchorRef anchor) unique
-    TypeAlias  = (string name, Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
+
+    TypeDecl = TypeClassDecl(string name, Lua.TypeExpr* extends, Lua.TypeClassField* fields, Lua.AnchorRef anchor) unique
+             | TypeAliasDecl(string name, Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
+             | TypeGenericDecl(string name, Lua.TypeExpr* bounds, Lua.AnchorRef anchor) unique
+
+    DocHint = HintParam(string name, Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
+            | HintReturn(Lua.TypeExpr* values, Lua.AnchorRef anchor) unique
+            | HintType(Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
+            | HintOverload(Lua.FuncType sig, Lua.AnchorRef anchor) unique
+            | HintCast(Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
+            | HintMeta(string name, string text, Lua.AnchorRef anchor) unique
+
+    NameOp = OpDeclLocal(Lua.DeclKind decl_kind, string name, Lua.AnchorRef anchor) unique
+           | OpDeclGlobal(string name, Lua.AnchorRef anchor) unique
+           | OpAccess(Lua.AccessKind access_kind, string name, Lua.AnchorRef anchor) unique
+           | OpChildScope(Lua.ScopeSemantics scope) unique
+
+    ScopeSemantics = (Lua.ScopeKind kind, Lua.AnchorRef anchor, Lua.NameOp* ops) unique
+    ItemSemantics  = (Lua.NameOp* ops) unique
+    FuncSemantics  = (Lua.ScopeSemantics scope) unique
+
+    BindingUse = (Lua.AccessKind kind, Lua.AnchorRef anchor) unique
+    LocalBinding = (Lua.DeclKind decl_kind, string name, Lua.AnchorRef decl_anchor, Lua.BindingUse* uses) unique
+    GlobalDecl = (string name, Lua.AnchorRef anchor) unique
+    GlobalUse  = (Lua.AccessKind kind, string name, Lua.AnchorRef anchor) unique
+    FreeUse    = (Lua.AccessKind kind, string name, Lua.AnchorRef anchor, Lua.ScopeKind scope) unique
+
+    LocalIssue = IssueRedeclareLocal(string name, Lua.AnchorRef anchor) unique
+               | IssueShadowingLocal(string name, Lua.AnchorRef anchor) unique
+               | IssueShadowingGlobal(string name, Lua.AnchorRef anchor) unique
+               | IssueUnused(Lua.DeclKind decl_kind, string name, Lua.AnchorRef anchor) unique
+
+    ScopeAnalysis = (
+        Lua.ScopeKind kind,
+        Lua.AnchorRef anchor,
+        Lua.LocalBinding* bindings,
+        Lua.GlobalDecl* globals,
+        Lua.GlobalUse* global_uses,
+        Lua.FreeUse* free_uses,
+        Lua.LocalIssue* issues,
+        Lua.ScopeAnalysis* children
+    ) unique
+
+    ItemAnalysis = (
+        Lua.LocalBinding* bindings,
+        Lua.GlobalDecl* globals,
+        Lua.GlobalUse* global_uses,
+        Lua.FreeUse* free_uses,
+        Lua.LocalIssue* issues,
+        Lua.ScopeAnalysis* children
+    ) unique
+
+    FileAnalysis = (
+        Lua.ItemAnalysis* items,
+        Lua.LocalBinding* bindings,
+        Lua.GlobalDecl* globals,
+        Lua.GlobalUse* global_uses,
+        Lua.FreeUse* unresolved_uses,
+        Lua.LocalIssue* issues
+    ) unique
+]]
+
+add [[
+    TypeClass   = (string name, Lua.TypeExpr* extends, Lua.TypeClassField* fields, Lua.AnchorRef anchor) unique
+    TypeAlias   = (string name, Lua.TypeExpr typ, Lua.AnchorRef anchor) unique
     TypeGeneric = (string name, Lua.TypeExpr* bounds, Lua.AnchorRef anchor) unique
-
-    -- Item -> ItemTypeEnv
-    -- One-yield compiled type contribution for a single authored item.
-    -- This is the primary persistent type unit; file-level TypeEnv is assembled
-    -- from these item products.
-    ItemTypeEnv = (Lua.TypeClass* classes, Lua.TypeAlias* aliases, Lua.TypeGeneric* generics) unique
-
-    -- ParsedDoc -> TypeEnv
-    -- One-yield compiled type environment assembled from ItemTypeEnv products.
-    TypeEnv    = (Lua.TypeClass* classes, Lua.TypeAlias* aliases, Lua.TypeGeneric* generics) unique
+    TypeEnv     = (Lua.TypeClass* classes, Lua.TypeAlias* aliases, Lua.TypeGeneric* generics) unique
     KnownTypeSet = (string* names) unique
 
     Symbol     = (string id, Lua.SymbolKind kind, string name, Lua.ScopeKind scope, string scope_id, Lua.AnchorRef decl_anchor) unique
-
-    -- SymbolIdQuery -> Occurrence*
-    -- RefQuery -> Occurrence*
     Occurrence = (string symbol_id, string name, Lua.SymbolKind kind, Lua.AnchorRef anchor) unique
-
     Unresolved = (string name, Lua.AnchorRef anchor) unique
-
-    -- Item -> ItemSymbolIndex
-    -- One-yield compiled symbolic product for a single authored item.
-    ItemSymbolIndex = (Lua.Symbol* symbols, Lua.Occurrence* defs, Lua.Occurrence* uses, Lua.Unresolved* unresolved) unique
-
-    ItemScopeOp = ItemScopeDeclareLocal(Lua.DeclKind decl_kind, string name, Lua.AnchorRef anchor, number used_in_item) unique
-                | ItemScopeShadowCandidate(string name, Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
-                | ItemScopeOuterRead(string name, Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
-                | ItemScopeOuterWrite(string name, Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
-
-    -- Item -> ItemScopeSummary
-    -- One-yield compiled scope/diagnostic interface for a single item.
-    -- It contains only effects that cross the item boundary plus diagnostics
-    -- decidable entirely within the item.
-    ItemScopeSummary = (Lua.ItemScopeOp* ops, Lua.Diagnostic* diagnostics) unique
-
-    -- Item -> ItemSemantics
-    -- The per-item compiled semantic unit. File-level semantic answers are
-    -- assembled from this product family.
-    ItemSemantics = (Lua.ItemTypeEnv type_env, Lua.ItemSymbolIndex symbol_index, Lua.ItemScopeSummary scope_summary) unique
-
-    -- ParsedDoc -> SemanticDoc
-    -- One coherent compiled semantic product for a document snapshot.
-    SemanticItem = (Lua.Item syntax, Lua.Span span, Lua.ItemSemantics semantics) unique
-
-    -- ParsedDoc -> SymbolIndex
-    -- One-yield compiled aggregate assembled from ItemSymbolIndex products.
-    -- This is a query-facing assembly layer, not the semantic center.
     SymbolIndex = (Lua.Symbol* symbols, Lua.Occurrence* defs, Lua.Occurrence* uses, Lua.Unresolved* unresolved) unique
 
-    -- SubjectQuery -> AnchorBinding
+    Diagnostic = (Lua.DiagnosticCode code, string message, string name, Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
+    LocalDiagnosticSet = (Lua.Diagnostic* items) unique
+    TypeDiagnosticSet  = (Lua.Diagnostic* items) unique
+]]
+
+add [[
+    QuerySubject = QueryAnchor(Lua.AnchorRef anchor) unique
+                 | QueryTypeName(string name) unique
+                 | QueryMissing
+
+    SymbolIdQuery = (Lua.ParsedDoc doc, string symbol_id) unique
+    SubjectQuery  = (Lua.ParsedDoc doc, Lua.QuerySubject subject) unique
+    RefQuery      = (Lua.ParsedDoc doc, Lua.QuerySubject subject, boolean include_declaration) unique
+    TypeNameQuery = (Lua.ParsedDoc doc, string name) unique
+    ExprTypeQuery = (Lua.ParsedDoc doc, Lua.AnchorRef anchor) unique
+
     AnchorBinding = AnchorSymbol(Lua.Symbol symbol, Lua.AnchorRole role) unique
                   | AnchorUnresolved(string name) unique
+                  | AnchorTypeName(string name) unique
                   | AnchorMissing
 
-    -- TypeNameQuery -> TypeTarget
     TypeTarget = TypeClassTarget(string name, Lua.AnchorRef anchor, Lua.TypeClass value) unique
                | TypeAliasTarget(string name, Lua.AnchorRef anchor, Lua.TypeAlias value) unique
                | TypeGenericTarget(string name, Lua.AnchorRef anchor, Lua.TypeGeneric value) unique
@@ -352,98 +309,74 @@ add [[
                    | DefMetaUnresolved(string name) unique
                    | DefMetaMissing
 
-    -- SubjectQuery -> DefinitionResult
     DefinitionResult = DefHit(Lua.AnchorRef anchor, Lua.DefinitionMeta meta) unique
                      | DefMiss(Lua.DefinitionMeta meta) unique
 
-    -- SubjectQuery -> HoverInfo
     HoverInfo = HoverSymbol(Lua.AnchorRole role, string name, Lua.SymbolKind symbol_kind, Lua.ScopeKind scope, number defs, number uses, Lua.TypeExpr typ) unique
               | HoverType(string name, string detail, number fields) unique
               | HoverUnresolved(string name, string detail) unique
               | HoverMissing
 
-    QuerySubject = QueryAnchor(Lua.AnchorRef anchor) unique
-                 | QueryTypeName(string name) unique
-                 | QueryMissing
-
-    SymbolIdQuery = (Lua.SemanticDoc doc, string symbol_id) unique
-    SubjectQuery  = (Lua.SemanticDoc doc, Lua.QuerySubject subject) unique
-    RefQuery      = (Lua.SemanticDoc doc, Lua.QuerySubject subject, boolean include_declaration) unique
-    TypeNameQuery = (Lua.SemanticDoc doc, string name) unique
-
-    -- Item + KnownTypeSet -> Diagnostic*
-    -- ParsedDoc -> Diagnostic* (assembled from scope state + per-item type diagnostics)
-    Diagnostic    = (Lua.DiagnosticCode code, string message, string name, Lua.ScopeKind scope, Lua.AnchorRef anchor) unique
-
-    SemanticDoc = (
-        string uri,
-        number version,
-        string text,
-        Lua.SemanticItem* items,
-        Lua.AnchorPoint* anchors,
-        Lua.ParseStatus status,
-        Lua.TypeEnv type_env,
-        Lua.SymbolIndex symbol_index,
-        Lua.Diagnostic* diagnostics
-    ) unique
+    ExprTypeResult = ExprTypeHit(Lua.TypeExpr typ) unique
+                   | ExprTypeMiss
 ]]
 
--- Type inference / editor feature semantic layers.
 add [[
-    -- ParsedDoc -> TypedIndex
     TypedSymbol = (Lua.Symbol symbol, Lua.TypeExpr typ) unique
     TypedIndex  = (Lua.TypedSymbol* symbols) unique
 
-    CompletionQuery = (Lua.SemanticDoc doc, Lua.LspPos position, string prefix) unique
-
-    -- CompletionQuery -> CompletionItem*
+    CompletionQuery = (Lua.ParsedDoc doc, Lua.LspPos position, string prefix) unique
     CompletionItem = (string label, number kind, string detail, string sort_text, string insert_text) unique
 
-    -- ParsedDoc -> DocSymbolFact*
-    -- Streaming flat facts. Tree assembly is a later one-yield phase.
     DocSymbolFact = (string id, string parent_id, string name, string detail, number kind, Lua.AnchorRef anchor) unique
-
-    -- Tree aggregate used at protocol boundary.
     DocSymbol     = (string name, string detail, number kind, Lua.AnchorRef anchor, Lua.DocSymbol* children) unique
     DocSymbolTree = (Lua.DocSymbol* items) unique
 
     ParamLabel    = (string label) unique
     SignatureInfo = (string label, Lua.ParamLabel* params, number active_param) unique
-
-    -- ParsedDoc -> SignatureEntry*
     SignatureEntry = (string name, Lua.SignatureInfo* signatures) unique
     SignatureCatalog = (Lua.SignatureEntry* items) unique
 
     SignatureHelp = (Lua.SignatureInfo* signatures, number active_signature) unique
-    SignatureQuery = (Lua.SemanticDoc doc, Lua.LspPos position) unique
-    SignatureLookupQuery = (Lua.SemanticDoc doc, string callee, number active_param) unique
+    SignatureQuery = (Lua.ParsedDoc doc, Lua.LspPos position) unique
+    SignatureLookupQuery = (Lua.ParsedDoc doc, string callee, number active_param) unique
 
     LspFormattingOptions = (number tab_size, boolean insert_spaces, boolean trim_trailing_ws, boolean insert_final_newline) unique
-    FormatQuery  = (Lua.SemanticDoc doc, Lua.LspFormattingOptions options, Lua.LspRange range, boolean has_range) unique
+    FormatQuery  = (Lua.ParsedDoc doc, Lua.LspFormattingOptions options, Lua.LspRange range, boolean has_range) unique
     FormatResult = (string text, Lua.LspRange range, boolean has_range) unique
 
     RenameEdit   = (Lua.AnchorRef anchor, Lua.LspRange range, string new_text) unique
     RenameResult = RenameOk(Lua.RenameEdit* edits) unique
                  | RenameFail(string reason) unique
-    RenameQuery  = (Lua.SemanticDoc doc, Lua.AnchorRef anchor, string new_name) unique
+    RenameQuery  = (Lua.ParsedDoc doc, Lua.AnchorRef anchor, string new_name) unique
 
     RenamePrepareResult = RenamePrepareHit(Lua.LspRange range) unique
                         | RenamePrepareMiss
-    RenamePrepareQuery = (Lua.SemanticDoc doc, Lua.AnchorRef anchor) unique
+    RenamePrepareQuery = (Lua.ParsedDoc doc, Lua.AnchorRef anchor) unique
 
-    CodeActionQuery = (Lua.SemanticDoc doc, string uri, Lua.LspRange range, Lua.LspDiagnostic* diagnostics) unique
+    CodeActionQuery = (Lua.ParsedDoc doc, string uri, Lua.LspRange range, Lua.LspDiagnostic* diagnostics) unique
+
+    InlayHintQuery = (Lua.ParsedDoc doc, Lua.LspRange range) unique
+    FoldingRangeQuery = (Lua.ParsedDoc doc) unique
+    SelectionRangeQuery = (Lua.ParsedDoc doc, Lua.LspPos* positions) unique
+    CodeLensQuery = (Lua.ParsedDoc doc) unique
+    ColorQuery = (Lua.ParsedDoc doc) unique
 ]]
 
--- LSP transport / protocol shapes.
 add [[
-    LspPos   = (number line, number character) unique
-    LspRange = (Lua.LspPos start, Lua.LspPos stop) unique
-    LspRangeQuery = (Lua.SemanticDoc doc, Lua.AnchorRef anchor) unique
+    ParsedDocStore = (Lua.ParsedDoc* docs) unique
+    ParsedDocQuery = (Lua.ParsedDocStore store, string uri) unique
+    ParsedDocLookup = ParsedDocHit(Lua.ParsedDoc doc) unique
+                    | ParsedDocMiss
 
-    SemanticDocStore = (Lua.SemanticDoc* docs) unique
-    SemanticDocQuery = (Lua.SemanticDocStore store, string uri) unique
-    SemanticDocLookup = SemanticDocHit(Lua.SemanticDoc doc) unique
-                     | SemanticDocMiss
+    WorkspaceModuleQuery = (Lua.ParsedDocStore store, string module_name) unique
+    WorkspaceGlobalQuery = (Lua.ParsedDocStore store, string name, boolean include_declaration) unique
+    WorkspaceTypeQuery = (Lua.ParsedDocStore store, string name) unique
+    WorkspaceModuleFieldQuery = (Lua.ParsedDocStore store, string module_name, string field, boolean include_declaration) unique
+    WorkspaceSymbolQuery = (Lua.ParsedDocStore store, string query) unique
+    WorkspaceDiagnosticQuery = (Lua.ParsedDocStore store) unique
+
+    LspRangeQuery = (Lua.ParsedDoc doc, Lua.AnchorRef anchor) unique
 
     AnchorEntryKind = AnchorKindDef
                     | AnchorKindUse
@@ -453,9 +386,8 @@ add [[
                     | AnchorKindTypeAlias
                     | AnchorKindTypeGeneric
 
-    -- ParsedDoc -> AnchorEntry*
-    AnchorEntry     = (Lua.AnchorRef anchor, Lua.AnchorEntryKind kind, string name, Lua.LspRange range) unique
-    LspPositionQuery = (Lua.SemanticDoc doc, Lua.LspPos position, Lua.AnchorEntryKind prefer_kind, boolean has_prefer) unique
+    AnchorEntry = (Lua.AnchorRef anchor, Lua.AnchorEntryKind kind, string name, Lua.LspRange range) unique
+    LspPositionQuery = (Lua.ParsedDoc doc, Lua.LspPos position, Lua.AnchorEntryKind prefer_kind, boolean has_prefer) unique
     AnchorPick = AnchorPickHit(Lua.AnchorRef anchor, Lua.AnchorEntry entry) unique
                | AnchorPickMiss
 
@@ -558,10 +490,9 @@ add [[
                              | SemTokDefaultLibrary
                              | SemTokGlobal
 
-    -- LspSemanticTokenQuery -> LspSemanticTokenSpan*
     LspSemanticTokenSpan     = (number line, number start, number length, Lua.LspSemanticTokenType token_type, Lua.LspSemanticTokenModifier* token_modifiers) unique
     LspSemanticTokenSpanList = (Lua.LspSemanticTokenSpan* items) unique
-    LspSemanticTokenQuery    = (Lua.SemanticDoc doc) unique
+    LspSemanticTokenQuery    = (Lua.ParsedDoc doc) unique
     LspSemanticTokens = (number* data) unique
 
     LspInlayHintKind = InlayType
@@ -576,7 +507,6 @@ add [[
     LspWorkspaceDiagnostic = (Lua.LspWorkspaceDiagnosticItem* items) unique
 ]]
 
--- Request / RPC layer.
 add [[
     LspDocIdentifier  = (string uri) unique
     LspDocItem        = (string uri, number version, string text) unique
@@ -617,7 +547,7 @@ add [[
                | ReqExecuteCommand(string command, string* arguments) unique
                | ReqInvalid(string reason) unique
 
-    LspAnchorQuery = (Lua.SemanticDoc doc, Lua.AnchorRef anchor, boolean include_declaration) unique
+    LspAnchorQuery = (Lua.ParsedDoc doc, Lua.AnchorRef anchor, boolean include_declaration) unique
 
     RpcId = RpcIdNumber(number value) unique
           | RpcIdString(string value) unique

@@ -113,6 +113,19 @@ function M.new(ctx)
         local parse_expr, parse_block, parse_stmt
         local lvalue_to_expr
 
+        local function span_from_token_positions(start_pos, end_pos)
+            local sp = positions[start_pos] or { line = 1, col = 1, start_offset = 1, end_offset = 1 }
+            local ep = positions[end_pos or start_pos] or sp
+            return C.Span(
+                C.LspRange(
+                    C.LspPos((sp.line or 1) - 1, (sp.col or 1) - 1),
+                    C.LspPos((ep.line or 1) - 1, (ep.col or 1) - 1 + ((ep.end_offset or ep.start_offset or 1) - (ep.start_offset or 1) + 1))
+                ),
+                sp.start_offset or 1,
+                ep.end_offset or ep.start_offset or 1
+            )
+        end
+
         local function parse_name()
             local p0 = pos
             local t = expect("<name>")
@@ -590,8 +603,11 @@ function M.new(ctx)
 
         local function parse_doc(source)
             local block = parse_block()
-            local items = block.items
-            if #items == 0 then items = { C.Item({}, C.Break) } end
+            local core_items = block.items
+            if #core_items == 0 then
+                core_items = { C.Item({}, C.Break) }
+                top_items = { { index = 1, start_pos = 1, end_pos = 1 } }
+            end
 
             local anchor_points = {}
             for i = 1, anchor_n do
@@ -609,25 +625,13 @@ function M.new(ctx)
                 )
             end
 
-            local parsed_items = {}
+            local items = {}
             for i = 1, #top_items do
                 local it = top_items[i]
-                local sp = positions[it.start_pos] or { line = 1, col = 1, start_offset = 1, end_offset = 1 }
-                local ep = positions[it.end_pos] or sp
-                parsed_items[i] = C.ParsedItem(
-                    items[it.index],
-                    C.Span(
-                        C.LspRange(
-                            C.LspPos((sp.line or 1) - 1, (sp.col or 1) - 1),
-                            C.LspPos((ep.line or 1) - 1, (ep.col or 1) - 1 + ((ep.end_offset or ep.start_offset or 1) - (ep.start_offset or 1) + 1))
-                        ),
-                        sp.start_offset or 1,
-                        ep.end_offset or ep.start_offset or 1
-                    )
-                )
+                items[i] = C.LocatedItem(core_items[it.index], span_from_token_positions(it.start_pos, it.end_pos))
             end
 
-            return C.ParsedDoc(source.uri, source.version or 0, source.text or "", parsed_items, anchor_points, C.ParseOk)
+            return C.ParsedDoc(source.uri, source.version or 0, source.text or "", items, anchor_points, C.ParseOk)
         end
 
         return { parse_doc = parse_doc }
@@ -683,9 +687,10 @@ function M.new(ctx)
         return C.Span(range_from_offsets(text, so, eo), so, eo)
     end
 
-    local function to_parsed_item(it, delta, text)
-        if not it then return nil end
-        return C.ParsedItem(it.syntax, shift_span(it.span, delta or 0, text))
+    local function shift_item(item, delta, text)
+        if not item then return nil end
+        if (delta or 0) == 0 then return item end
+        return C.LocatedItem(item.core, shift_span(item.span, delta or 0, text))
     end
 
     local function slice_items(doc, start_idx, end_idx, delta, text)
@@ -693,7 +698,7 @@ function M.new(ctx)
         if not doc or not doc.items then return out end
         for i = start_idx or 1, end_idx or 0 do
             local it = doc.items[i]
-            if it then out[#out + 1] = to_parsed_item(it, delta, text) end
+            if it then out[#out + 1] = shift_item(it, delta, text) end
         end
         return out
     end

@@ -91,6 +91,9 @@ local function run_common(driver, opts, want_report, g, p, c)
     local KHit = View.KHit
     local KFocus = View.KFocus
     local KCursor = View.KCursor
+    local KDragSource = View.KDragSource
+    local KDropTarget = View.KDropTarget
+    local KDropSlot = View.KDropSlot
 
     local tx_x, tx_y = 0, 0
     local tx_stack_x, tx_stack_y = {}, {}
@@ -112,10 +115,12 @@ local function run_common(driver, opts, want_report, g, p, c)
     local cursor = Style.CursorDefault
     local scroll_id = Core.NoId
     local collect_hits = want_report and opts.collect_hits or false
-    local collect_scrollables = want_report and opts.collect_scrollables or false
     local hits = want_report and {} or nil
     local focusables = want_report and {} or nil
     local scrollables = want_report and {} or nil
+    local drag_sources = want_report and {} or nil
+    local drop_targets = want_report and {} or nil
+    local drop_slots = want_report and {} or nil
 
     for _, op in g, p, c do
         local kind = op.kind
@@ -159,11 +164,27 @@ local function run_common(driver, opts, want_report, g, p, c)
             local abs_x = tx_x + op.x
             local abs_y = tx_y + op.y
             local ix, iy, iw, ih = rect_intersect(abs_x, abs_y, op.w, op.h, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
+            local max_x = max0((op.dx or 0) - op.w)
+            local max_y = max0((op.dy or 0) - op.h)
+            if op.scroll_axis == Style.ScrollX then
+                max_y = 0
+            elseif op.scroll_axis == Style.ScrollY then
+                max_x = 0
+            end
 
             if want_report and ix ~= nil then
-                if collect_scrollables then
-                    scrollables[#scrollables + 1] = T.Interact.ScrollBox(op.id, op.scroll_axis or Style.ScrollBoth, ix, iy, iw, ih)
-                end
+                scrollables[#scrollables + 1] = T.Interact.ScrollBox(
+                    op.id,
+                    op.scroll_axis or Style.ScrollBoth,
+                    ix,
+                    iy,
+                    iw,
+                    ih,
+                    op.dx or 0,
+                    op.dy or 0,
+                    max_x,
+                    max_y
+                )
                 if pointer_inside_xywh(pointer_x, pointer_y, ix, iy, iw, ih) then
                     scroll_id = op.id
                 end
@@ -184,11 +205,8 @@ local function run_common(driver, opts, want_report, g, p, c)
             end
 
             local scroll_x, scroll_y = scroll_lookup(opts.scrolls, op.id)
-            if op.scroll_axis == Style.ScrollX then
-                scroll_y = 0
-            elseif op.scroll_axis == Style.ScrollY then
-                scroll_x = 0
-            end
+            if scroll_x < 0 then scroll_x = 0 elseif scroll_x > max_x then scroll_x = max_x end
+            if scroll_y < 0 then scroll_y = 0 elseif scroll_y > max_y then scroll_y = max_y end
             tx_x = tx_x - scroll_x
             tx_y = tx_y - scroll_y
 
@@ -264,6 +282,36 @@ local function run_common(driver, opts, want_report, g, p, c)
                     cursor_id = op.id
                 end
             end
+
+        elseif kind == KDragSource then
+            if want_report then
+                local abs_x = tx_x + op.x
+                local abs_y = tx_y + op.y
+                local ix, iy, iw, ih = rect_intersect(abs_x, abs_y, op.w, op.h, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
+                if ix ~= nil then
+                    drag_sources[#drag_sources + 1] = T.Interact.DragSourceBox(op.id, ix, iy, iw, ih)
+                end
+            end
+
+        elseif kind == KDropTarget then
+            if want_report then
+                local abs_x = tx_x + op.x
+                local abs_y = tx_y + op.y
+                local ix, iy, iw, ih = rect_intersect(abs_x, abs_y, op.w, op.h, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
+                if ix ~= nil then
+                    drop_targets[#drop_targets + 1] = T.Interact.DropTargetBox(op.id, ix, iy, iw, ih)
+                end
+            end
+
+        elseif kind == KDropSlot then
+            if want_report then
+                local abs_x = tx_x + op.x
+                local abs_y = tx_y + op.y
+                local ix, iy, iw, ih = rect_intersect(abs_x, abs_y, op.w, op.h, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
+                if ix ~= nil then
+                    drop_slots[#drop_slots + 1] = T.Interact.DropSlotBox(op.id, ix, iy, iw, ih)
+                end
+            end
         end
     end
 
@@ -281,7 +329,10 @@ local function run_common(driver, opts, want_report, g, p, c)
             scroll_id,
             hits,
             focusables,
-            scrollables
+            scrollables,
+            drag_sources,
+            drop_targets,
+            drop_slots
         )
     end
 end

@@ -117,18 +117,22 @@ function M.new(opts)
         return pts
     end
 
-    function self:get_font(style)
-        local font = provided_fonts[style.font_id]
+    function self:get_font_fields(font_id, font_size)
+        local font = provided_fonts[font_id]
         if font ~= nil then
             return font
         end
-        local key = style.font_size
+        local key = font_size
         font = sized_fonts[key]
         if font == nil then
             font = love.graphics.newFont(key)
             sized_fonts[key] = font
         end
         return font
+    end
+
+    function self:get_font(style)
+        return self:get_font_fields(style.font_id, style.font_size)
     end
 
     function self:draw_rect(x, y, w, h, visual)
@@ -155,30 +159,28 @@ function M.new(opts)
     function self:draw_text(x, y, w, h, layout)
         if layout == nil then return end
         local style = layout.style
-        local font = self:get_font(style)
-        love.graphics.setFont(font)
-        love.graphics.setColor(rgba8_to_love(style.fg, 1))
 
         x, y, w, h = round(x), round(y), round(w), round(h)
-        local line_h = round(style.leading > 0 and style.leading or style.font_size)
         local lines = layout.lines
         local align = style.align
 
-        if align == 1 or align == 2 then
-            for i = 1, #lines do
-                local line = lines[i]
-                local line_w = round(font:getWidth(line))
-                local draw_x = x
-                if align == 1 then
-                    draw_x = x + math.max(0, math.floor((w - line_w) / 2))
-                else
-                    draw_x = x + math.max(0, w - line_w)
-                end
-                love.graphics.print(line, round(draw_x), round(y + (i - 1) * line_h))
+        for i = 1, #lines do
+            local line = lines[i]
+            local draw_x = x + round(line.x or 0)
+            if align == 1 then
+                draw_x = draw_x + math.max(0, math.floor((w - round(line.w or 0)) / 2))
+            elseif align == 2 then
+                draw_x = draw_x + math.max(0, w - round(line.w or 0))
             end
-        else
-            for i = 1, #lines do
-                love.graphics.print(lines[i], x, round(y + (i - 1) * line_h))
+            local draw_y = y + round(line.y or 0)
+            local runs = line.runs
+
+            for j = 1, #runs do
+                local run = runs[j]
+                local font = self:get_font_fields(run.font_id, run.font_size)
+                love.graphics.setFont(font)
+                love.graphics.setColor(rgba8_to_love(run.fg, 1))
+                love.graphics.print(run.text, round(draw_x + (run.x or 0)), round(draw_y + (run.y or 0)))
             end
         end
 

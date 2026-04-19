@@ -132,7 +132,7 @@ function Adapter.new(engine, opts)
 
     -- ── all_anchor_entries ─────────────────────────────────
     local all_anchor_entries = pvm.phase("lsp_all_anchor_entries", {
-        [C.SemanticDoc] = function(file)
+        [C.ParsedDoc] = function(file)
         local out = {}
         local function add(anchor, kind, name)
             if not anchor or contains_anchor(out, anchor.id) then return end

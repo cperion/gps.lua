@@ -369,7 +369,7 @@ function M.new(context)
         local unit = opts.insert_spaces and string.rep(" ", size) or "\t"
 
         local items = {}
-        for i = 1, #q.doc.items do items[i] = q.doc.items[i].syntax end
+        for i = 1, #q.doc.items do items[i] = q.doc.items[i].core end
         local lines = render_block(C.Block(items), 0, unit)
 
         if opts.trim_trailing_ws then

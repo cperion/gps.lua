@@ -13,6 +13,21 @@ The core claim: interactive software is best understood as a live compiler from
 authored intent to flat executable commands. Every phase boundary in pvm is a
 memoized, lazy transformation from one ASDL layer to the next.
 
+The repo also now contains adjacent active projects:
+
+- `watjit/` — a typed Lua→WAT/Wasmtime low-level language toolkit with
+  scalar integer types, structs/arrays/unions/tagged unions, packed/aligned
+  layouts, imports, SIMD, memory helpers, a fixed-capacity hashtable, and
+  stream compilation
+- `iwatjit/` — a bounded-memory pvm-successor runtime on top of `watjit`,
+  with an additional spec-first machine DSL layered on top
+- `asdljit/` — an early native-ASDL runtime scaffold built on `watjit`,
+  focused on schema/codegen/quotes/inlining
+
+The old first `iwatjit` runtime experiment remains archived under
+`archive/iwatjit_retired/`, but the active `iwatjit/` directory now contains a
+restored/continued runtime plus newer machine-spec work.
+
 ---
 
 ## The six files at root
@@ -36,6 +51,23 @@ pvm.lua → triplet.lua
 ```
 
 `archive/` holds historical files (gps/mgps era). Do not touch them.
+
+`watjit/` is an active standalone subproject. Treat it as its own library layer.
+`watjit` must stay usable standalone.
+
+When working on `watjit`, read:
+
+- `watjit/README.md` for the current implemented surface
+- `new/WATJIT_LANGUAGE.md` for the target design direction
+
+When working on `iwatjit`, read:
+
+- `iwatjit/README.md`
+- `new/IWATJIT_MACHINE_SPEC.md`
+- `new/IWATJIT_RUNTIME_LAYOUT.md`
+- `new/IWATJIT_PVM_PARITY_CHECKLIST.md`
+- `new/ASDLJIT.md`
+- `asdljit/README.md`
 
 ---
 
@@ -327,6 +359,71 @@ run over `UI.*` nodes.
 Performance benchmarks. All use pvm directly. Good reference for pvm usage
 patterns in real contexts (grammar compilation, ASDL parsing, JSON decoding).
 See `bench/RESULTS.md` for numbers.
+
+## watjit/
+
+A separate active project in this repo.
+
+Key files:
+
+- `watjit/init.lua` — public facade (`require("watjit")`)
+- `watjit/types.lua` — typed value system and pointer/view surface
+- `watjit/func.lua` — function/module construction
+- `watjit/emit.lua` — WAT emission
+- `watjit/wasmtime.lua` — Wasmtime FFI bridge
+- `watjit/struct.lua`, `watjit/array.lua` — typed memory layouts
+- `watjit/arena.lua`, `watjit/slab.lua`, `watjit/lru.lua` — deterministic memory/runtime helpers
+- `watjit/simd.lua` — SIMD vector types and helpers
+- `watjit/stream.lua`, `watjit/stream_compile.lua` — stream algebra + compiled terminals
+- `watjit/test_*.lua`, `watjit/bench_*.lua` — executable examples, tests, and benchmarks
+
+When working in `watjit/`:
+
+- treat it as a standalone typed WAT/Wasmtime toolkit, not as pvm internals
+- preserve the layering: `watjit` must not depend on retired experiments
+
+## asdljit/
+
+A new experimental subproject in this repo, intended as the native-ASDL runtime
+path built on `watjit/`.
+
+Key files:
+
+- `asdljit/init.lua` — current schema/codegen scaffold
+- `asdljit/README.md` — current scope and limitations
+- `asdljit/test_codegen.lua` — quote/inlining/codegen validation
+- `new/ASDLJIT.md` — target architecture document
+
+When working in `asdljit/`:
+
+- keep ASDL semantics intact: immutability, `unique`, structural update, canonical lists
+- lean on `watjit` quotes, inlining, and code generation rather than inventing bigger mechanisms
+- prefer small composable generated kernels (hash, eq, getter, update) over monolithic magic
+- treat the current code as a scaffold toward a full native handle/interner runtime
+
+## iwatjit/
+
+A separate experimental project in this repo, built on `watjit/`.
+
+Key files:
+
+- `iwatjit/init.lua` — public facade (`require("iwatjit")`)
+- `iwatjit/README.md` — runtime + machine-spec status
+- `iwatjit/test_phase.lua`, `iwatjit/test_recording.lua`, `iwatjit/test_eviction.lua`, etc. — runtime validation
+- `iwatjit/test_machine_spec.lua` — machine-spec overlay test
+- `iwatjit/bench_pvm_vs_iw.lua` — comparison bench against current pvm
+
+When working in `iwatjit/`:
+
+- treat it as a real runtime layer, not just docs or a sketch
+- preserve the full runtime behavior: recording, shared, seq-hit replay, bounded caches, eviction, memory accounting
+- also preserve the spec-first machine surface where possible
+- keep execution-layer thinking aligned with fused traversal/replay internals
+- use `archive/iwatjit_retired/` as historical reference only; do not edit it
+
+## archive/
+
+- `archive/iwatjit_retired/` — retired first `iwatjit` runtime experiment and notes
 
 ---
 

@@ -1,0 +1,14 @@
+[package]
+name = "moonlift"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cranelift-codegen = { version = "0.130.1", default-features = true }
+cranelift-frontend = { version = "0.130.1", default-features = true }
+cranelift-jit = { version = "0.130.1", features = ["selinux-fix"] }
+cranelift-module = { version = "0.130.1", default-features = true }
+cranelift-native = { version = "0.130.1", default-features = true }
+
+[build-dependencies]
+pkg-config = "0.3"

@@ -24,13 +24,13 @@ local file = result
 print("uri:", file.uri)
 print("items:", #file.items)
 for i = 1, #file.items do
-    print("  item", i, "stmt:", file.items[i].syntax.stmt.kind)
+    print("  item", i, "stmt:", file.items[i].core.stmt.kind)
 end
 print("anchors:", #file.anchors)
 assert(#file.items == 3, "expected 3 items, got " .. #file.items)
-assert(file.items[1].syntax.stmt.kind == "LocalAssign")
-assert(file.items[2].syntax.stmt.kind == "LocalAssign")
-assert(file.items[3].syntax.stmt.kind == "CallStmt")
+assert(file.items[1].core.stmt.kind == "LocalAssign")
+assert(file.items[2].core.stmt.kind == "LocalAssign")
+assert(file.items[3].core.stmt.kind == "CallStmt")
 print("OK!")
 
 -- ── Test 2: interning ──────────────────────────────────────
@@ -48,8 +48,8 @@ assert(source == source2, "same text should produce same OpenDoc")
 print("OpenDoc interning: OK (same text → same object)")
 
 -- Same structural content → same AST nodes
-local name_x_1 = file.items[1].syntax.stmt.names[1]     -- Name("x") from first parse
-local name_x_2 = result2.items[1].syntax.stmt.names[1]  -- Name("x") from second parse
+local name_x_1 = file.items[1].core.stmt.names[1]     -- Name("x") from first parse
+local name_x_2 = result2.items[1].core.stmt.names[1]  -- Name("x") from second parse
 assert(name_x_1 == name_x_2, "Name('x') should be same interned object")
 print("Name interning: OK")
 
@@ -67,20 +67,20 @@ local result3 = pvm.one(engine.parse(source3))
 assert(source ~= source3, "different text should produce different OpenDoc")
 
 -- But unchanged items should be same interned objects!
-local item1_old = file.items[1].syntax  -- local x = 42
-local item1_new = result3.items[1].syntax  -- local x = 42 (unchanged)
-assert(item1_old == item1_new, "unchanged Item should be same interned object")
-print("Unchanged Item interning: OK (local x = 42 is same object)")
+local item1_old = file.items[1].core  -- local x = 42
+local item1_new = result3.items[1].core  -- local x = 42 (unchanged)
+assert(item1_old == item1_new, "unchanged Item core should be same interned object")
+print("Unchanged Item core interning: OK (local x = 42 is same object)")
 
-local item3_old = file.items[3].syntax  -- print(x, y)
-local item3_new = result3.items[3].syntax  -- print(x, y) (unchanged)
-assert(item3_old == item3_new, "unchanged Item should be same interned object")
-print("Unchanged Item interning: OK (print(x, y) is same object)")
+local item3_old = file.items[3].core  -- print(x, y)
+local item3_new = result3.items[3].core  -- print(x, y) (unchanged)
+assert(item3_old == item3_new, "unchanged Item core should be same interned object")
+print("Unchanged Item core interning: OK (print(x, y) is same object)")
 
-local item2_old = file.items[2].syntax  -- local y = "hello"
-local item2_new = result3.items[2].syntax  -- local y = "world"
-assert(item2_old ~= item2_new, "changed Item should be different object")
-print("Changed Item: OK (different objects)")
+local item2_old = file.items[2].core  -- local y = "hello"
+local item2_new = result3.items[2].core  -- local y = "world"
+assert(item2_old ~= item2_new, "changed Item core should be different object")
+print("Changed Item core: OK (different objects)")
 
 -- ── Test 4: complex Lua ────────────────────────────────────
 print("\n=== Test 4: complex Lua ===")
@@ -137,7 +137,7 @@ print("items:", #result4.items)
 print("anchors:", #result4.anchors)
 print("parse_error:", result4.status.kind == "ParseError" and result4.status.message or "")
 for i = 1, math.min(15, #result4.items) do
-    local item = result4.items[i].syntax
+    local item = result4.items[i].core
     local docs_str = #item.docs > 0 and (" [" .. #item.docs[1].tags .. " doc tags]") or ""
     print(string.format("  item %2d: %-20s%s", i, item.stmt.kind, docs_str))
 end

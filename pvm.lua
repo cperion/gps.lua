@@ -28,8 +28,8 @@
 --   pvm.with(node, overrides)  structural update preserving sharing
 --   pvm.T                      triplet algebra module
 --
---   pvm.phase(name, handlers)  streaming boundary (dispatch table, optional extra cache args)
---   pvm.phase(name, fn)        scalar boundary as lazy single-element stream (optional extra cache args)
+--   pvm.phase(name, handlers[, opts])  streaming boundary (dispatch table, optional extra cache args)
+--   pvm.phase(name, fn[, opts])        scalar boundary as lazy single-element stream (optional extra cache args)
 --   pvm.one(g, p, c)           terminal: consume exactly one element
 --   pvm.drain(g, p, c)         canonical terminal: materialize → array
 --   pvm.drain_into(g, p, c, out)  terminal optimization for append-only sinks
@@ -92,14 +92,20 @@ local function get_asdl()
 	return ASDL
 end
 
-function pvm.context()
-	local ctx = get_asdl().NewContext()
+function pvm.context(opts)
+	local ctx = get_asdl().NewContext(opts)
 	local orig = ctx.Define
 	function ctx:Define(text)
 		orig(self, text)
 		return self
 	end
 	return ctx
+end
+
+function pvm.context_wj(opts)
+	-- Retained as a compatibility alias after retiring the experimental
+	-- watjit-backed ASDL runtime. All contexts now use the GC-backed backend.
+	return pvm.context(opts)
 end
 
 function pvm.classof(node)
@@ -195,16 +201,29 @@ local REC_G = 7
 local REC_P = 8
 local REC_C = 9
 local REC_PACKED = 10
+local REC_ARGS_CACHE = 11
+local REC_ARGS = 12
+local REC_ARGC = 13
 
 local function finish_recording(entry)
 	if entry[REC_DONE] then
 		return
 	end
 	entry[REC_DONE] = true
+	local hit
 	if entry[REC_PACKED] then
-		entry[REC_CACHE_PARENT][entry[REC_SLOT]] = { array = entry[REC_BUF], n = entry[REC_N] }
+		hit = { array = entry[REC_BUF], n = entry[REC_N] }
 	else
-		entry[REC_CACHE_PARENT][entry[REC_SLOT]] = entry[REC_BUF]
+		hit = entry[REC_BUF]
+	end
+	if entry[REC_ARGS_CACHE] == "last" then
+		entry[REC_CACHE_PARENT][entry[REC_SLOT]] = {
+			argc = entry[REC_ARGC],
+			args = entry[REC_ARGS],
+			hit = hit,
+		}
+	else
+		entry[REC_CACHE_PARENT][entry[REC_SLOT]] = hit
 	end
 	entry[REC_PENDING_PARENT][entry[REC_SLOT]] = nil
 end
@@ -248,6 +267,10 @@ end
 --  A phase is a recording triplet boundary keyed by ASDL unique
 --  identity. Extra explicit arguments become additional cache-key
 --  dimensions: `phase(node, max_w)` caches on `(node identity, max_w)`.
+--  opts.args_cache controls how arg-keyed results are retained:
+--    "full" (default) → retain the full arg history per node
+--    "last"           → retain only the latest arg tuple per node
+--    "none"           → do not memoize arg-keyed calls at all
 --
 --  Handlers receive a node and must return a triplet (g, p, c).
 --  Returning nil from a handler is an error.
@@ -323,6 +346,18 @@ local function lookup_phase_args(root, args, argc)
 	return t
 end
 
+local function same_phase_args(a_args, a_argc, b_args, b_argc)
+	if a_argc ~= b_argc then
+		return false
+	end
+	for i = 1, a_argc do
+		if phase_arg_key(a_args, i) ~= phase_arg_key(b_args, i) then
+			return false
+		end
+	end
+	return true
+end
+
 local function ensure_phase_args_parent(root, args, argc)
 	local t = root
 	for i = 1, argc - 1 do
@@ -355,9 +390,14 @@ local function value_once_gen(s, emitted)
 	return 1, s[VALUE_DATA]
 end
 
-function pvm.phase(name, handlers_or_fn)
+function pvm.phase(name, handlers_or_fn, opts)
 	local dispatch = nil
 	local value_fn = nil
+	opts = opts or {}
+	local args_cache_mode = opts.args_cache or "full"
+	if args_cache_mode ~= "full" and args_cache_mode ~= "last" and args_cache_mode ~= "none" then
+		error("pvm.phase: opts.args_cache must be 'full', 'last', or 'none'", 2)
+	end
 
 	local handlers_t = type(handlers_or_fn)
 	if handlers_t == "table" then
@@ -372,6 +412,8 @@ function pvm.phase(name, handlers_or_fn)
 	local keyed_pending = setmetatable({}, { __mode = "k" })
 	local keyed_cache_args = setmetatable({}, { __mode = "k" })
 	local keyed_pending_args = setmetatable({}, { __mode = "k" })
+	local keyed_cache_args_last = setmetatable({}, { __mode = "k" })
+	local keyed_pending_args_last = setmetatable({}, { __mode = "k" })
 	local stats = { name = name, calls = 0, hits = 0, shared = 0 }
 	local boundary = {}
 	boundary.name = name
@@ -389,6 +431,9 @@ function pvm.phase(name, handlers_or_fn)
 	end
 
 	local function peek_cache_args_table(cls)
+		if args_cache_mode == "last" then
+			return keyed_cache_args_last[cls]
+		end
 		return keyed_cache_args[cls]
 	end
 
@@ -411,6 +456,14 @@ function pvm.phase(name, handlers_or_fn)
 	end
 
 	local function resolve_cache_args_table(cls)
+		if args_cache_mode == "last" then
+			local by_key = keyed_cache_args_last[cls]
+			if by_key == nil then
+				by_key = setmetatable({}, { __mode = "k" })
+				keyed_cache_args_last[cls] = by_key
+			end
+			return by_key
+		end
 		local by_key = keyed_cache_args[cls]
 		if by_key == nil then
 			by_key = setmetatable({}, { __mode = "k" })
@@ -420,6 +473,14 @@ function pvm.phase(name, handlers_or_fn)
 	end
 
 	local function resolve_pending_args_table(cls)
+		if args_cache_mode == "last" then
+			local by_key = keyed_pending_args_last[cls]
+			if by_key == nil then
+				by_key = setmetatable({}, { __mode = "k" })
+				keyed_pending_args_last[cls] = by_key
+			end
+			return by_key
+		end
 		local by_key = keyed_pending_args[cls]
 		if by_key == nil then
 			by_key = setmetatable({}, { __mode = "k" })
@@ -495,10 +556,21 @@ function pvm.phase(name, handlers_or_fn)
 		end
 
 		local args = pack_phase_args(argc, ...)
+		if args_cache_mode == "none" then
+			return miss_triplet(node, cls, argc, args)
+		end
+
 		local cache_by_key = resolve_cache_args_table(cls)
 		local cache_root = cache_by_key[key]
 		if cache_root ~= nil then
-			local hit = lookup_phase_args(cache_root, args, argc)
+			local hit
+			if args_cache_mode == "last" then
+				if same_phase_args(cache_root.args, cache_root.argc, args, argc) then
+					hit = cache_root.hit
+				end
+			else
+				hit = lookup_phase_args(cache_root, args, argc)
+			end
 			if hit ~= nil then
 				stats.hits = stats.hits + 1
 				if hit.array ~= nil and hit.n ~= nil then
@@ -511,11 +583,44 @@ function pvm.phase(name, handlers_or_fn)
 		local pending_by_key = resolve_pending_args_table(cls)
 		local pending_root = pending_by_key[key]
 		if pending_root ~= nil then
-			local inflight = lookup_phase_args(pending_root, args, argc)
+			local inflight
+			if args_cache_mode == "last" then
+				if same_phase_args(pending_root.args, pending_root.argc, args, argc) then
+					inflight = pending_root.entry
+				end
+			else
+				inflight = lookup_phase_args(pending_root, args, argc)
+			end
 			if inflight ~= nil then
 				stats.shared = stats.shared + 1
 				return recording_gen, inflight, 0
 			end
+		end
+
+		local g, p, c = miss_triplet(node, cls, argc, args)
+		local cache_parent, pending_parent, slot
+		if args_cache_mode == "last" then
+			cache_parent = cache_by_key
+			pending_parent = pending_by_key
+			slot = key
+			pending_parent[slot] = { argc = argc, args = args, entry = false }
+			local entry = {
+				cache_parent,
+				pending_parent,
+				slot,
+				{},
+				0,
+				false,
+				g,
+				p,
+				c,
+				value_fn ~= nil,
+				args_cache_mode,
+				args,
+				argc,
+			}
+			pending_parent[slot].entry = entry
+			return recording_gen, entry, 0
 		end
 
 		if cache_root == nil then
@@ -527,9 +632,8 @@ function pvm.phase(name, handlers_or_fn)
 			pending_by_key[key] = pending_root
 		end
 
-		local g, p, c = miss_triplet(node, cls, argc, args)
-		local cache_parent, slot = ensure_phase_args_parent(cache_root, args, argc)
-		local pending_parent = ensure_phase_args_parent(pending_root, args, argc)
+		cache_parent, slot = ensure_phase_args_parent(cache_root, args, argc)
+		pending_parent = ensure_phase_args_parent(pending_root, args, argc)
 		local entry = {
 			cache_parent,
 			pending_parent,
@@ -541,6 +645,9 @@ function pvm.phase(name, handlers_or_fn)
 			p,
 			c,
 			value_fn ~= nil,
+			args_cache_mode,
+			args,
+			argc,
 		}
 		pending_parent[slot] = entry
 		return recording_gen, entry, 0
@@ -579,6 +686,8 @@ function pvm.phase(name, handlers_or_fn)
 		keyed_pending = setmetatable({}, { __mode = "k" })
 		keyed_cache_args = setmetatable({}, { __mode = "k" })
 		keyed_pending_args = setmetatable({}, { __mode = "k" })
+		keyed_cache_args_last = setmetatable({}, { __mode = "k" })
+		keyed_pending_args_last = setmetatable({}, { __mode = "k" })
 		stats.calls = 0
 		stats.hits = 0
 		stats.shared = 0
@@ -601,6 +710,14 @@ function pvm.phase(name, handlers_or_fn)
 			return nil
 		end
 		local args = pack_phase_args(argc, ...)
+		if args_cache_mode == "last" then
+			if same_phase_args(root.args, root.argc, args, argc) then
+				return root.hit
+			end
+			return nil
+		elseif args_cache_mode == "none" then
+			return nil
+		end
 		return lookup_phase_args(root, args, argc)
 	end
 

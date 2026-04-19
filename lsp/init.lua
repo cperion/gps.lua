@@ -18,6 +18,8 @@ local Format     = require("lsp.format")
 local CodeAction = require("lsp.codeaction")
 local SemTokens  = require("lsp.semtokens")
 local Adapter    = require("lsp.adapter")
+local Workspace  = require("lsp.workspace")
+local Editor     = require("lsp.editor")
 local Server     = require("lsp.server")
 local JsonRpc    = require("lsp.jsonrpc")
 
@@ -64,6 +66,14 @@ function M.adapter(engine, opts)
     return Adapter.new(engine, opts)
 end
 
+function M.workspace(sem_engine, type_engine, opts)
+    return Workspace.new(sem_engine, type_engine, opts)
+end
+
+function M.editor(context, opts)
+    return Editor.new(context, opts)
+end
+
 --- Create a fully-wired LSP server with standalone parser + all features.
 function M.server(opts)
     opts = opts or {}
@@ -76,12 +86,6 @@ function M.server(opts)
     if not opts.parse then
         opts.parse = function(uri, version, text, prev_doc, _C, _params)
             return parser_engine.parse_incremental(uri, version or 0, text or "", prev_doc)
-        end
-    end
-
-    if not opts.compile then
-        opts.compile = function(parsed)
-            return sem:compile(parsed)
         end
     end
 
@@ -117,6 +121,24 @@ function M.server(opts)
     local semtokens_engine = M.semtokens(sem, lexer_engine, function(file, anchor)
         return core:_range_for(file, anchor)
     end)
+    local workspace_engine = M.workspace(sem, type_engine, {
+        range_for = function(file, anchor)
+            return core:_range_for(file, anchor)
+        end,
+        lsp_diagnostic_report = function(file)
+            return pvm.one(core.adapter:diagnostics(file))
+        end,
+    })
+    local editor_engine = M.editor(ctx, {
+        type_engine = type_engine,
+        lexer_engine = lexer_engine,
+        range_for = function(file, anchor)
+            return core:_range_for(file, anchor)
+        end,
+        all_anchor_entries = function(file)
+            return pvm.drain(core.adapter:all_anchor_entries(file))
+        end,
+    })
 
     -- Attach extra engines to core for request handling
     core._lexer_engine = lexer_engine
@@ -128,6 +150,8 @@ function M.server(opts)
     core._format_engine = format_engine
     core._codeaction_engine = codeaction_engine
     core._semtokens_engine = semtokens_engine
+    core._workspace_engine = workspace_engine
+    core._editor_engine = editor_engine
 
     return core
 end
@@ -152,6 +176,8 @@ M.Format = Format
 M.CodeAction = CodeAction
 M.SemTokens = SemTokens
 M.Adapter = Adapter
+M.Workspace = Workspace
+M.Editor = Editor
 M.Server = Server
 M.JsonRpc = JsonRpc
 

@@ -9,6 +9,13 @@ function M.Define(T)
                | IdValue(string value) unique
         }
 
+        module Content {
+            Text = (Core.Id id,
+                    string content)
+
+            Store = (Content.Text* items)
+        }
+
         module Env {
             Breakpoint = Sm | Md | Lg | Xl | X2l
             Scheme = Light | Dark
@@ -447,6 +454,9 @@ function M.Define(T)
                  | Text(Core.Id id,
                         Style.TokenList styles,
                         string content) unique
+                 | TextRef(Core.Id id,
+                           Style.TokenList styles,
+                           Core.Id content_id) unique
                  | Paint(Core.Id id,
                          Style.TokenList styles,
                          Paint.ProgramList paint) unique
@@ -459,6 +469,12 @@ function M.Define(T)
                  | WithInput(Core.Id id,
                              Interact.Role role,
                              Auth.Node child) unique
+                 | WithDragSource(Core.Id id,
+                                  Auth.Node child) unique
+                 | WithDropTarget(Core.Id id,
+                                  Auth.Node child) unique
+                 | WithDropSlot(Core.Id id,
+                                Auth.Node child) unique
                  | Fragment(Auth.Node* children) unique
                  | Empty unique
         }
@@ -587,6 +603,11 @@ function M.Define(T)
                       number radius,
                       number opacity) unique
 
+            Rect = (number x,
+                    number y,
+                    number w,
+                    number h)
+
             TextStyle = (number font_id,
                          number font_size,
                          number font_weight,
@@ -594,14 +615,77 @@ function M.Define(T)
                          number align,
                          number leading,
                          number tracking,
-                         string content) unique
+                         string content)
+
+            TextSpec = TextLiteral(Layout.TextStyle style) unique
+                     | TextBinding(Core.Id content_id,
+                                   Resolved.TextStyle style) unique
+
+            TextFlow = FlowUnknown | FlowLTR | FlowRTL | FlowTTB | FlowBTT
+
+            Glyph = (number glyph_id,
+                     number cluster,
+                     number x,
+                     number y,
+                     number advance_x,
+                     number advance_y,
+                     number offset_x,
+                     number offset_y)
+
+            TextRun = (number x,
+                       number y,
+                       number w,
+                       number h,
+                       number baseline,
+                       number byte_start,
+                       number byte_end,
+                       number font_id,
+                       number font_size,
+                       number font_weight,
+                       number fg,
+                       string text,
+                       Layout.Glyph* glyphs)
+
+            TextLine = (number x,
+                        number y,
+                        number w,
+                        number h,
+                        number baseline,
+                        number byte_start,
+                        number byte_end,
+                        Layout.TextRun* runs)
+
+            TextCluster = (Layout.TextFlow flow,
+                           number cluster_index,
+                           number line_index,
+                           number byte_start,
+                           number byte_end,
+                           number x,
+                           number y,
+                           number w,
+                           number h)
+
+            TextBoundary = (Layout.TextFlow flow,
+                            number boundary_index,
+                            number line_index,
+                            number byte_offset,
+                            number x,
+                            number y,
+                            number w,
+                            number h,
+                            boolean text_start,
+                            boolean line_start,
+                            boolean line_end,
+                            boolean text_end)
 
             TextLayout = (Layout.TextStyle style,
                           number max_w,
                           number measured_w,
                           number measured_h,
                           number baseline,
-                          string* lines) unique
+                          Layout.TextLine* lines,
+                          Layout.TextCluster* clusters,
+                          Layout.TextBoundary* boundaries)
 
             Track = TrackAuto
                   | TrackFr(number fr) unique
@@ -660,7 +744,7 @@ function M.Define(T)
 
                  | Leaf(Core.Id id,
                         Layout.BoxStyle box,
-                        Layout.TextStyle? text) unique
+                        Layout.TextSpec? text) unique
 
                  | Paint(Core.Id id,
                          Layout.BoxStyle box,
@@ -674,12 +758,19 @@ function M.Define(T)
                  | WithInput(Core.Id id,
                              Interact.Role role,
                              Layout.Node child) unique
+                 | WithDragSource(Core.Id id,
+                                  Layout.Node child) unique
+                 | WithDropTarget(Core.Id id,
+                                  Layout.Node child) unique
+                 | WithDropSlot(Core.Id id,
+                                Layout.Node child) unique
         }
 
         module View {
             Kind = KRect | KText | KPaint | KPushClip | KPopClip | KPushTx | KPopTx
                  | KPushScroll | KPopScroll
                  | KHit | KFocus | KCursor
+                 | KDragSource | KDropTarget | KDropSlot
 
             Op = (View.Kind kind,
                   Core.Id id,
@@ -707,8 +798,16 @@ function M.Define(T)
                             number slot) unique
 
             Drag = NoDrag
-                 | DragPending(Core.Id id) unique
-                 | Dragging(Core.Id id) unique
+                 | DragPending(Core.Id source_id,
+                               number start_x,
+                               number start_y) unique
+                 | Dragging(Core.Id source_id,
+                            number start_x,
+                            number start_y,
+                            number x,
+                            number y,
+                            Core.Id over_target_id,
+                            Core.Id over_slot_id) unique
 
             HitBox = (Core.Id id,
                       number x,
@@ -728,7 +827,29 @@ function M.Define(T)
                          number x,
                          number y,
                          number w,
-                         number h) unique
+                         number h,
+                         number content_w,
+                         number content_h,
+                         number max_x,
+                         number max_y) unique
+
+            DragSourceBox = (Core.Id id,
+                             number x,
+                             number y,
+                             number w,
+                             number h) unique
+
+            DropTargetBox = (Core.Id id,
+                             number x,
+                             number y,
+                             number w,
+                             number h) unique
+
+            DropSlotBox = (Core.Id id,
+                           number x,
+                           number y,
+                           number w,
+                           number h) unique
 
             Report = (Core.Id hover_id,
                       Core.Id cursor_id,
@@ -736,7 +857,10 @@ function M.Define(T)
                       Core.Id scroll_id,
                       Interact.HitBox* hits,
                       Interact.FocusBox* focusables,
-                      Interact.ScrollBox* scrollables) unique
+                      Interact.ScrollBox* scrollables,
+                      Interact.DragSourceBox* drag_sources,
+                      Interact.DropTargetBox* drop_targets,
+                      Interact.DropSlotBox* drop_slots) unique
 
             Button = BtnLeft | BtnMiddle | BtnRight
 
@@ -754,6 +878,7 @@ function M.Define(T)
                 | FocusNext
                 | FocusPrev
                 | ActivateFocus
+                | CancelPointer
 
             Event = SetPointer(number x,
                                number y) unique
@@ -763,7 +888,32 @@ function M.Define(T)
                   | ClearFocus
                   | SetPressed(Core.Id id) unique
                   | ClearPressed
+                  | SetDragPending(Core.Id source_id,
+                                   number start_x,
+                                   number start_y) unique
+                  | SetDragging(Core.Id source_id,
+                                number start_x,
+                                number start_y,
+                                number x,
+                                number y,
+                                Core.Id over_target_id,
+                                Core.Id over_slot_id) unique
+                  | ClearDrag
                   | Activate(Core.Id id) unique
+                  | DragStarted(Core.Id source_id,
+                                number start_x,
+                                number start_y) unique
+                  | DragMoved(Core.Id source_id,
+                              number x,
+                              number y,
+                              Core.Id over_target_id,
+                              Core.Id over_slot_id) unique
+                  | DragDropped(Core.Id source_id,
+                                number x,
+                                number y,
+                                Core.Id over_target_id,
+                                Core.Id over_slot_id) unique
+                  | DragCancelled(Core.Id source_id) unique
                   | ScrollBy(Core.Id id,
                              number dx,
                              number dy) unique
@@ -773,11 +923,31 @@ function M.Define(T)
                      Core.Id hover_id,
                      Core.Id focus_id,
                      Core.Id pressed_id,
+                     Interact.Drag drag,
                      Solve.Scroll* scrolls) unique
 
             State = (Interact.Hover hover,
                      Interact.Focus focus,
                      Interact.Drag drag) unique
+        }
+
+        module TextEdit {
+            State = (string text,
+                     number anchor,
+                     number active,
+                     number anchor_affinity,
+                     number active_affinity,
+                     number preferred_x,
+                     boolean has_preferred_x)
+        }
+
+        module TextField {
+            State = (TextEdit.State edit,
+                     boolean focused,
+                     boolean dragging,
+                     string composition_text,
+                     number composition_start,
+                     number composition_length)
         }
 
         module Solve {
