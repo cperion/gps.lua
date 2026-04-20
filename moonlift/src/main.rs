@@ -1,6 +1,14 @@
+mod ast;
 mod cranelift_jit;
+mod diag;
+mod lexer;
+mod lua_ast;
 mod luajit;
+mod parser;
 mod runtime;
+mod source;
+mod source_native;
+mod token;
 
 use runtime::Runtime;
 use std::env;

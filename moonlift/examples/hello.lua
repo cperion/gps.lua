@@ -7,14 +7,20 @@ assert(__moonlift_runtime ~= nil)
 assert(ml.add(20, 22) == 42)
 print("ml.add(20, 22) =", ml.add(20, 22))
 
-local plus_k = quote(function(x, k)
-    return x + k
-end)
+local plus_k = q.expr {
+    params = { i32"x", i32"k" },
+    body = function(x, k)
+        return x + k
+    end,
+}
 
-local square = quote(function(x)
-    local xx = let(x * x)
-    return xx
-end)
+local square = q.expr {
+    params = { i32"x" },
+    body = function(x)
+        local xx = let(x * x)
+        return xx
+    end,
+}
 
 local plus7 = (func "plus7") {
     i32"x",
@@ -357,11 +363,191 @@ local pair_sum = (func "pair_sum") {
 }
 local pair_sum_h = pair_sum()
 
+local pair_sum_ir = quote_ir {
+    params = { ptr(Pair)"p" },
+    body = function(p)
+        local s = let(p.a + p.b)
+        return s
+    end,
+}
+local pair_sum_quote = (func "pair_sum_quote") {
+    ptr(Pair)"p",
+    pair_sum_ir,
+}
+local pair_sum_quote_h = pair_sum_quote()
+
+local twice_plus_one_ir = quote_ir {
+    params = { i32"x" },
+    body = function(x)
+        local y = let(x + i32(1))
+        return y
+    end,
+}
+local quote_twice = (func "quote_twice") {
+    function()
+        return twice_plus_one_ir:splice(i32(20)) + twice_plus_one_ir:splice(i32(20))
+    end,
+}
+local quote_twice_h = quote_twice()
+
+local forty_two_q = quote_expr(function()
+    return i32(42)
+end)
+local quote_expr_auto = (func "quote_expr_auto") {
+    function()
+        return forty_two_q
+    end,
+}
+local quote_expr_auto_h = quote_expr_auto()
+
+local pair_plus_hole_q = quote_block {
+    params = { ptr(Pair)"p" },
+    body = function(p)
+        local total = let(p.a + p.b)
+        return total + hole("delta", i32)
+    end,
+}
+local pair_plus_hole = (func "pair_plus_hole") {
+    ptr(Pair)"p",
+    function(p)
+        return pair_plus_hole_q:bind { delta = i32(0) }:splice(p)
+    end,
+}
+local pair_plus_hole_h = pair_plus_hole()
+
+local hole_only_q = quote_expr(function()
+    return hole("lhs", i32) + hole("rhs", i32)
+end)
+local hole_only = (func "hole_only") {
+    function()
+        return hole_only_q:bind { lhs = i32(20), rhs = i32(22) }:splice()
+    end,
+}
+local hole_only_h = hole_only()
+
+local add_one_q = q.expr {
+    params = { i32"x" },
+    body = function(x)
+        return x + i32(1)
+    end,
+}
+local add_two_q = add_one_q:map_expr(function(node)
+    if node.tag == "i32" and node.value == 1 then
+        return i32(2)
+    end
+end)
+local add_two_rewrite = (func "add_two_rewrite") {
+    i32"x",
+    add_two_q,
+}
+local add_two_rewrite_h = add_two_rewrite()
+
+local trim_dead_q = q.block {
+    params = { i32"x" },
+    body = function(x)
+        local dead = let(i32(7))
+        local y = let(x + i32(1))
+        return y + dead - i32(7)
+    end,
+}
+local trim_dead_rewrite_q = trim_dead_q:rewrite {
+    stmt = function(stmt)
+        if stmt.tag == "let" and stmt.init ~= nil and stmt.init.tag == "i32" and stmt.init.value == 7 then
+            return false
+        end
+    end,
+    expr = function(node)
+        if node.tag == "sub" and node.rhs ~= nil and node.rhs.tag == "i32" and node.rhs.value == 7 then
+            return node.lhs
+        elseif node.tag == "add" and node.rhs ~= nil and node.rhs.tag == "local" and node.lhs ~= nil and node.lhs.tag == "local" then
+            return node.lhs
+        end
+    end,
+}
+local trim_dead_rewrite = (func "trim_dead_rewrite") {
+    i32"x",
+    trim_dead_rewrite_q,
+}
+local trim_dead_rewrite_h = trim_dead_rewrite()
+
+local hole_names = hole_only_q:query(function(kind, node)
+    if kind == "expr" and node.tag == "quote_hole" then
+        return node.name
+    end
+end)
+assert(#hole_names == 2 and hole_names[1] == "lhs" and hole_names[2] == "rhs")
+
+local walk_counts = { expr = 0, stmt = 0 }
+trim_dead_q:walk(function(kind, node)
+    if kind == "expr" then
+        walk_counts.expr = walk_counts.expr + 1
+    elseif kind == "stmt" then
+        walk_counts.stmt = walk_counts.stmt + 1
+    end
+end)
+assert(walk_counts.expr > 0 and walk_counts.stmt >= 2)
+
+local let_stmt_names = q.query(trim_dead_q, {
+    stmt = function(stmt)
+        if stmt.tag == "let" then return stmt.name end
+    end,
+})
+assert(#let_stmt_names == 2)
+
+Pair:method("sum") {
+    function(self)
+        return self.a + self.b
+    end,
+}
+Pair:method("bump_sum") {
+    i32"delta",
+    function(self, delta)
+        self.a = self.a + delta
+        return self.a + self.b
+    end,
+}
+
+local pair_sum_method = (func "pair_sum_method") {
+    ptr(Pair)"p",
+    function(p)
+        return p:sum()
+    end,
+}
+local pair_sum_method_h = pair_sum_method()
+
+local pair_proxy_method = (func "pair_proxy_method") {
+    function()
+        return block(function()
+            local p = var(Pair { a = i32(20), b = i32(20) })
+            return p:bump_sum(i32(2))
+        end)
+    end,
+}
+local pair_proxy_method_h = pair_proxy_method()
+
 local pbuf = ffi.new("int32_t[2]")
 pbuf[0] = 20; pbuf[1] = 22
 local p_ptr = tonumber(ffi.cast("intptr_t", pbuf))
 assert(pair_sum_h(p_ptr) == 42)
+assert(pair_sum_quote_h(p_ptr) == 42)
+assert(quote_twice_h() == 42)
+assert(quote_expr_auto_h() == 42)
+assert(pair_plus_hole_h(p_ptr) == 42)
+assert(hole_only_h() == 42)
+assert(add_two_rewrite_h(40) == 42)
+assert(trim_dead_rewrite_h(41) == 42)
+assert(pair_sum_method_h(p_ptr) == 42)
+assert(pair_proxy_method_h() == 42)
 print("pair_sum_h({20, 22}) =", pair_sum_h(p_ptr))
+print("pair_sum_quote_h({20, 22}) =", pair_sum_quote_h(p_ptr))
+print("quote_twice_h() =", quote_twice_h())
+print("quote_expr_auto_h() =", quote_expr_auto_h())
+print("pair_plus_hole_h({20, 22}) =", pair_plus_hole_h(p_ptr))
+print("hole_only_h() =", hole_only_h())
+print("add_two_rewrite_h(40) =", add_two_rewrite_h(40))
+print("trim_dead_rewrite_h(41) =", trim_dead_rewrite_h(41))
+print("pair_sum_method_h({20, 22}) =", pair_sum_method_h(p_ptr))
+print("pair_proxy_method_h() =", pair_proxy_method_h())
 
 local swap_pair = (func "swap_pair") {
     ptr(Pair)"p",
@@ -542,9 +728,26 @@ local NumberBits = union("NumberBits", {
     { "u", u32 },
     { "f", f32 },
 })
+NumberBits:method("as_i32") {
+    function(self)
+        return self.i
+    end,
+}
+local union_method = (func "union_method") {
+    ptr(NumberBits)"p",
+    function(p)
+        return p:as_i32()
+    end,
+}
+local union_method_h = union_method()
 assert(NumberBits.size == 4)
 assert(NumberBits.i.offset == 0 and NumberBits.f.offset == 0)
 print("NumberBits size =", NumberBits.size)
+local nbbuf = ffi.new("int32_t[1]")
+nbbuf[0] = 42
+local nbptr = tonumber(ffi.cast("intptr_t", nbbuf))
+assert(union_method_h(nbptr) == 42)
+print("union_method_h(...) =", union_method_h(nbptr))
 
 local TaggedValue = tagged_union("TaggedValue", {
     base = u8,
@@ -553,10 +756,28 @@ local TaggedValue = tagged_union("TaggedValue", {
         Pair = { { "a", i16 }, { "b", i16 } },
     },
 })
+TaggedValue:method("tag_code") {
+    function(self)
+        return zext(i32, self.tag)
+    end,
+}
+local tagged_tag_code = (func "tagged_tag_code") {
+    ptr(TaggedValue)"p",
+    function(p)
+        return p:tag_code()
+    end,
+}
+local tagged_tag_code_h = tagged_tag_code()
 assert(TaggedValue.Tag.I32 ~= nil)
 assert(TaggedValue.Payload.size >= 4)
 assert(TaggedValue.tag.offset == 0)
 print("TaggedValue size =", TaggedValue.size)
+local tv_code_buf = ffi.new("uint8_t[?]", TaggedValue.size)
+local tv_code_ptr = tonumber(ffi.cast("intptr_t", tv_code_buf))
+local tv_code_view = ffi.cast("uint8_t*", tv_code_buf)
+tv_code_view[0] = TaggedValue.Pair.node.value
+assert(tagged_tag_code_h(tv_code_ptr) == TaggedValue.Pair.node.value)
+print("tagged_tag_code_h(...) =", tagged_tag_code_h(tv_code_ptr))
 
 local switch_status = (func "switch_status") {
     Status"s",
@@ -573,6 +794,55 @@ assert(switch_status_h(0) == 0)
 assert(switch_status_h(1) == 1)
 assert(switch_status_h(42) == 42)
 print("switch_status_h(42) =", switch_status_h(42))
+
+local bool_not = (func "bool_not") {
+    bool"x",
+    function(x)
+        return x:not_()
+    end,
+}
+local bool_not_h = bool_not()
+assert(bool_not_h(false) == true)
+assert(bool_not_h(true) == false)
+print("bool_not_h(false) =", bool_not_h(false))
+print("bool_not_h(true) =", bool_not_h(true))
+
+local bool_not_select = (func "bool_not_select") {
+    bool"x",
+    function(x)
+        return x:not_()(i32(2), i32(1))
+    end,
+}
+local bool_not_select_h = bool_not_select()
+assert(bool_not_select_h(false) == 2)
+assert(bool_not_select_h(true) == 1)
+print("bool_not_select_h(false) =", bool_not_select_h(false))
+print("bool_not_select_h(true) =", bool_not_select_h(true))
+
+local function make_stable_switch_case()
+    return (func "stable_switch_case") {
+        i32"x",
+        function(x)
+            return switch_(x, {
+                [i32(0)] = function() return i32(0) end,
+                [i32(1)] = function() return i32(1) end,
+                [i32(2)] = function() return i32(2) end,
+                default = function() return i32(3) end,
+            })
+        end,
+    }
+end
+local stable_switch_case_h = make_stable_switch_case()()
+local stable_switch_case_handle = stable_switch_case_h.handle
+for _ = 1, 16 do
+    local h = make_stable_switch_case()()
+    assert(h.handle == stable_switch_case_handle)
+end
+assert(stable_switch_case_h(0) == 0)
+assert(stable_switch_case_h(1) == 1)
+assert(stable_switch_case_h(2) == 2)
+assert(stable_switch_case_h(9) == 3)
+print("stable_switch_case_h(9) =", stable_switch_case_h(9))
 
 local break_once = (func "break_once") {
     i32"n",
@@ -610,6 +880,29 @@ local continue_count_h = continue_count()
 assert(continue_count_h(3) == 6)
 print("continue_count_h(3) =", continue_count_h(3))
 
+local bad_break_in_value = (func "bad_break_in_value") {
+    i32"n",
+    function(n)
+        return block(function()
+            local i = var(i32(0))
+            while_(i:lt(n), function()
+                local x = let(block(function()
+                    break_()
+                    return i32(123)
+                end))
+                i:set(i + x)
+            end)
+            return i
+        end)
+    end,
+}
+local ok_bad_break, err_bad_break = pcall(function()
+    return bad_break_in_value()
+end)
+assert(ok_bad_break == false)
+assert(tostring(err_bad_break):find("expression block terminated via break/continue", 1, true) ~= nil)
+print("bad_break_in_value compile error ok")
+
 local add2 = (func "add2") {
     i32"x",
     function(x)
@@ -641,10 +934,10 @@ assert(pbuf[0] == 22 and pbuf[1] == 20)
 print("swap_twice_h kept pair as", pbuf[0], pbuf[1])
 
 ffi.cdef[[ int abs(int x); ]]
-local c_abs = (extern "c_abs") {
+local libc = import_module("libc", ffi.C)
+local c_abs = libc:extern("abs") {
     i32"x",
     i32,
-    addr = tonumber(ffi.cast("intptr_t", ffi.C.abs)),
 }
 local use_abs = (func "use_abs") {
     i32"x",
@@ -697,5 +990,85 @@ local p2_ptr = tonumber(ffi.cast("intptr_t", pbuf2))
 assert(pair_copy_sum_h(p_ptr, p2_ptr) == 42)
 assert(pbuf[0] == 11 and pbuf[1] == 31)
 print("pair_copy_sum_h(...) =", pair_copy_sum_h(p_ptr, p2_ptr))
+
+local pair_sum_byval = (func "pair_sum_byval") {
+    Pair"p",
+    function(p)
+        return p.a + p.b
+    end,
+}
+local pair_sum_byval_h = pair_sum_byval()
+assert(pair_sum_byval_h(p2_ptr) == 42)
+print("pair_sum_byval_h(...) =", pair_sum_byval_h(p2_ptr))
+
+local pair_local_sum = (func "pair_local_sum") {
+    function()
+        return block(function()
+            local p = let(Pair { a = i32(40), b = i32(2) })
+            return p.a + p.b
+        end)
+    end,
+}
+local pair_local_sum_h = pair_local_sum()
+assert(pair_local_sum_h() == 42)
+print("pair_local_sum_h() =", pair_local_sum_h())
+
+local pair_var_sum = (func "pair_var_sum") {
+    function()
+        return block(function()
+            local p = var(Pair { a = i32(1), b = i32(2) })
+            p:set(Pair { a = i32(40), b = i32(2) })
+            return p.a + p.b
+        end)
+    end,
+}
+local pair_var_sum_h = pair_var_sum()
+assert(pair_var_sum_h() == 42)
+print("pair_var_sum_h() =", pair_var_sum_h())
+
+local use_pair_sum_byval = (func "use_pair_sum_byval") {
+    function()
+        return invoke(pair_sum_byval, Pair { a = i32(40), b = i32(2) })
+    end,
+}
+local use_pair_sum_byval_h = use_pair_sum_byval()
+assert(use_pair_sum_byval_h() == 42)
+print("use_pair_sum_byval_h() =", use_pair_sum_byval_h())
+
+local pair_init_sum = (func "pair_init_sum") {
+    ptr(Pair)"dst",
+    function(dst)
+        return block(function()
+            store(Pair, dst, Pair { a = i32(40), b = i32(2) })
+            local p = load(Pair, dst)
+            return p.a + p.b
+        end)
+    end,
+}
+local pair_init_sum_h = pair_init_sum()
+assert(pair_init_sum_h(p_ptr) == 42)
+assert(pbuf[0] == 40 and pbuf[1] == 2)
+print("pair_init_sum_h(...) =", pair_init_sum_h(p_ptr))
+
+local tagged_store = (func "tagged_store") {
+    ptr(TaggedValue)"dst",
+    function(dst)
+        return block(function()
+            store(TaggedValue, dst, TaggedValue {
+                tag = TaggedValue.Pair,
+                payload = TaggedValue.Payload {
+                    Pair = { a = i16(20), b = i16(22) },
+                },
+            })
+            local tv = load(TaggedValue, dst)
+            return zext(i32, tv.tag) + sext(i32, tv.payload.Pair.a) + sext(i32, tv.payload.Pair.b)
+        end)
+    end,
+}
+local tagged_store_h = tagged_store()
+local tvbuf = ffi.new("uint8_t[?]", TaggedValue.size)
+local tvptr = tonumber(ffi.cast("intptr_t", tvbuf))
+assert(tagged_store_h(tvptr) == TaggedValue.Pair.node.value + 20 + 22)
+print("tagged_store_h(...) =", tagged_store_h(tvptr))
 
 print("\nall tests passed")

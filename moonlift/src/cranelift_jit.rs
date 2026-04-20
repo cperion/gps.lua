@@ -1,12 +1,14 @@
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{InstBuilder, MemFlags, UserFuncName, Value, types};
+use cranelift_codegen::ir::{InstBuilder, MemFlags, StackSlot, StackSlotData, StackSlotKind, UserFuncName, Value, types};
 use cranelift_codegen::settings::Configurable;
 use cranelift_codegen::{ir, settings};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, Linkage, Module};
+use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
+use std::ffi::c_void;
 use std::fmt;
 use std::mem;
 
@@ -201,6 +203,14 @@ pub enum Expr {
         ty: ScalarType,
         addr: Box<Expr>,
     },
+    StackAddr {
+        name: String,
+    },
+    Memcmp {
+        a: Box<Expr>,
+        b: Box<Expr>,
+        len: Box<Expr>,
+    },
     Cast {
         op: CastOp,
         ty: ScalarType,
@@ -210,6 +220,12 @@ pub enum Expr {
         target: CallTarget,
         ty: ScalarType,
         args: Vec<Expr>,
+    },
+    Select {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+        ty: ScalarType,
     },
 }
 
@@ -226,7 +242,10 @@ impl Expr {
             | Expr::If { ty, .. }
             | Expr::Load { ty, .. }
             | Expr::Cast { ty, .. }
-            | Expr::Call { ty, .. } => *ty,
+            | Expr::Call { ty, .. }
+            | Expr::Select { ty, .. } => *ty,
+            Expr::StackAddr { .. } => ScalarType::Ptr,
+            Expr::Memcmp { .. } => ScalarType::I32,
         }
     }
 }
@@ -251,10 +270,35 @@ pub enum Stmt {
         cond: Expr,
         body: Vec<Stmt>,
     },
+    If {
+        cond: Expr,
+        then_body: Vec<Stmt>,
+        else_body: Vec<Stmt>,
+    },
     Store {
         ty: ScalarType,
         addr: Expr,
         value: Expr,
+    },
+    StackSlot {
+        name: String,
+        size: u32,
+        align: u32,
+    },
+    Memcpy {
+        dst: Expr,
+        src: Expr,
+        len: Expr,
+    },
+    Memmove {
+        dst: Expr,
+        src: Expr,
+        len: Expr,
+    },
+    Memset {
+        dst: Expr,
+        byte: Expr,
+        len: Expr,
     },
     Call {
         target: CallTarget,
@@ -280,6 +324,7 @@ pub struct FunctionSpec {
     pub body: Expr,
 }
 
+#[derive(Clone, Copy)]
 enum CodePtr {
     Arity0(unsafe extern "C" fn() -> u64),
     Arity1(unsafe extern "C" fn(u64) -> u64),
@@ -288,6 +333,7 @@ enum CodePtr {
     Arity4(unsafe extern "C" fn(u64, u64, u64, u64) -> u64),
 }
 
+#[derive(Clone)]
 struct CompiledFn {
     name: String,
     params: Vec<ScalarType>,
@@ -305,6 +351,7 @@ enum Binding {
 struct LowerCtx {
     args: Vec<Value>,
     bindings: HashMap<String, Binding>,
+    stack_slots: HashMap<String, StackSlot>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -315,10 +362,48 @@ pub struct CompileStats {
     pub compiled_functions: usize,
 }
 
+unsafe extern "C" {
+    fn memcmp(lhs: *const c_void, rhs: *const c_void, len: usize) -> i32;
+}
+
+unsafe extern "C" fn moonlift_rt_memcpy(dst: *mut u8, src: *const u8, len: u64) {
+    unsafe {
+        std::ptr::copy_nonoverlapping(src, dst, len as usize);
+    }
+}
+
+unsafe extern "C" fn moonlift_rt_memmove(dst: *mut u8, src: *const u8, len: u64) {
+    unsafe {
+        std::ptr::copy(src, dst, len as usize);
+    }
+}
+
+unsafe extern "C" fn moonlift_rt_memset(dst: *mut u8, byte: u8, len: u64) {
+    unsafe {
+        std::ptr::write_bytes(dst, byte, len as usize);
+    }
+}
+
+unsafe extern "C" fn moonlift_rt_memcmp(a: *const u8, b: *const u8, len: u64) -> i32 {
+    let raw = unsafe { memcmp(a as *const c_void, b as *const c_void, len as usize) };
+    if raw < 0 {
+        -1
+    } else if raw > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+thread_local! {
+    static ACTIVE_DIRECT_FUNCS: RefCell<Option<HashMap<String, FuncId>>> = const { RefCell::new(None) };
+}
+
 pub struct MoonliftJit {
     module: JITModule,
     add_i32_i32: unsafe extern "C" fn(i32, i32) -> i32,
     next_handle: u32,
+    next_module_id: u32,
     functions: HashMap<u32, CompiledFn>,
     spec_cache: HashMap<FunctionSpec, u32>,
     compile_hits: u64,
@@ -341,13 +426,18 @@ impl MoonliftJit {
             .finish(settings::Flags::new(flag_builder))
             .map_err(|e| JitError(format!("failed to finalize Cranelift ISA: {e}")))?;
 
-        let builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+        builder.symbol("moonlift_rt_memcpy", moonlift_rt_memcpy as *const u8);
+        builder.symbol("moonlift_rt_memmove", moonlift_rt_memmove as *const u8);
+        builder.symbol("moonlift_rt_memset", moonlift_rt_memset as *const u8);
+        builder.symbol("moonlift_rt_memcmp", moonlift_rt_memcmp as *const u8);
         let mut module = JITModule::new(builder);
         let add_i32_i32 = compile_add_i32_i32(&mut module)?;
         Ok(Self {
             module,
             add_i32_i32,
             next_handle: 1,
+            next_module_id: 1,
             functions: HashMap::new(),
             spec_cache: HashMap::new(),
             compile_hits: 0,
@@ -390,6 +480,88 @@ impl MoonliftJit {
         self.spec_cache.insert(spec, handle);
         self.compile_misses = self.compile_misses.saturating_add(1);
         Ok(handle)
+    }
+
+    pub fn compile_module(&mut self, specs: Vec<FunctionSpec>) -> Result<Vec<u32>, JitError> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut seen = HashMap::new();
+        for spec in &specs {
+            if seen.insert(spec.name.clone(), ()).is_some() {
+                return Err(JitError(format!("duplicate Moonlift function '{}' in module compile", spec.name)));
+            }
+        }
+
+        let module_id = self.next_module_id;
+        self.next_module_id = self
+            .next_module_id
+            .checked_add(1)
+            .ok_or_else(|| JitError("jit module id overflow".to_string()))?;
+
+        let mut handles = Vec::with_capacity(specs.len());
+        let mut func_ids = Vec::with_capacity(specs.len());
+        let mut direct_funcs = HashMap::new();
+
+        for spec in &specs {
+            let handle = self.next_handle;
+            self.next_handle = self
+                .next_handle
+                .checked_add(1)
+                .ok_or_else(|| JitError("jit handle overflow".to_string()))?;
+            let symbol_name = format!(
+                "moonlift_mod_{}_{}",
+                module_id,
+                sanitize_symbol(&spec.name)
+            );
+            let func_id = declare_packed_function(&mut self.module, &symbol_name, spec.params.len())?;
+            handles.push(handle);
+            func_ids.push(func_id);
+            direct_funcs.insert(spec.name.clone(), func_id);
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ACTIVE_DIRECT_FUNCS.with(|slot| {
+                *slot.borrow_mut() = Some(direct_funcs.clone());
+            });
+            let mut out = Vec::with_capacity(specs.len());
+            for i in 0..specs.len() {
+                define_function_body(&mut self.module, func_ids[i], &specs[i])?;
+            }
+            self.module
+                .finalize_definitions()
+                .map_err(|e| JitError(format!("failed to finalize JIT module definitions: {e}")))?;
+            for i in 0..specs.len() {
+                let code = self.module.get_finalized_function(func_ids[i]);
+                out.push(compiled_fn_from_raw(&specs[i], code)?);
+            }
+            Ok::<Vec<CompiledFn>, JitError>(out)
+        }));
+        ACTIVE_DIRECT_FUNCS.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+
+        let compiled = match result {
+            Ok(Ok(compiled)) => compiled,
+            Ok(Err(err)) => return Err(err),
+            Err(panic) => {
+                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown Rust panic".to_string()
+                };
+                return Err(JitError(format!("panic compiling Moonlift module: {}", msg)));
+            }
+        };
+
+        for i in 0..compiled.len() {
+            self.functions.insert(handles[i], compiled[i].clone());
+        }
+        self.compile_misses = self.compile_misses.saturating_add(specs.len() as u64);
+        Ok(handles)
     }
 
     pub fn param_types(&self, handle: u32) -> Option<&[ScalarType]> {
@@ -444,12 +616,24 @@ impl MoonliftJit {
         }
     }
 
+    pub fn call0_packed(&self, handle: u32) -> Result<u64, JitError> {
+        self.call_packed(handle, &[])
+    }
+
     pub fn call1_packed(&self, handle: u32, a: u64) -> Result<u64, JitError> {
         self.call_packed(handle, &[a])
     }
 
     pub fn call2_packed(&self, handle: u32, a: u64, b: u64) -> Result<u64, JitError> {
         self.call_packed(handle, &[a, b])
+    }
+
+    pub fn call3_packed(&self, handle: u32, a: u64, b: u64, c: u64) -> Result<u64, JitError> {
+        self.call_packed(handle, &[a, b, c])
+    }
+
+    pub fn call4_packed(&self, handle: u32, a: u64, b: u64, c: u64, d: u64) -> Result<u64, JitError> {
+        self.call_packed(handle, &[a, b, c, d])
     }
 
     pub fn code_addr(&self, handle: u32) -> Option<u64> {
@@ -472,6 +656,47 @@ impl MoonliftJit {
             compiled_functions: self.functions.len(),
         }
     }
+}
+
+fn active_direct_func(name: &str) -> Option<FuncId> {
+    ACTIVE_DIRECT_FUNCS.with(|slot| slot.borrow().as_ref().and_then(|m| m.get(name).copied()))
+}
+
+fn declare_packed_function(module: &mut JITModule, name: &str, arity: usize) -> Result<FuncId, JitError> {
+    let mut sig = module.make_signature();
+    for _ in 0..arity {
+        sig.params.push(ir::AbiParam::new(types::I64));
+    }
+    sig.returns.push(ir::AbiParam::new(types::I64));
+    module
+        .declare_function(name, Linkage::Export, &sig)
+        .map_err(|e| JitError(format!("failed to declare JIT function {name}: {e}")))
+}
+
+fn compiled_fn_from_raw(spec: &FunctionSpec, code: *const u8) -> Result<CompiledFn, JitError> {
+    let code = match spec.params.len() {
+        0 => CodePtr::Arity0(unsafe { mem::transmute::<_, unsafe extern "C" fn() -> u64>(code) }),
+        1 => CodePtr::Arity1(unsafe { mem::transmute::<_, unsafe extern "C" fn(u64) -> u64>(code) }),
+        2 => CodePtr::Arity2(unsafe { mem::transmute::<_, unsafe extern "C" fn(u64, u64) -> u64>(code) }),
+        3 => CodePtr::Arity3(unsafe {
+            mem::transmute::<_, unsafe extern "C" fn(u64, u64, u64) -> u64>(code)
+        }),
+        4 => CodePtr::Arity4(unsafe {
+            mem::transmute::<_, unsafe extern "C" fn(u64, u64, u64, u64) -> u64>(code)
+        }),
+        n => {
+            return Err(JitError(format!(
+                "Moonlift currently supports only functions with arity 0..4, got {}",
+                n
+            )))
+        }
+    };
+    Ok(CompiledFn {
+        name: spec.name.clone(),
+        params: spec.params.clone(),
+        result: spec.result,
+        code,
+    })
 }
 
 fn compile_add_i32_i32(module: &mut JITModule) -> Result<unsafe extern "C" fn(i32, i32) -> i32, JitError> {
@@ -522,36 +747,14 @@ fn compile_function(
     spec: &FunctionSpec,
 ) -> Result<CompiledFn, JitError> {
     let code = compile_function_raw(module, handle, spec)?;
-    let code = match spec.params.len() {
-        0 => CodePtr::Arity0(unsafe { mem::transmute::<_, unsafe extern "C" fn() -> u64>(code) }),
-        1 => CodePtr::Arity1(unsafe { mem::transmute::<_, unsafe extern "C" fn(u64) -> u64>(code) }),
-        2 => CodePtr::Arity2(unsafe { mem::transmute::<_, unsafe extern "C" fn(u64, u64) -> u64>(code) }),
-        3 => CodePtr::Arity3(unsafe {
-            mem::transmute::<_, unsafe extern "C" fn(u64, u64, u64) -> u64>(code)
-        }),
-        4 => CodePtr::Arity4(unsafe {
-            mem::transmute::<_, unsafe extern "C" fn(u64, u64, u64, u64) -> u64>(code)
-        }),
-        n => {
-            return Err(JitError(format!(
-                "Moonlift currently supports only functions with arity 0..4, got {}",
-                n
-            )))
-        }
-    };
-    Ok(CompiledFn {
-        name: spec.name.clone(),
-        params: spec.params.clone(),
-        result: spec.result,
-        code,
-    })
+    compiled_fn_from_raw(spec, code)
 }
 
-fn compile_function_raw(
+fn define_function_body(
     module: &mut JITModule,
-    handle: u32,
+    func_id: FuncId,
     spec: &FunctionSpec,
-) -> Result<*const u8, JitError> {
+) -> Result<(), JitError> {
     let mut ctx = module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
 
@@ -560,11 +763,6 @@ fn compile_function_raw(
         sig.params.push(ir::AbiParam::new(types::I64));
     }
     sig.returns.push(ir::AbiParam::new(types::I64));
-
-    let name = format!("moonlift_fn_{}_{}", handle, sanitize_symbol(&spec.name));
-    let func_id = module
-        .declare_function(&name, Linkage::Export, &sig)
-        .map_err(|e| JitError(format!("failed to declare JIT function {name}: {e}")))?;
 
     ctx.func.signature = sig;
     ctx.func.name = UserFuncName::user(0, func_id.as_u32());
@@ -582,6 +780,7 @@ fn compile_function_raw(
         let mut lower = LowerCtx {
             args,
             bindings: HashMap::new(),
+            stack_slots: HashMap::new(),
         };
         let mut next_var_index = 0u32;
         let mut loop_stack = Vec::new();
@@ -600,8 +799,19 @@ fn compile_function_raw(
 
     module
         .define_function(func_id, &mut ctx)
-        .map_err(|e| JitError(format!("failed to define JIT function {name}: {e:?}")))?;
+        .map_err(|e| JitError(format!("failed to define JIT function {}: {e:?}", spec.name)))?;
     module.clear_context(&mut ctx);
+    Ok(())
+}
+
+fn compile_function_raw(
+    module: &mut JITModule,
+    handle: u32,
+    spec: &FunctionSpec,
+) -> Result<*const u8, JitError> {
+    let name = format!("moonlift_fn_{}_{}", handle, sanitize_symbol(&spec.name));
+    let func_id = declare_packed_function(module, &name, spec.params.len())?;
+    define_function_body(module, func_id, spec)?;
     module
         .finalize_definitions()
         .map_err(|e| JitError(format!("failed to finalize JIT definitions for {name}: {e}")))?;
@@ -618,6 +828,62 @@ fn make_packed_signature(module: &mut JITModule, params: &[ScalarType]) -> ir::S
     sig
 }
 
+fn align_shift(align: u32) -> u8 {
+    let mut shift = 0u8;
+    let mut v = 1u32;
+    while v < align.max(1) {
+        v <<= 1;
+        shift = shift.saturating_add(1);
+    }
+    shift
+}
+
+fn lower_runtime_memcpy(
+    module: &mut JITModule,
+    b: &mut FunctionBuilder<'_>,
+    dst: Value,
+    src: Value,
+    len: Value,
+    helper: &str,
+) -> Result<Option<Value>, JitError> {
+    let mut sig = module.make_signature();
+    sig.params.push(ir::AbiParam::new(types::I64));
+    sig.params.push(ir::AbiParam::new(types::I64));
+    sig.params.push(ir::AbiParam::new(types::I64));
+    if helper == "moonlift_rt_memcmp" {
+        sig.returns.push(ir::AbiParam::new(types::I32));
+    }
+    let func_id = module
+        .declare_function(helper, Linkage::Import, &sig)
+        .map_err(|e| JitError(format!("failed to declare runtime helper {helper}: {e}")))?;
+    let func_ref = module.declare_func_in_func(func_id, b.func);
+    let inst = b.ins().call(func_ref, &[dst, src, len]);
+    if helper == "moonlift_rt_memcmp" {
+        Ok(Some(b.inst_results(inst)[0]))
+    } else {
+        Ok(None)
+    }
+}
+
+fn lower_runtime_memset(
+    module: &mut JITModule,
+    b: &mut FunctionBuilder<'_>,
+    dst: Value,
+    byte: Value,
+    len: Value,
+) -> Result<(), JitError> {
+    let mut sig = module.make_signature();
+    sig.params.push(ir::AbiParam::new(types::I64));
+    sig.params.push(ir::AbiParam::new(types::I8));
+    sig.params.push(ir::AbiParam::new(types::I64));
+    let func_id = module
+        .declare_function("moonlift_rt_memset", Linkage::Import, &sig)
+        .map_err(|e| JitError(format!("failed to declare runtime helper moonlift_rt_memset: {e}")))?;
+    let func_ref = module.declare_func_in_func(func_id, b.func);
+    b.ins().call(func_ref, &[dst, byte, len]);
+    Ok(())
+}
+
 fn lower_call_value(
     module: &mut JITModule,
     b: &mut FunctionBuilder<'_>,
@@ -629,10 +895,14 @@ fn lower_call_value(
 ) -> Result<Value, JitError> {
     let (params, result_ty, inst) = match target {
         CallTarget::Direct { name, params, result } => {
-            let sig = make_packed_signature(module, params);
-            let func_id = module
-                .declare_function(name, Linkage::Import, &sig)
-                .map_err(|e| JitError(format!("failed to declare callee {name}: {e}")))?;
+            let func_id = if let Some(func_id) = active_direct_func(name) {
+                func_id
+            } else {
+                let sig = make_packed_signature(module, params);
+                module
+                    .declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| JitError(format!("failed to declare callee {name}: {e}")))?
+            };
             let func_ref = module.declare_func_in_func(func_id, b.func);
             let mut packed_args = Vec::with_capacity(args.len());
             for i in 0..args.len() {
@@ -766,7 +1036,17 @@ fn lower_condition(
         return Err(JitError("Moonlift condition must have type bool".to_string()));
     }
     let v = lower_expr(module, b, expr, lower, next_var_index, loop_stack)?;
-    Ok(b.ins().icmp_imm(IntCC::NotEqual, v, 0))
+    Ok(lower_bool_cond_from_value(b, v))
+}
+
+fn lower_bool_cond_from_value(b: &mut FunctionBuilder<'_>, value: Value) -> Value {
+    b.ins().icmp_imm(IntCC::NotEqual, value, 0)
+}
+
+fn lower_bool_value_from_cond(b: &mut FunctionBuilder<'_>, cond: Value) -> Value {
+    let one = b.ins().iconst(types::I8, 1);
+    let zero = b.ins().iconst(types::I8, 0);
+    b.ins().select(cond, one, zero)
 }
 
 fn lower_stmts(
@@ -850,10 +1130,79 @@ fn lower_stmt(
             b.switch_to_block(exit);
             Ok(false)
         }
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
+            let cond_val = lower_condition(module, b, cond, lower, next_var_index, loop_stack)?;
+            let then_block = b.create_block();
+            let else_block = b.create_block();
+            let merge_block = b.create_block();
+
+            b.ins().brif(cond_val, then_block, &[], else_block, &[]);
+            b.seal_block(then_block);
+            b.seal_block(else_block);
+
+            b.switch_to_block(then_block);
+            let mut then_ctx = lower.clone();
+            let then_terminated = lower_stmts(module, b, then_body, &mut then_ctx, next_var_index, loop_stack)?;
+            if !then_terminated {
+                b.ins().jump(merge_block, &[]);
+            }
+
+            b.switch_to_block(else_block);
+            let mut else_ctx = lower.clone();
+            let else_terminated = lower_stmts(module, b, else_body, &mut else_ctx, next_var_index, loop_stack)?;
+            if !else_terminated {
+                b.ins().jump(merge_block, &[]);
+            }
+
+            if then_terminated && else_terminated {
+                Ok(true)
+            } else {
+                b.seal_block(merge_block);
+                b.switch_to_block(merge_block);
+                Ok(false)
+            }
+        }
         Stmt::Store { ty: _, addr, value } => {
             let addr_val = lower_expr(module, b, addr, lower, next_var_index, loop_stack)?;
             let val = lower_expr(module, b, value, lower, next_var_index, loop_stack)?;
             b.ins().store(MemFlags::trusted(), val, addr_val, 0i32);
+            Ok(false)
+        }
+        Stmt::StackSlot { name, size, align } => {
+            if lower.stack_slots.contains_key(name) {
+                return Err(JitError(format!("duplicate Moonlift stack slot '{}'", name)));
+            }
+            let slot = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                *size,
+                align_shift(*align),
+            ));
+            lower.stack_slots.insert(name.clone(), slot);
+            Ok(false)
+        }
+        Stmt::Memcpy { dst, src, len } => {
+            let dst_val = lower_expr(module, b, dst, lower, next_var_index, loop_stack)?;
+            let src_val = lower_expr(module, b, src, lower, next_var_index, loop_stack)?;
+            let len_val = lower_expr(module, b, len, lower, next_var_index, loop_stack)?;
+            let _ = lower_runtime_memcpy(module, b, dst_val, src_val, len_val, "moonlift_rt_memcpy")?;
+            Ok(false)
+        }
+        Stmt::Memmove { dst, src, len } => {
+            let dst_val = lower_expr(module, b, dst, lower, next_var_index, loop_stack)?;
+            let src_val = lower_expr(module, b, src, lower, next_var_index, loop_stack)?;
+            let len_val = lower_expr(module, b, len, lower, next_var_index, loop_stack)?;
+            let _ = lower_runtime_memcpy(module, b, dst_val, src_val, len_val, "moonlift_rt_memmove")?;
+            Ok(false)
+        }
+        Stmt::Memset { dst, byte, len } => {
+            let dst_val = lower_expr(module, b, dst, lower, next_var_index, loop_stack)?;
+            let byte_val = lower_expr(module, b, byte, lower, next_var_index, loop_stack)?;
+            let len_val = lower_expr(module, b, len, lower, next_var_index, loop_stack)?;
+            lower_runtime_memset(module, b, dst_val, byte_val, len_val)?;
             Ok(false)
         }
         Stmt::Call { target, args } => {
@@ -924,7 +1273,13 @@ fn lower_expr(
         }
         Expr::Block { stmts, result, .. } => {
             let mut child = lower.clone();
-            let _ = lower_stmts(module, b, stmts, &mut child, next_var_index, loop_stack)?;
+            let terminated = lower_stmts(module, b, stmts, &mut child, next_var_index, loop_stack)?;
+            if terminated {
+                return Err(JitError(
+                    "Moonlift expression block terminated via break/continue before producing a value"
+                        .to_string(),
+                ));
+            }
             lower_expr(module, b, result, &mut child, next_var_index, loop_stack)
         }
         Expr::If {
@@ -961,11 +1316,34 @@ fn lower_expr(
             let addr_val = lower_expr(module, b, addr, lower, next_var_index, loop_stack)?;
             Ok(b.ins().load(ty.abi_type(), MemFlags::trusted(), addr_val, 0i32))
         }
+        Expr::StackAddr { name } => {
+            let slot = lower
+                .stack_slots
+                .get(name)
+                .copied()
+                .ok_or_else(|| JitError(format!("unknown Moonlift stack slot '{}'", name)))?;
+            Ok(b.ins().stack_addr(types::I64, slot, 0))
+        }
+        Expr::Memcmp { a, b: rhs, len } => {
+            let a_val = lower_expr(module, b, a, lower, next_var_index, loop_stack)?;
+            let b_val = lower_expr(module, b, rhs, lower, next_var_index, loop_stack)?;
+            let len_val = lower_expr(module, b, len, lower, next_var_index, loop_stack)?;
+            match lower_runtime_memcpy(module, b, a_val, b_val, len_val, "moonlift_rt_memcmp")? {
+                Some(v) => Ok(v),
+                None => Err(JitError("moonlift internal error lowering memcmp".to_string())),
+            }
+        }
         Expr::Cast { op, ty, value } => {
             let v = lower_expr(module, b, value, lower, next_var_index, loop_stack)?;
             lower_cast(b, *op, value.ty(), *ty, v)
         }
         Expr::Call { target, args, .. } => lower_call_value(module, b, target, args, lower, next_var_index, loop_stack),
+        Expr::Select { cond, then_expr, else_expr, .. } => {
+            let cond_val = lower_condition(module, b, cond, lower, next_var_index, loop_stack)?;
+            let then_val = lower_expr(module, b, then_expr, lower, next_var_index, loop_stack)?;
+            let else_val = lower_expr(module, b, else_expr, lower, next_var_index, loop_stack)?;
+            Ok(b.ins().select(cond_val, then_val, else_val))
+        }
     }
 }
 
@@ -1049,7 +1427,8 @@ fn lower_unary(
         }
         UnaryOp::Not => {
             if ty.is_bool() {
-                Ok(b.ins().bnot(value))
+                let is_zero = b.ins().icmp_imm(IntCC::Equal, value, 0);
+                Ok(lower_bool_value_from_cond(b, is_zero))
             } else {
                 Err(JitError(format!("logical not is not valid for {}", ty.name())))
             }
@@ -1222,14 +1601,20 @@ fn lower_binary(
         BinaryOp::Ge => lower_compare_int_or_float(b, ty, lhs_ty, rhs, lhs, CompareOp::Ge),
         BinaryOp::And => {
             if ty.is_bool() {
-                Ok(b.ins().band(lhs, rhs))
+                let lhs = lower_bool_cond_from_value(b, lhs);
+                let rhs = lower_bool_cond_from_value(b, rhs);
+                let both = b.ins().band(lhs, rhs);
+                Ok(lower_bool_value_from_cond(b, both))
             } else {
                 Err(JitError("logical and is only valid for bool".to_string()))
             }
         }
         BinaryOp::Or => {
             if ty.is_bool() {
-                Ok(b.ins().bor(lhs, rhs))
+                let lhs = lower_bool_cond_from_value(b, lhs);
+                let rhs = lower_bool_cond_from_value(b, rhs);
+                let either = b.ins().bor(lhs, rhs);
+                Ok(lower_bool_value_from_cond(b, either))
             } else {
                 Err(JitError("logical or is only valid for bool".to_string()))
             }
@@ -1336,7 +1721,7 @@ fn lower_compare_int_or_float(
         };
         b.ins().icmp(cc, lhs, rhs)
     };
-    Ok(cmp)
+    Ok(lower_bool_value_from_cond(b, cmp))
 }
 
 fn sanitize_symbol(name: &str) -> String {

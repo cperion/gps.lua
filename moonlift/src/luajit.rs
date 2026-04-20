@@ -38,6 +38,7 @@ unsafe extern "C" {
     fn lua_pushinteger(state: *mut lua_State, n: lua_Integer);
     fn lua_pushnumber(state: *mut lua_State, n: lua_Number);
     fn lua_pushboolean(state: *mut lua_State, b: c_int);
+    fn lua_pushnil(state: *mut lua_State);
     fn lua_pushstring(state: *mut lua_State, s: *const c_char) -> *const c_char;
     fn lua_error(state: *mut lua_State) -> c_int;
     fn lua_tointeger(state: *mut lua_State, idx: c_int) -> lua_Integer;
@@ -45,6 +46,7 @@ unsafe extern "C" {
     fn lua_toboolean(state: *mut lua_State, idx: c_int) -> c_int;
     fn lua_getfield(state: *mut lua_State, idx: c_int, k: *const c_char);
     fn lua_rawgeti(state: *mut lua_State, idx: c_int, n: c_longlong);
+    fn lua_rawseti(state: *mut lua_State, idx: c_int, n: c_longlong);
     fn lua_touserdata(state: *mut lua_State, idx: c_int) -> *mut c_void;
     fn lua_setfield(state: *mut lua_State, idx: c_int, k: *const c_char);
     fn lua_createtable(state: *mut lua_State, narr: c_int, nrec: c_int);
@@ -160,6 +162,19 @@ impl LuaState {
         unsafe { lua_pushboolean(state, if value { 1 } else { 0 }) }
     }
 
+    pub unsafe fn push_nil(state: *mut lua_State) {
+        unsafe { lua_pushnil(state) }
+    }
+
+    pub unsafe fn push_string(state: *mut lua_State, value: &str) -> Result<(), LuaError> {
+        let cvalue = CString::new(value).map_err(|_| LuaError {
+            code: -1,
+            message: "lua string contains interior NUL".to_string(),
+        })?;
+        unsafe { lua_pushstring(state, cvalue.as_ptr()) };
+        Ok(())
+    }
+
     pub unsafe fn create_table(state: *mut lua_State, narr: c_int, nrec: c_int) {
         unsafe { lua_createtable(state, narr, nrec) }
     }
@@ -176,6 +191,41 @@ impl LuaState {
         unsafe {
             lua_pushinteger(state, value);
             lua_setfield(state, -2, cname.as_ptr());
+        }
+        Ok(())
+    }
+
+    pub unsafe fn set_string_field_on_top(
+        state: *mut lua_State,
+        name: &str,
+        value: &str,
+    ) -> Result<(), LuaError> {
+        let cname = CString::new(name).map_err(|_| LuaError {
+            code: -1,
+            message: format!("field name contains interior NUL: {name:?}"),
+        })?;
+        let cvalue = CString::new(value).map_err(|_| LuaError {
+            code: -1,
+            message: "lua string contains interior NUL".to_string(),
+        })?;
+        unsafe {
+            lua_pushstring(state, cvalue.as_ptr());
+            lua_setfield(state, -2, cname.as_ptr());
+        }
+        Ok(())
+    }
+
+    pub unsafe fn set_field_from_top(
+        state: *mut lua_State,
+        idx: c_int,
+        name: &str,
+    ) -> Result<(), LuaError> {
+        let cname = CString::new(name).map_err(|_| LuaError {
+            code: -1,
+            message: format!("field name contains interior NUL: {name:?}"),
+        })?;
+        unsafe {
+            lua_setfield(state, idx, cname.as_ptr());
         }
         Ok(())
     }
@@ -203,6 +253,10 @@ impl LuaState {
 
     pub unsafe fn raw_get_i(state: *mut lua_State, idx: c_int, n: i64) {
         unsafe { lua_rawgeti(state, idx, n as c_longlong) }
+    }
+
+    pub unsafe fn raw_set_i_from_top(state: *mut lua_State, idx: c_int, n: i64) {
+        unsafe { lua_rawseti(state, idx, n as c_longlong) }
     }
 
     pub unsafe fn to_string(state: *mut lua_State, idx: c_int) -> Option<String> {
