@@ -453,33 +453,41 @@ What is still missing is authored infrastructure for automatically constructing 
 
 ---
 
-## 5.7 `SurfTArray` type lowering is still missing
+## 5.7 `SurfTArray` type lowering now exists, but count elaboration is still limited
 
-This is explicit in the code.
-
-`lower_surface_to_elab.lua` errors on:
+`lower_surface_to_elab.lua` now lowers:
 
 - `SurfTArray`
 
-because array-count expression elaboration for type lowering has not been implemented.
+by elaborating the count expression into the `ElabTArray(count, elem)` form.
+
+Current explicit limitation:
+
+- only the current literal count subset is accepted at this boundary
+- richer non-literal array-count elaboration is still not implemented
 
 So currently:
 
 - array literals work
-- array type syntax at the Surface layer does not fully lower through the real frontend path
+- array type syntax lowers through the real frontend path
+- non-literal array-count elaboration is still pending
 
 ---
 
-## 5.8 Reference/dereference typing is incomplete in `Surface -> Elab`
+## 5.8 Reference/dereference typing now performs the real type transformation in `Surface -> Elab`
 
-`SurfExprRef` and `SurfExprDeref` currently go through the generic unary helper path.
+`SurfExprRef` and `SurfExprDeref` now lower through explicit typed handling rather than the generic unary helper path.
 
-That means the frontend is not yet clearly performing the proper type transformations:
+Implemented type transformations:
 
 - `T -> ptr(T)` for ref
 - `ptr(T) -> T` for deref
 
-So ref/deref are present in the IR but not yet fully implemented as a proper typed frontend feature.
+Current explicit limitation:
+
+- full addressability/lvalue rules are still incomplete downstream, so not every syntactically typable `ref` use is yet machine-lowerable
+
+So ref/deref are now real typed frontend features, but the full lvalue/addressability model is still partial.
 
 ---
 

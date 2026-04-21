@@ -51,6 +51,18 @@ assert(xr == Elab.ElabBindingExpr(Elab.ElabLocalValue("env.x", "x", Elab.ElabTI3
 local neg = one(Surf.SurfExprNeg(Surf.SurfNameRef("x")))
 assert(neg == Elab.ElabExprNeg(Elab.ElabTI32, xr))
 
+local ref_x = one(Surf.SurfExprRef(Surf.SurfNameRef("x")))
+assert(ref_x == Elab.ElabExprRef(
+    Elab.ElabTPtr(Elab.ElabTI32),
+    Elab.ElabBindingExpr(Elab.ElabLocalValue("env.x", "x", Elab.ElabTI32))
+))
+
+local deref_ptr = one(Surf.SurfExprDeref(Surf.SurfNameRef("ptr")))
+assert(deref_ptr == Elab.ElabExprDeref(
+    Elab.ElabTF32,
+    Elab.ElabBindingExpr(Elab.ElabLocalValue("env.ptr", "ptr", Elab.ElabTPtr(Elab.ElabTF32)))
+))
+
 local add = one(Surf.SurfExprAdd(
     Surf.SurfNameRef("x"),
     Surf.SurfInt("1")

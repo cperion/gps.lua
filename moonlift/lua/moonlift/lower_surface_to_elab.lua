@@ -18,6 +18,7 @@ function M.Define(T)
     local Elab = T.MoonliftElab
 
     local lower_type
+    local lower_array_count_expr
 
     local function one_type(node, env)
         return pvm.one(lower_type(node, env))
@@ -42,6 +43,12 @@ function M.Define(T)
         end
         return nil
     end
+
+    lower_array_count_expr = pvm.phase("surface_to_elab_array_count_expr", {
+        [Surf.SurfInt] = function(self)
+            return pvm.once(Elab.ElabInt(self.raw, Elab.ElabTIndex))
+        end,
+    })
 
     lower_type = pvm.phase("surface_to_elab_type", {
         [Surf.SurfTVoid] = function()
@@ -89,8 +96,8 @@ function M.Define(T)
         [Surf.SurfTSlice] = function(self, env)
             return pvm.once(Elab.ElabTSlice(one_type(self.elem, env)))
         end,
-        [Surf.SurfTArray] = function(self)
-            error("surface_to_elab_type: SurfTArray needs expression elaboration for count")
+        [Surf.SurfTArray] = function(self, env)
+            return pvm.once(Elab.ElabTArray(pvm.one(lower_array_count_expr(self.count, env)), one_type(self.elem, env)))
         end,
         [Surf.SurfTFunc] = function(self, env)
             return pvm.once(Elab.ElabTFunc(lower_type_list(self.params, env), one_type(self.result, env)))

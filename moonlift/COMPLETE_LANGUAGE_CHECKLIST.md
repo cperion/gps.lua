@@ -140,10 +140,10 @@ Surface -> Elab -> Sem -> Back -> Artifact
 - [ ] define shadowing and lookup rules clearly
 
 ## 3.4 Type-system completion in current language shape
-- [ ] implement `SurfTArray` lowering fully
+- [x] implement `SurfTArray` lowering fully
 - [ ] support non-literal array-count elaboration if intended
-- [ ] fix/complete `ref` typing (`T -> ptr(T)`) in `Surface -> Elab`
-- [ ] fix/complete `deref` typing (`ptr(T) -> T`) in `Surface -> Elab`
+- [x] fix/complete `ref` typing (`T -> ptr(T)`) in `Surface -> Elab`
+- [x] fix/complete `deref` typing (`ptr(T) -> T`) in `Surface -> Elab`
 - [ ] define/addressability rules for all referenceable lvalues
 - [ ] finalize whether `bool and/or` are strict scalar ops or short-circuit operators
 - [ ] if short-circuiting is intended, implement CFG lowering for them

@@ -15,6 +15,8 @@ function M.Define(T)
     local call_sig
     local index_elem_type
     local field_type
+    local ref_result_type
+    local deref_result_type
     local path_binding_matches
 
     local function one_type(node, env)
@@ -184,6 +186,54 @@ function M.Define(T)
             return pvm.once(ctor(ty, value))
         end
     end
+
+    ref_result_type = pvm.phase("surface_to_elab_ref_result_type", {
+        [Elab.ElabTVoid] = function(self)
+            return pvm.once(Elab.ElabTPtr(self))
+        end,
+        [Elab.ElabTBool] = function(self)
+            return pvm.once(Elab.ElabTPtr(self))
+        end,
+        [Elab.ElabTI8] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTI16] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTI32] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTI64] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTU8] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTU16] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTU32] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTU64] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTF32] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTF64] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTIndex] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTPtr] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTArray] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTSlice] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTFunc] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabTNamed] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+    })
+
+    deref_result_type = pvm.phase("surface_to_elab_deref_result_type", {
+        [Elab.ElabTPtr] = function(self)
+            return pvm.once(self.elem)
+        end,
+        [Elab.ElabTVoid] = function() error("surface_to_elab_expr: cannot dereference a void-typed value") end,
+        [Elab.ElabTBool] = function() error("surface_to_elab_expr: cannot dereference a bool-typed value") end,
+        [Elab.ElabTI8] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTI16] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTI32] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTI64] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTU8] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTU16] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTU32] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTU64] = function() error("surface_to_elab_expr: cannot dereference an integer-typed value") end,
+        [Elab.ElabTF32] = function() error("surface_to_elab_expr: cannot dereference a float-typed value") end,
+        [Elab.ElabTF64] = function() error("surface_to_elab_expr: cannot dereference a float-typed value") end,
+        [Elab.ElabTIndex] = function() error("surface_to_elab_expr: cannot dereference an index-typed value") end,
+        [Elab.ElabTArray] = function() error("surface_to_elab_expr: cannot dereference an array-typed value") end,
+        [Elab.ElabTSlice] = function() error("surface_to_elab_expr: cannot dereference a slice-typed value") end,
+        [Elab.ElabTFunc] = function() error("surface_to_elab_expr: cannot dereference a function-typed value") end,
+        [Elab.ElabTNamed] = function() error("surface_to_elab_expr: cannot dereference a named aggregate value") end,
+    })
 
     path_binding_matches = pvm.phase("surface_to_elab_path_binding_matches", {
         [Elab.ElabLocalValue] = function(self, entry_name, full_text)
@@ -366,8 +416,14 @@ function M.Define(T)
         [Surf.SurfExprNeg] = unary_same_type(Elab.ElabExprNeg),
         [Surf.SurfExprNot] = unary_same_type(Elab.ElabExprNot),
         [Surf.SurfExprBNot] = unary_same_type(Elab.ElabExprBNot),
-        [Surf.SurfExprRef] = unary_same_type(Elab.ElabExprRef),
-        [Surf.SurfExprDeref] = unary_same_type(Elab.ElabExprDeref),
+        [Surf.SurfExprRef] = function(self, env)
+            local value = one_expr(self.value, env, nil)
+            return pvm.once(Elab.ElabExprRef(pvm.one(ref_result_type(one_expr_type(value))), value))
+        end,
+        [Surf.SurfExprDeref] = function(self, env)
+            local value = one_expr(self.value, env, nil)
+            return pvm.once(Elab.ElabExprDeref(pvm.one(deref_result_type(one_expr_type(value))), value))
+        end,
         [Surf.SurfExprAdd] = same_type_binary(Elab.ElabExprAdd),
         [Surf.SurfExprSub] = same_type_binary(Elab.ElabExprSub),
         [Surf.SurfExprMul] = same_type_binary(Elab.ElabExprMul),

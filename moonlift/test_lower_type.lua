@@ -24,6 +24,12 @@ assert(p_i32 == Elab.ElabTPtr(Elab.ElabTI32))
 local s_f32 = pvm.one(L.lower_type(Surf.SurfTSlice(Surf.SurfTF32), env))
 assert(s_f32 == Elab.ElabTSlice(Elab.ElabTF32))
 
+local arr_i32 = pvm.one(L.lower_type(
+    Surf.SurfTArray(Surf.SurfInt("4"), Surf.SurfTI32),
+    env
+))
+assert(arr_i32 == Elab.ElabTArray(Elab.ElabInt("4", Elab.ElabTIndex), Elab.ElabTI32))
+
 local fn_ty = pvm.one(L.lower_type(
     Surf.SurfTFunc(
         { Surf.SurfTI32, Surf.SurfTPtr(Surf.SurfTU8) },

@@ -39,6 +39,24 @@ assert(add == Sem.SemExprAdd(
     Sem.SemExprConstInt(Sem.SemTI32, "1")
 ))
 
+local ref_expr = one_expr(Elab.ElabExprRef(
+    Elab.ElabTPtr(Elab.ElabTI32),
+    Elab.ElabBindingExpr(Elab.ElabLocalValue("lx", "x", Elab.ElabTI32))
+))
+assert(ref_expr == Sem.SemExprRef(
+    Sem.SemTPtrTo(Sem.SemTI32),
+    Sem.SemExprBinding(Sem.SemBindLocalValue("lx", "x", Sem.SemTI32))
+))
+
+local deref_expr = one_expr(Elab.ElabExprDeref(
+    Elab.ElabTI32,
+    Elab.ElabBindingExpr(Elab.ElabLocalValue("lp", "p", Elab.ElabTPtr(Elab.ElabTI32)))
+))
+assert(deref_expr == Sem.SemExprDeref(
+    Sem.SemTI32,
+    Sem.SemExprBinding(Sem.SemBindLocalValue("lp", "p", Sem.SemTPtrTo(Sem.SemTI32)))
+))
+
 local direct_call = one_expr(Elab.ElabCall(
     Elab.ElabBindingExpr(Elab.ElabGlobal("", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
     Elab.ElabTI32,
