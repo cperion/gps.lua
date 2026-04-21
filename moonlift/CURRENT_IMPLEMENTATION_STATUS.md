@@ -37,6 +37,7 @@ This inventory was based on the current implementation files:
 - `moonlift/lua/moonlift/lower_surface_to_elab_expr.lua`
 - `moonlift/lua/moonlift/lower_surface_to_elab_loop.lua`
 - `moonlift/lua/moonlift/lower_surface_to_elab_domain.lua`
+- `moonlift/lua/moonlift/lower_surface_to_elab_top.lua`
 - `moonlift/lua/moonlift/lower_elab_to_sem.lua`
 - `moonlift/lua/moonlift/resolve_sem_layout.lua`
 - `moonlift/lua/moonlift/lower_sem_to_back.lua`
@@ -67,17 +68,19 @@ And the current implementation already contains a real middle/back-end path for 
 - local expression lowering
 - local statement lowering
 - local loop and domain lowering
-- `Elab -> Sem` lowering for local code
+- top-level `Surface -> Elab` lowering for params/funcs/externs/consts/items/modules
+- top-level `Elab -> Sem` lowering for params/funcs/externs/consts/items/modules
+- function-arg env synthesis from params
+- sibling-item value env synthesis for funcs/consts/externs
 - semantic layout resolution pass
 - large `Sem -> Back` lowering
 - `BackCmd` FFI replay
 - Cranelift codegen host in Rust
 
 ### Still missing to make the language fully working as an authored language
-- top-level authored frontend lowering for funcs/externs/consts/modules
-- param lowering at the frontend layers
-- environment / namespace / layout synthesis from authored top-level code
 - parser / text frontend in the rebooted codebase
+- qualified path/module reference lowering
+- type / layout synthesis from authored top-level code
 - full slice/view lowering model
 - intrinsic lowering
 - fuller const evaluation
@@ -88,7 +91,7 @@ And the current implementation already contains a real middle/back-end path for 
 
 # 3. What is already implemented
 
-## 3.1 `Surface -> Elab` for local code is real
+## 3.1 `Surface -> Elab` for local code and top-level value items is real
 
 Implemented in:
 
@@ -96,6 +99,7 @@ Implemented in:
 - `moonlift/lua/moonlift/lower_surface_to_elab_expr.lua`
 - `moonlift/lua/moonlift/lower_surface_to_elab_loop.lua`
 - `moonlift/lua/moonlift/lower_surface_to_elab_domain.lua`
+- `moonlift/lua/moonlift/lower_surface_to_elab_top.lua`
 
 ### Types implemented
 - `SurfTVoid`
@@ -157,11 +161,30 @@ The current `Surface -> Elab` code already threads local env effects for:
 - block expr stmt lists
 - loop carry bindings and `next`
 
-So the local frontend is real, not just a sketch.
+### Top-level value-item lowering implemented
+The current `Surface -> Elab` code also lowers:
+
+- `SurfParam`
+- `SurfFunc`
+- `SurfExternFunc`
+- `SurfConst`
+- `SurfItemFunc`
+- `SurfItemExtern`
+- `SurfItemConst`
+- `SurfModule`
+
+And it already synthesizes real value environments for:
+
+- function arguments from params
+- sibling function references in module scope
+- sibling const references in module scope
+- sibling extern references in module scope
+
+So the frontend is now real for local code and top-level value items, not just a sketch.
 
 ---
 
-## 3.2 `Elab -> Sem` for local code is real
+## 3.2 `Elab -> Sem` for local code and top-level value items is real
 
 Implemented in:
 
@@ -169,11 +192,17 @@ Implemented in:
 
 Implemented:
 - `ElabType -> SemType`
+- `ElabParam -> SemParam`
 - `ElabBinding -> SemBinding`
 - `ElabExpr -> SemExpr`
 - `ElabStmt -> SemStmt`
 - `ElabDomain -> SemDomain`
 - `ElabLoop -> SemLoop`
+- `ElabFunc -> SemFunc`
+- `ElabExternFunc -> SemExternFunc`
+- `ElabConst -> SemConst`
+- `ElabItem -> SemItem`
+- `ElabModule -> SemModule`
 
 Also implemented:
 
@@ -182,7 +211,9 @@ Also implemented:
   - externs become `SemCallExtern`
   - locals/args become `SemCallIndirect`
 
-So the local elaborated-to-semantic lowering is real.
+Top-level authored funcs currently lower to `SemFuncExport`, since the rebooted Surface layer does not yet expose a visibility/export distinction.
+
+So the elaborated-to-semantic lowering is real for both local code and top-level value items.
 
 ---
 
@@ -317,9 +348,9 @@ rather than by a full top-level authored language path.
 
 This is the core missing-work inventory.
 
-## 5.1 Top-level `Surface -> Elab` lowering is missing
+## 5.1 Top-level `Surface -> Elab` value-item lowering now exists, but authored type/layout declarations and qualified paths are still missing
 
-These current ASDL nodes have no real current frontend lowering:
+The reboot now has real frontend lowering for:
 
 - `SurfParam`
 - `SurfFunc`
@@ -330,21 +361,18 @@ These current ASDL nodes have no real current frontend lowering:
 - `SurfItemConst`
 - `SurfModule`
 
-So today there is **no full authored top-level frontend path** for:
+What is still missing at this layer is:
 
-- functions
-- extern declarations
-- const declarations
-- items
-- modules
-
-This is one of the biggest gaps.
+- qualified path value resolution through `SurfPathRef`
+- authored type-definition items / layout-definition items
+- type/layout env synthesis from authored top-level declarations
+- a text parser/frontend that produces those authored top-level items
 
 ---
 
-## 5.2 Top-level `Elab -> Sem` lowering is missing
+## 5.2 Top-level `Elab -> Sem` value-item lowering now exists, but export/visibility semantics are still minimal
 
-These current ASDL nodes likewise have no current lowering:
+These current ASDL nodes now have real lowering:
 
 - `ElabParam`
 - `ElabFunc`
@@ -355,41 +383,38 @@ These current ASDL nodes likewise have no current lowering:
 - `ElabItemConst`
 - `ElabModule`
 
-So even if top-level `Elab` were produced, there is no complete current path to semantic IR for those top-level authored forms.
+Current explicit limitation:
+
+- plain authored `ElabFunc` currently lowers to `SemFuncExport`, because the rebooted authored surface does not yet expose a separate local/export function distinction
 
 ---
 
-## 5.3 Param lowering is missing at the frontend layers
+## 5.3 Param lowering is now implemented at the frontend layers
 
-The ASDL contains:
+The current path now supports:
 
-- `SurfParam`
-- `ElabParam`
-- `SemParam`
-
-But the current frontend path only really uses `SemParam` in manually-built semantic examples/tests.
-
-Missing:
 - `SurfParam -> ElabParam`
 - `ElabParam -> SemParam`
 - function arg env synthesis from params
 
+What is still missing is richer authored parameter semantics beyond plain typed params, if the reboot later grows them.
+
 ---
 
-## 5.4 Environment / namespace synthesis is missing
+## 5.4 Environment / namespace synthesis is now partial rather than missing
 
-Current `Surface -> Elab` works because tests/debug code manually build `ElabEnv`.
-
-Missing authored infrastructure includes:
+Current authored `Surface -> Elab` now automatically builds real value environments for:
 
 - function argument env construction
-- module/global env construction
-- sibling item name resolution
-- extern env construction
+- module/global value env construction for sibling items
+- sibling function/const/extern name resolution
+
+Still missing authored infrastructure includes:
+
 - type env construction
 - layout env construction from authored top-level declarations
-
-Right now these are not created automatically by a top-level frontend.
+- qualified/module path resolution through `SurfPathRef`
+- a complete multi-module namespace/import story
 
 ---
 
@@ -732,23 +757,23 @@ So the meta side is still design-only.
 
 # 6. What is partly implemented but still incomplete
 
-## 6.1 Modules/functions/items exist at `Sem -> Back`, but not as authored frontend forms
+## 6.1 Modules/functions/items now exist as authored frontend forms for value items, but the authored type/layout story is still incomplete
 
-This distinction matters.
+This distinction still matters.
 
 ### Implemented today
-- `SemFuncLocal`
-- `SemFuncExport`
-- `SemItemFunc`
-- `SemItemExtern`
-- `SemItemConst`
-- `SemModule`
-- their `Sem -> Back` lowering
+- `SurfFunc` / `ElabFunc` / `SemFuncExport`
+- `SurfExternFunc` / `ElabExternFunc` / `SemExternFunc`
+- `SurfConst` / `ElabConst` / `SemConst`
+- `SurfItem*` / `ElabItem*` / `SemItem*`
+- `SurfModule` / `ElabModule` / `SemModule`
+- their downstream `Sem -> Back` lowering
 
-### Missing today
-- authored top-level frontend production of those forms from `Surface` / `Elab`
-
-So module/function lowering exists, but only from manually-built semantic IR.
+### Still missing today
+- authored type-definition items
+- authored layout-definition items
+- qualified/module path references
+- a visibility/export distinction for authored functions
 
 ---
 
@@ -810,19 +835,23 @@ These are backend limitations, separate from the frontend gaps above.
 The strongest completed area is:
 
 - local expression/statement/loop/domain lowering
+- top-level value-item lowering through `Surface -> Elab -> Sem`
+- sibling value env synthesis for funcs/consts/externs
 - semantic layout resolution
 - scalar/backend CFG lowering
-- manual-semantic function/module codegen
+- function/module codegen
 
 That is a real compiler middle and backend.
 
 ## 8.2 The biggest missing authored-language area
 
-The biggest missing authored-language area is:
+The biggest missing authored-language area is now:
 
-- top-level frontend lowering and env synthesis
+- parser/text frontend
+- qualified module/path resolution
+- authored type/layout declarations and synthesis
 
-Without that, the language does not yet exist as a complete authored system, even though a large amount of the compiler core already exists.
+Without those, the language still does not yet exist as a complete authored system, even though the closed value-item lowering path is now real.
 
 ## 8.3 The biggest missing runtime/value-model areas
 
@@ -850,14 +879,14 @@ And the richer future host/parser integration strategy described in:
 
 If compressed to one sentence:
 
-> Moonlift already has a real local frontend core, semantic middle, layout-resolution pass, and substantial backend, but it does **not yet** have a fully wired top-level authored language, and several important semantic/runtime areas are still incomplete: **params/modules/env synthesis, slices/views, intrinsics, const eval, and non-scalar ABI/value support**.
+> Moonlift already has a real local frontend core, real top-level value-item lowering through `Surface -> Elab -> Sem`, a layout-resolution pass, and a substantial backend, but it still lacks a complete authored language front door: **parser/text input, qualified paths, authored type/layout synthesis, slices/views, intrinsics, const eval, and fuller non-scalar ABI/value support**.
 
 And if compressed even further:
 
 - **expr/stmt/loop core:** real
-- **top-level authored language frontend:** not done
+- **top-level value-item frontend:** real
 - **scalar backend:** real
-- **aggregate/layout path:** partial/manual
+- **authored type/layout + qualified-path frontend:** still incomplete
 - **slice/intrinsic/parser/meta path:** not done
 
 ---

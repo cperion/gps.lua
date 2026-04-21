@@ -468,6 +468,8 @@ function M.Define(T)
         lower_stmt = lower_stmt,
         lower_loop_stmt = lower_loop_stmt,
         lower_loop_expr = lower_loop_expr,
+        stmt_env_effect = stmt_env_effect,
+        apply_stmt_env_effect = apply_stmt_env_effect,
     }
 end
 

@@ -9,11 +9,17 @@ function M.Define(T)
     local Sem = T.MoonliftSem
 
     local lower_type
+    local lower_param
     local lower_binding
     local lower_expr
     local lower_domain
     local lower_stmt
     local lower_loop
+    local lower_func
+    local lower_extern_func
+    local lower_const
+    local lower_item
+    local lower_module
     local lower_loop_binding
     local lower_loop_next
     local lower_switch_stmt_arm
@@ -28,6 +34,10 @@ function M.Define(T)
 
     local function one_type(node)
         return pvm.one(lower_type(node))
+    end
+
+    local function one_param(node)
+        return pvm.one(lower_param(node))
     end
 
     local function one_binding(node)
@@ -48,6 +58,26 @@ function M.Define(T)
 
     local function one_loop(node)
         return pvm.one(lower_loop(node))
+    end
+
+    local function one_func(node)
+        return pvm.one(lower_func(node))
+    end
+
+    local function one_extern_func(node)
+        return pvm.one(lower_extern_func(node))
+    end
+
+    local function one_const(node)
+        return pvm.one(lower_const(node))
+    end
+
+    local function one_item(node)
+        return pvm.one(lower_item(node))
+    end
+
+    local function one_module(node)
+        return pvm.one(lower_module(node))
     end
 
     local function one_loop_binding(node)
@@ -277,6 +307,12 @@ function M.Define(T)
             return pvm.once(Sem.SemTFunc(params, one_type(self.result)))
         end,
         [Elab.ElabTNamed] = function(self) return pvm.once(Sem.SemTNamed(self.module_name, self.type_name)) end,
+    })
+
+    lower_param = pvm.phase("elab_to_sem_param", {
+        [Elab.ElabParam] = function(self)
+            return pvm.once(Sem.SemParam(self.name, one_type(self.ty)))
+        end,
     })
 
     lower_binding = pvm.phase("elab_to_sem_binding", {
@@ -612,13 +648,67 @@ function M.Define(T)
         end,
     })
 
+    lower_func = pvm.phase("elab_to_sem_func", {
+        [Elab.ElabFunc] = function(self)
+            local params = {}
+            for i = 1, #self.params do
+                params[i] = one_param(self.params[i])
+            end
+            return pvm.once(Sem.SemFuncExport(self.name, params, one_type(self.result), lower_stmt_list(self.body)))
+        end,
+    })
+
+    lower_extern_func = pvm.phase("elab_to_sem_extern_func", {
+        [Elab.ElabExternFunc] = function(self)
+            local params = {}
+            for i = 1, #self.params do
+                params[i] = one_param(self.params[i])
+            end
+            return pvm.once(Sem.SemExternFunc(self.name, self.symbol, params, one_type(self.result)))
+        end,
+    })
+
+    lower_const = pvm.phase("elab_to_sem_const", {
+        [Elab.ElabConst] = function(self)
+            return pvm.once(Sem.SemConst(self.name, one_type(self.ty), one_expr(self.value)))
+        end,
+    })
+
+    lower_item = pvm.phase("elab_to_sem_item", {
+        [Elab.ElabItemFunc] = function(self)
+            return pvm.once(Sem.SemItemFunc(one_func(self.func)))
+        end,
+        [Elab.ElabItemExtern] = function(self)
+            return pvm.once(Sem.SemItemExtern(one_extern_func(self.func)))
+        end,
+        [Elab.ElabItemConst] = function(self)
+            return pvm.once(Sem.SemItemConst(one_const(self.c)))
+        end,
+    })
+
+    lower_module = pvm.phase("elab_to_sem_module", {
+        [Elab.ElabModule] = function(self)
+            local items = {}
+            for i = 1, #self.items do
+                items[i] = one_item(self.items[i])
+            end
+            return pvm.once(Sem.SemModule(items))
+        end,
+    })
+
     return {
         lower_type = lower_type,
+        lower_param = lower_param,
         lower_binding = lower_binding,
         lower_expr = lower_expr,
         lower_domain = lower_domain,
         lower_stmt = lower_stmt,
         lower_loop = lower_loop,
+        lower_func = lower_func,
+        lower_extern_func = lower_extern_func,
+        lower_const = lower_const,
+        lower_item = lower_item,
+        lower_module = lower_module,
         elab_expr_type = elab_expr_type,
         sem_expr_type = sem_expr_type,
     }

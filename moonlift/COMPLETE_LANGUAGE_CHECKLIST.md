@@ -92,33 +92,33 @@ Surface -> Elab -> Sem -> Back -> Artifact
 ## 3.1 Top-level frontend lowering
 
 ### Surface -> Elab top-level
-- [ ] implement `SurfParam -> ElabParam`
-- [ ] implement `SurfFunc -> ElabFunc`
-- [ ] implement `SurfExternFunc -> ElabExternFunc`
-- [ ] implement `SurfConst -> ElabConst`
-- [ ] implement `SurfItemFunc -> ElabItemFunc`
-- [ ] implement `SurfItemExtern -> ElabItemExtern`
-- [ ] implement `SurfItemConst -> ElabItemConst`
-- [ ] implement `SurfModule -> ElabModule`
+- [x] implement `SurfParam -> ElabParam`
+- [x] implement `SurfFunc -> ElabFunc`
+- [x] implement `SurfExternFunc -> ElabExternFunc`
+- [x] implement `SurfConst -> ElabConst`
+- [x] implement `SurfItemFunc -> ElabItemFunc`
+- [x] implement `SurfItemExtern -> ElabItemExtern`
+- [x] implement `SurfItemConst -> ElabItemConst`
+- [x] implement `SurfModule -> ElabModule`
 
 ### Elab -> Sem top-level
-- [ ] implement `ElabParam -> SemParam`
-- [ ] implement `ElabFunc -> SemFunc`
-- [ ] implement `ElabExternFunc -> SemExternFunc`
-- [ ] implement `ElabConst -> SemConst`
-- [ ] implement `ElabItemFunc -> SemItemFunc`
-- [ ] implement `ElabItemExtern -> SemItemExtern`
-- [ ] implement `ElabItemConst -> SemItemConst`
-- [ ] implement `ElabModule -> SemModule`
+- [x] implement `ElabParam -> SemParam`
+- [x] implement `ElabFunc -> SemFunc`
+- [x] implement `ElabExternFunc -> SemExternFunc`
+- [x] implement `ElabConst -> SemConst`
+- [x] implement `ElabItemFunc -> SemItemFunc`
+- [x] implement `ElabItemExtern -> SemItemExtern`
+- [x] implement `ElabItemConst -> SemItemConst`
+- [x] implement `ElabModule -> SemModule`
 
 ## 3.2 Environment and namespace synthesis
 
 ### Value environments
-- [ ] synthesize function arg envs automatically from params
-- [ ] synthesize module item envs automatically from sibling items
-- [ ] support sibling function references in module scope
-- [ ] support sibling const references in module scope
-- [ ] support sibling extern references in module scope
+- [x] synthesize function arg envs automatically from params
+- [x] synthesize module item envs automatically from sibling items
+- [x] support sibling function references in module scope
+- [x] support sibling const references in module scope
+- [x] support sibling extern references in module scope
 
 ### Type environments
 - [ ] actually wire `ElabEnv.types` into frontend type resolution
