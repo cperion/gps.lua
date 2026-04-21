@@ -1214,6 +1214,132 @@ assert(computed_const_module == Back.BackProgram({
     Back.BackCmdFinalizeModule,
 }))
 
+local cast_const_module = one_module(Sem.SemModule({
+    Sem.SemItemConst(Sem.SemConst(
+        "BAND",
+        Sem.SemTI32,
+        Sem.SemExprBitAnd(
+            Sem.SemTI32,
+            Sem.SemExprConstInt(Sem.SemTI32, "6"),
+            Sem.SemExprConstInt(Sem.SemTI32, "3")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "BOR",
+        Sem.SemTU32,
+        Sem.SemExprBitOr(
+            Sem.SemTU32,
+            Sem.SemExprConstInt(Sem.SemTU32, "10"),
+            Sem.SemExprConstInt(Sem.SemTU32, "4")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "BXOR",
+        Sem.SemTU32,
+        Sem.SemExprBitXor(
+            Sem.SemTU32,
+            Sem.SemExprConstInt(Sem.SemTU32, "10"),
+            Sem.SemExprConstInt(Sem.SemTU32, "12")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "SHL",
+        Sem.SemTU8,
+        Sem.SemExprShl(
+            Sem.SemTU8,
+            Sem.SemExprConstInt(Sem.SemTU8, "3"),
+            Sem.SemExprConstInt(Sem.SemTU8, "2")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "LSHR",
+        Sem.SemTU32,
+        Sem.SemExprLShr(
+            Sem.SemTU32,
+            Sem.SemExprConstInt(Sem.SemTU32, "8"),
+            Sem.SemExprConstInt(Sem.SemTU32, "1")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "ASHR",
+        Sem.SemTI32,
+        Sem.SemExprAShr(
+            Sem.SemTI32,
+            Sem.SemExprConstInt(Sem.SemTI32, "-8"),
+            Sem.SemExprConstInt(Sem.SemTI32, "1")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "CASTI",
+        Sem.SemTI32,
+        Sem.SemExprCastTo(
+            Sem.SemTI32,
+            Sem.SemExprConstFloat(Sem.SemTF32, "3.75")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "TRUNC8",
+        Sem.SemTU8,
+        Sem.SemExprTruncTo(
+            Sem.SemTU8,
+            Sem.SemExprConstInt(Sem.SemTU32, "258")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "ZEXT32",
+        Sem.SemTU32,
+        Sem.SemExprZExtTo(
+            Sem.SemTU32,
+            Sem.SemExprConstInt(Sem.SemTU8, "255")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "SEXT32",
+        Sem.SemTI32,
+        Sem.SemExprSExtTo(
+            Sem.SemTI32,
+            Sem.SemExprConstInt(Sem.SemTI8, "-1")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "BITCASTF",
+        Sem.SemTF32,
+        Sem.SemExprBitcastTo(
+            Sem.SemTF32,
+            Sem.SemExprConstInt(Sem.SemTU32, "1065353216")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "SATU8",
+        Sem.SemTU8,
+        Sem.SemExprSatCastTo(
+            Sem.SemTU8,
+            Sem.SemExprConstFloat(Sem.SemTF32, "300")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "SATI8",
+        Sem.SemTI8,
+        Sem.SemExprSatCastTo(
+            Sem.SemTI8,
+            Sem.SemExprConstFloat(Sem.SemTF32, "-200")
+        )
+    )),
+}))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:BAND"), 0, Back.BackI32, "2")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:BOR"), 0, Back.BackU32, "14")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:BXOR"), 0, Back.BackU32, "6")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SHL"), 0, Back.BackU8, "12")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:LSHR"), 0, Back.BackU32, "4")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:ASHR"), 0, Back.BackI32, "-4")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:CASTI"), 0, Back.BackI32, "3")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:TRUNC8"), 0, Back.BackU8, "2")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:ZEXT32"), 0, Back.BackU32, "255")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SEXT32"), 0, Back.BackI32, "-1")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitFloat(Back.BackDataId("data:const:BITCASTF"), 0, Back.BackF32, "1")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SATU8"), 0, Back.BackU8, "255")))
+assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SATI8"), 0, Back.BackI8, "-128")))
+
 local cycle_ok, cycle_err = pcall(function()
     return one_module(Sem.SemModule({
         Sem.SemItemConst(Sem.SemConst(

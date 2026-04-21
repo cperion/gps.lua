@@ -185,7 +185,7 @@ This depends on the intended reboot language surface.
 - [x] implement unary const eval
 - [x] implement arithmetic const eval
 - [x] implement comparison const eval
-- [ ] implement cast const eval
+- [x] implement cast const eval
 - [x] implement select/if const eval if intended
 - [x] implement field/index projection const eval if intended
 - [x] implement aggregate/array const eval coherently

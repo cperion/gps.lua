@@ -694,6 +694,8 @@ Current const-data lowering supports:
   - add / sub / mul / div / rem
   - eq / ne / lt / le / gt / ge
   - bool `and` / `or`
+  - bitwise binary ops and shifts
+  - scalar casts / trunc / zext / sext / bitcast / saturating cast
   - pure `if` / `select`
 - aggregate field projection from constant aggregates
 - array index projection from constant arrays
@@ -708,8 +710,6 @@ In addition, the type-level array-count evaluator now supports a small explicit 
 
 General value-level const evaluation still explicitly does not support several forms, including:
 
-- bitwise binary ops and shifts
-- casts / bitcasts / saturating casts
 - address-taking / dereference / loads
 - intrinsic calls
 - normal calls

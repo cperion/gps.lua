@@ -1381,8 +1381,102 @@ function M.Define(T)
         return ty == Sem.SemTF32 or ty == Sem.SemTF64
     end
 
+    local const_value_ty
+    local find_const_field_value
+    local expect_const_bool
+    local expect_const_intlike
+    local expect_const_numeric_pair
+
+    local const_ops = {
+        unsigned_int_ctype = {
+            [Sem.SemTI8] = "uint8_t",
+            [Sem.SemTI16] = "uint16_t",
+            [Sem.SemTI32] = "uint32_t",
+            [Sem.SemTI64] = "uint64_t",
+            [Sem.SemTU8] = "uint8_t",
+            [Sem.SemTU16] = "uint16_t",
+            [Sem.SemTU32] = "uint32_t",
+            [Sem.SemTU64] = "uint64_t",
+            [Sem.SemTIndex] = "uint64_t",
+        },
+        signed_int_ctype = {
+            [Sem.SemTI8] = "int8_t",
+            [Sem.SemTI16] = "int16_t",
+            [Sem.SemTI32] = "int32_t",
+            [Sem.SemTI64] = "int64_t",
+            [Sem.SemTU8] = "int8_t",
+            [Sem.SemTU16] = "int16_t",
+            [Sem.SemTU32] = "int32_t",
+            [Sem.SemTU64] = "int64_t",
+            [Sem.SemTIndex] = "int64_t",
+        },
+        float_ctype = {
+            [Sem.SemTF32] = "float",
+            [Sem.SemTF64] = "double",
+        },
+        int_bit_width = {
+            [Sem.SemTI8] = 8,
+            [Sem.SemTI16] = 16,
+            [Sem.SemTI32] = 32,
+            [Sem.SemTI64] = 64,
+            [Sem.SemTU8] = 8,
+            [Sem.SemTU16] = 16,
+            [Sem.SemTU32] = 32,
+            [Sem.SemTU64] = 64,
+            [Sem.SemTIndex] = 64,
+        },
+        signed_min_raw = {
+            [Sem.SemTI8] = "-128",
+            [Sem.SemTI16] = "-32768",
+            [Sem.SemTI32] = "-2147483648",
+            [Sem.SemTI64] = "-9223372036854775808",
+        },
+        signed_max_raw = {
+            [Sem.SemTI8] = "127",
+            [Sem.SemTI16] = "32767",
+            [Sem.SemTI32] = "2147483647",
+            [Sem.SemTI64] = "9223372036854775807",
+        },
+        unsigned_max_raw = {
+            [Sem.SemTU8] = "255",
+            [Sem.SemTU16] = "65535",
+            [Sem.SemTU32] = "4294967295",
+            [Sem.SemTU64] = "18446744073709551615",
+            [Sem.SemTIndex] = "18446744073709551615",
+        },
+        u64_zero = ffi.new("uint64_t", 0),
+        u64_two = ffi.new("uint64_t", 2),
+    }
+
     local function type_is_signed_int(ty)
         return ty == Sem.SemTI8 or ty == Sem.SemTI16 or ty == Sem.SemTI32 or ty == Sem.SemTI64
+    end
+
+    const_ops.type_is_bool = function(ty)
+        return ty == Sem.SemTBool
+    end
+
+    const_ops.unsigned_int_ctype_of = function(ty)
+        return const_ops.unsigned_int_ctype[ty]
+    end
+
+    const_ops.signed_int_ctype_of = function(ty)
+        return const_ops.signed_int_ctype[ty]
+    end
+
+    const_ops.float_ctype_of = function(ty)
+        return const_ops.float_ctype[ty]
+    end
+
+    const_ops.int_bit_width_of = function(ty)
+        return const_ops.int_bit_width[ty]
+    end
+
+    const_ops.scalar_bit_width_of = function(ty)
+        if type_is_intlike(ty) then return const_ops.int_bit_width_of(ty) end
+        if ty == Sem.SemTF32 then return 32 end
+        if ty == Sem.SemTF64 then return 64 end
+        return nil
     end
 
     local function format_signed_i64(value)
@@ -1433,7 +1527,258 @@ function M.Define(T)
         return Sem.SemConstFloat(ty, float_raw(ty, value))
     end
 
-    local function const_value_ty(value)
+    const_ops.const_int_value_from_unsigned = function(ty, value)
+        return const_int_value(ty, ffi.cast(int_ctype(ty), ffi.cast(const_ops.unsigned_int_ctype_of(ty), value)))
+    end
+
+    const_ops.pow2_u64 = function(bits)
+        local out = ffi.new("uint64_t", 1)
+        for _ = 1, bits do
+            out = out + out
+        end
+        return out
+    end
+
+    const_ops.signed_min_value = function(ty)
+        return ffi.C.strtoll(const_ops.signed_min_raw[ty], nil, 10)
+    end
+
+    const_ops.signed_max_value = function(ty)
+        return ffi.C.strtoll(const_ops.signed_max_raw[ty], nil, 10)
+    end
+
+    const_ops.unsigned_max_value = function(ty)
+        return ffi.C.strtoull(const_ops.unsigned_max_raw[ty], nil, 10)
+    end
+
+    const_ops.integer_to_lua_number = function(ty, value)
+        if type_is_signed_int(ty) then
+            return tonumber(ffi.cast("int64_t", value))
+        end
+        return tonumber(ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(ty), value)))
+    end
+
+    const_ops.const_zero_value = function(ty)
+        if const_ops.type_is_bool(ty) then
+            return Sem.SemConstBool(false)
+        end
+        if type_is_float(ty) then
+            return const_float_value(ty, 0)
+        end
+        if type_is_intlike(ty) then
+            return const_int_value(ty, 0)
+        end
+        error("sem_const_eval: no scalar zero value for this type")
+    end
+
+    const_ops.bitop_unsigned = function(width, lhs, rhs, mode)
+        local a = ffi.cast("uint64_t", lhs)
+        local b = ffi.cast("uint64_t", rhs)
+        local out = ffi.new("uint64_t", 0)
+        local place = ffi.new("uint64_t", 1)
+        for _ = 1, width do
+            local abit = a % const_ops.u64_two
+            local bbit = b % const_ops.u64_two
+            local include = false
+            if mode == "and" then
+                include = abit ~= const_ops.u64_zero and bbit ~= const_ops.u64_zero
+            elseif mode == "or" then
+                include = abit ~= const_ops.u64_zero or bbit ~= const_ops.u64_zero
+            elseif mode == "xor" then
+                include = (abit ~= const_ops.u64_zero) ~= (bbit ~= const_ops.u64_zero)
+            else
+                error("sem_const_eval: unknown bit operation '" .. tostring(mode) .. "'")
+            end
+            if include then
+                out = out + place
+            end
+            a = a / const_ops.u64_two
+            b = b / const_ops.u64_two
+            place = place + place
+        end
+        return out
+    end
+
+    const_ops.shift_count_from_const = function(value, context)
+        local ty, parsed = expect_const_intlike(value, context)
+        local n = tonumber(ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(ty), parsed)))
+        if n == nil or n < 0 or n ~= math.floor(n) then
+            error("sem_const_eval: " .. context .. " requires a finite non-negative shift count")
+        end
+        return n
+    end
+
+    const_ops.shl_unsigned = function(ty, lhs, count)
+        local out = ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(ty), lhs))
+        for _ = 1, count do
+            out = ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(ty), out + out))
+        end
+        return out
+    end
+
+    const_ops.lshr_unsigned = function(ty, lhs, count)
+        local out = ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(ty), lhs))
+        for _ = 1, count do
+            out = out / const_ops.u64_two
+        end
+        return out
+    end
+
+    const_ops.ashr_unsigned = function(ty, lhs, count)
+        local width = const_ops.int_bit_width_of(ty)
+        local sign_bit = const_ops.pow2_u64(width - 1)
+        local out = ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(ty), lhs))
+        for _ = 1, count do
+            local sign = out >= sign_bit
+            out = out / const_ops.u64_two
+            if sign then
+                out = out + sign_bit
+            end
+            out = ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(ty), out))
+        end
+        return out
+    end
+
+    const_ops.scalar_cast_value = function(dest_ty, value, context)
+        local src_ty = const_value_ty(value)
+        if type_is_intlike(dest_ty) then
+            if const_ops.type_is_bool(src_ty) then
+                return const_int_value(dest_ty, value.value and 1 or 0)
+            end
+            if type_is_intlike(src_ty) then
+                return const_int_value(dest_ty, parse_int_raw(src_ty, value.raw))
+            end
+            if type_is_float(src_ty) then
+                return const_int_value(dest_ty, ffi.cast(int_ctype(dest_ty), tonumber(value.raw)))
+            end
+        elseif type_is_float(dest_ty) then
+            if const_ops.type_is_bool(src_ty) then
+                return const_float_value(dest_ty, value.value and 1 or 0)
+            end
+            if type_is_intlike(src_ty) then
+                return const_float_value(dest_ty, const_ops.integer_to_lua_number(src_ty, parse_int_raw(src_ty, value.raw)))
+            end
+            if type_is_float(src_ty) then
+                return const_float_value(dest_ty, tonumber(value.raw))
+            end
+        elseif const_ops.type_is_bool(dest_ty) then
+            if const_ops.type_is_bool(src_ty) then
+                return Sem.SemConstBool(value.value)
+            end
+            if type_is_intlike(src_ty) then
+                return Sem.SemConstBool(parse_int_raw(src_ty, value.raw) ~= 0)
+            end
+            if type_is_float(src_ty) then
+                return Sem.SemConstBool(tonumber(value.raw) ~= 0)
+            end
+        end
+        error("sem_const_eval: " .. context .. " is not supported from '" .. tostring(src_ty) .. "' to '" .. tostring(dest_ty) .. "'")
+    end
+
+    const_ops.zext_const_value = function(dest_ty, value)
+        local src_ty, parsed = expect_const_intlike(value, "zero-extend")
+        if not type_is_intlike(dest_ty) then
+            error("sem_const_eval: zero-extend requires an integer-like destination type")
+        end
+        return const_int_value(dest_ty, ffi.cast(int_ctype(dest_ty), ffi.cast(const_ops.unsigned_int_ctype_of(src_ty), parsed)))
+    end
+
+    const_ops.sext_const_value = function(dest_ty, value)
+        local src_ty, parsed = expect_const_intlike(value, "sign-extend")
+        if not type_is_intlike(dest_ty) then
+            error("sem_const_eval: sign-extend requires an integer-like destination type")
+        end
+        return const_int_value(dest_ty, ffi.cast(int_ctype(dest_ty), ffi.cast(const_ops.signed_int_ctype_of(src_ty), parsed)))
+    end
+
+    const_ops.bitcast_const_value = function(dest_ty, value)
+        local src_ty = const_value_ty(value)
+        local src_bits = const_ops.scalar_bit_width_of(src_ty)
+        local dst_bits = const_ops.scalar_bit_width_of(dest_ty)
+        if src_bits == nil or dst_bits == nil or src_bits ~= dst_bits then
+            error("sem_const_eval: bitcast requires source/destination scalar types with equal bit width")
+        end
+        if const_ops.type_is_bool(src_ty) or const_ops.type_is_bool(dest_ty) then
+            error("sem_const_eval: bitcast does not currently support bool constants")
+        end
+        local src_storage_ctype
+        local src_storage_value
+        if type_is_intlike(src_ty) then
+            src_storage_ctype = const_ops.unsigned_int_ctype_of(src_ty)
+            src_storage_value = ffi.cast(src_storage_ctype, parse_int_raw(src_ty, value.raw))
+        elseif type_is_float(src_ty) then
+            src_storage_ctype = const_ops.float_ctype_of(src_ty)
+            src_storage_value = tonumber(value.raw)
+        else
+            error("sem_const_eval: bitcast source must be an integer-like or float constant")
+        end
+        local buf = ffi.new(src_storage_ctype .. "[1]", src_storage_value)
+        if type_is_intlike(dest_ty) then
+            local raw_value = ffi.cast(const_ops.unsigned_int_ctype_of(dest_ty) .. "*", buf)[0]
+            return const_ops.const_int_value_from_unsigned(dest_ty, raw_value)
+        end
+        if type_is_float(dest_ty) then
+            local raw_value = ffi.cast(const_ops.float_ctype_of(dest_ty) .. "*", buf)[0]
+            return const_float_value(dest_ty, raw_value)
+        end
+        error("sem_const_eval: bitcast destination must be an integer-like or float type")
+    end
+
+    const_ops.sat_cast_const_value = function(dest_ty, value)
+        local src_ty = const_value_ty(value)
+        if type_is_float(dest_ty) or const_ops.type_is_bool(dest_ty) then
+            return const_ops.scalar_cast_value(dest_ty, value, "saturating cast")
+        end
+        if not type_is_intlike(dest_ty) then
+            error("sem_const_eval: saturating cast requires a scalar destination type")
+        end
+        if const_ops.type_is_bool(src_ty) then
+            return const_int_value(dest_ty, value.value and 1 or 0)
+        end
+        if type_is_float(src_ty) then
+            local n = tonumber(value.raw)
+            if n ~= n then
+                return const_ops.const_zero_value(dest_ty)
+            end
+            if type_is_signed_int(dest_ty) then
+                local min_n = tonumber(const_ops.signed_min_raw[dest_ty])
+                local max_n = tonumber(const_ops.signed_max_raw[dest_ty])
+                if n <= min_n then return const_int_value(dest_ty, const_ops.signed_min_value(dest_ty)) end
+                if n >= max_n then return const_int_value(dest_ty, const_ops.signed_max_value(dest_ty)) end
+            else
+                local max_n = tonumber(const_ops.unsigned_max_raw[dest_ty])
+                if n <= 0 then return const_ops.const_zero_value(dest_ty) end
+                if n >= max_n then return const_int_value(dest_ty, const_ops.unsigned_max_value(dest_ty)) end
+            end
+            return const_int_value(dest_ty, ffi.cast(int_ctype(dest_ty), n))
+        end
+        if type_is_intlike(src_ty) then
+            local parsed = parse_int_raw(src_ty, value.raw)
+            if type_is_signed_int(src_ty) then
+                local s = ffi.cast("int64_t", ffi.cast(const_ops.signed_int_ctype_of(src_ty), parsed))
+                if type_is_signed_int(dest_ty) then
+                    if s <= const_ops.signed_min_value(dest_ty) then return const_int_value(dest_ty, const_ops.signed_min_value(dest_ty)) end
+                    if s >= const_ops.signed_max_value(dest_ty) then return const_int_value(dest_ty, const_ops.signed_max_value(dest_ty)) end
+                    return const_int_value(dest_ty, s)
+                end
+                if s <= 0 then return const_ops.const_zero_value(dest_ty) end
+                local u = ffi.cast("uint64_t", s)
+                if u >= const_ops.unsigned_max_value(dest_ty) then return const_int_value(dest_ty, const_ops.unsigned_max_value(dest_ty)) end
+                return const_int_value(dest_ty, u)
+            end
+            local u = ffi.cast("uint64_t", ffi.cast(const_ops.unsigned_int_ctype_of(src_ty), parsed))
+            if type_is_signed_int(dest_ty) then
+                local max_u = ffi.cast("uint64_t", const_ops.signed_max_value(dest_ty))
+                if u >= max_u then return const_int_value(dest_ty, const_ops.signed_max_value(dest_ty)) end
+                return const_int_value(dest_ty, u)
+            end
+            if u >= const_ops.unsigned_max_value(dest_ty) then return const_int_value(dest_ty, const_ops.unsigned_max_value(dest_ty)) end
+            return const_int_value(dest_ty, u)
+        end
+        error("sem_const_eval: saturating cast source must be bool/int/float")
+    end
+
+    const_value_ty = function(value)
         if value.ty ~= nil then
             return value.ty
         end
@@ -1443,7 +1788,7 @@ function M.Define(T)
         return Sem.SemTBool
     end
 
-    local function find_const_field_value(fields, field_name)
+    find_const_field_value = function(fields, field_name)
         for i = 1, #fields do
             if fields[i].name == field_name then
                 return fields[i].value
@@ -1452,14 +1797,14 @@ function M.Define(T)
         return nil
     end
 
-    local function expect_const_bool(value, context)
+    expect_const_bool = function(value, context)
         if value.value == nil or value.ty ~= nil or value.elem_ty ~= nil then
             error("sem_const_eval: " .. context .. " requires a bool constant")
         end
         return value.value
     end
 
-    local function expect_const_intlike(value, context)
+    expect_const_intlike = function(value, context)
         local ty = const_value_ty(value)
         if value.raw == nil or not type_is_intlike(ty) then
             error("sem_const_eval: " .. context .. " requires an integer-like constant")
@@ -1467,7 +1812,7 @@ function M.Define(T)
         return ty, parse_int_raw(ty, value.raw)
     end
 
-    local function expect_const_numeric_pair(lhs, rhs, context)
+    expect_const_numeric_pair = function(lhs, rhs, context)
         local lhs_ty = const_value_ty(lhs)
         local rhs_ty = const_value_ty(rhs)
         if lhs_ty ~= rhs_ty then
@@ -1647,18 +1992,84 @@ function M.Define(T)
             local lhs = one_const_eval(self.lhs, const_env, visiting)
             return pvm.once(Sem.SemConstBool(expect_const_bool(lhs, "logical or lhs") or expect_const_bool(one_const_eval(self.rhs, const_env, visiting), "logical or rhs")))
         end,
-        [Sem.SemExprBitAnd] = function() error("sem_const_eval: bitand constants are not yet supported") end,
-        [Sem.SemExprBitOr] = function() error("sem_const_eval: bitor constants are not yet supported") end,
-        [Sem.SemExprBitXor] = function() error("sem_const_eval: bitxor constants are not yet supported") end,
-        [Sem.SemExprShl] = function() error("sem_const_eval: shl constants are not yet supported") end,
-        [Sem.SemExprLShr] = function() error("sem_const_eval: lshr constants are not yet supported") end,
-        [Sem.SemExprAShr] = function() error("sem_const_eval: ashr constants are not yet supported") end,
-        [Sem.SemExprCastTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
-        [Sem.SemExprTruncTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
-        [Sem.SemExprZExtTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
-        [Sem.SemExprSExtTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
-        [Sem.SemExprBitcastTo] = function() error("sem_const_eval: bitcast constants are not yet supported") end,
-        [Sem.SemExprSatCastTo] = function() error("sem_const_eval: saturating cast constants are not yet supported") end,
+        [Sem.SemExprBitAnd] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, l = expect_const_intlike(lhs, "bitand")
+            local rhs_ty, r = expect_const_intlike(rhs, "bitand")
+            if ty ~= rhs_ty or ty ~= self.ty then
+                error("sem_const_eval: bitand requires matching integer-like operand/result types")
+            end
+            return pvm.once(const_ops.const_int_value_from_unsigned(ty, const_ops.bitop_unsigned(const_ops.int_bit_width_of(ty), ffi.cast(const_ops.unsigned_int_ctype_of(ty), l), ffi.cast(const_ops.unsigned_int_ctype_of(ty), r), "and")))
+        end,
+        [Sem.SemExprBitOr] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, l = expect_const_intlike(lhs, "bitor")
+            local rhs_ty, r = expect_const_intlike(rhs, "bitor")
+            if ty ~= rhs_ty or ty ~= self.ty then
+                error("sem_const_eval: bitor requires matching integer-like operand/result types")
+            end
+            return pvm.once(const_ops.const_int_value_from_unsigned(ty, const_ops.bitop_unsigned(const_ops.int_bit_width_of(ty), ffi.cast(const_ops.unsigned_int_ctype_of(ty), l), ffi.cast(const_ops.unsigned_int_ctype_of(ty), r), "or")))
+        end,
+        [Sem.SemExprBitXor] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, l = expect_const_intlike(lhs, "bitxor")
+            local rhs_ty, r = expect_const_intlike(rhs, "bitxor")
+            if ty ~= rhs_ty or ty ~= self.ty then
+                error("sem_const_eval: bitxor requires matching integer-like operand/result types")
+            end
+            return pvm.once(const_ops.const_int_value_from_unsigned(ty, const_ops.bitop_unsigned(const_ops.int_bit_width_of(ty), ffi.cast(const_ops.unsigned_int_ctype_of(ty), l), ffi.cast(const_ops.unsigned_int_ctype_of(ty), r), "xor")))
+        end,
+        [Sem.SemExprShl] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, l = expect_const_intlike(lhs, "shl")
+            local rhs_ty = const_value_ty(rhs)
+            if ty ~= self.ty or not type_is_intlike(rhs_ty) then
+                error("sem_const_eval: shl requires integer-like operands and result")
+            end
+            return pvm.once(const_ops.const_int_value_from_unsigned(ty, const_ops.shl_unsigned(ty, l, const_ops.shift_count_from_const(rhs, "shl"))))
+        end,
+        [Sem.SemExprLShr] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, l = expect_const_intlike(lhs, "lshr")
+            local rhs_ty = const_value_ty(rhs)
+            if ty ~= self.ty or not type_is_intlike(rhs_ty) then
+                error("sem_const_eval: lshr requires integer-like operands and result")
+            end
+            return pvm.once(const_ops.const_int_value_from_unsigned(ty, const_ops.lshr_unsigned(ty, l, const_ops.shift_count_from_const(rhs, "lshr"))))
+        end,
+        [Sem.SemExprAShr] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, l = expect_const_intlike(lhs, "ashr")
+            local rhs_ty = const_value_ty(rhs)
+            if ty ~= self.ty or not type_is_intlike(rhs_ty) then
+                error("sem_const_eval: ashr requires integer-like operands and result")
+            end
+            return pvm.once(const_ops.const_int_value_from_unsigned(ty, const_ops.ashr_unsigned(ty, l, const_ops.shift_count_from_const(rhs, "ashr"))))
+        end,
+        [Sem.SemExprCastTo] = function(self, const_env, visiting)
+            return pvm.once(const_ops.scalar_cast_value(self.ty, one_const_eval(self.value, const_env, visiting), "cast"))
+        end,
+        [Sem.SemExprTruncTo] = function(self, const_env, visiting)
+            return pvm.once(const_ops.scalar_cast_value(self.ty, one_const_eval(self.value, const_env, visiting), "truncate cast"))
+        end,
+        [Sem.SemExprZExtTo] = function(self, const_env, visiting)
+            return pvm.once(const_ops.zext_const_value(self.ty, one_const_eval(self.value, const_env, visiting)))
+        end,
+        [Sem.SemExprSExtTo] = function(self, const_env, visiting)
+            return pvm.once(const_ops.sext_const_value(self.ty, one_const_eval(self.value, const_env, visiting)))
+        end,
+        [Sem.SemExprBitcastTo] = function(self, const_env, visiting)
+            return pvm.once(const_ops.bitcast_const_value(self.ty, one_const_eval(self.value, const_env, visiting)))
+        end,
+        [Sem.SemExprSatCastTo] = function(self, const_env, visiting)
+            return pvm.once(const_ops.sat_cast_const_value(self.ty, one_const_eval(self.value, const_env, visiting)))
+        end,
         [Sem.SemExprSelect] = function(self, const_env, visiting)
             local cond = one_const_eval(self.cond, const_env, visiting)
             if expect_const_bool(cond, "select condition") then
