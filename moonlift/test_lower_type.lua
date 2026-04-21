@@ -30,6 +30,26 @@ local arr_i32 = pvm.one(L.lower_type(
 ))
 assert(arr_i32 == Elab.ElabTArray(Elab.ElabInt("4", Elab.ElabTIndex), Elab.ElabTI32))
 
+local arr_expr_i32 = pvm.one(L.lower_type(
+    Surf.SurfTArray(
+        Surf.SurfExprAdd(Surf.SurfInt("2"), Surf.SurfExprMul(Surf.SurfInt("3"), Surf.SurfInt("4"))),
+        Surf.SurfTI32
+    ),
+    env
+))
+assert(arr_expr_i32 == Elab.ElabTArray(
+    Elab.ElabExprAdd(
+        Elab.ElabTIndex,
+        Elab.ElabInt("2", Elab.ElabTIndex),
+        Elab.ElabExprMul(
+            Elab.ElabTIndex,
+            Elab.ElabInt("3", Elab.ElabTIndex),
+            Elab.ElabInt("4", Elab.ElabTIndex)
+        )
+    ),
+    Elab.ElabTI32
+))
+
 local fn_ty = pvm.one(L.lower_type(
     Surf.SurfTFunc(
         { Surf.SurfTI32, Surf.SurfTPtr(Surf.SurfTU8) },

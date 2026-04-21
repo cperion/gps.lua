@@ -83,6 +83,26 @@ assert(cmp == Elab.ElabExprLt(
     Elab.ElabBindingExpr(Elab.ElabArg(1, "y", Elab.ElabTI32))
 ))
 
+local bool_and = one(Surf.SurfExprAnd(
+    Surf.SurfNameRef("flag"),
+    Surf.SurfBool(false)
+))
+assert(bool_and == Elab.ElabExprAnd(
+    Elab.ElabTBool,
+    Elab.ElabBindingExpr(Elab.ElabLocalValue("env.flag", "flag", Elab.ElabTBool)),
+    Elab.ElabBool(false, Elab.ElabTBool)
+))
+
+local bool_or = one(Surf.SurfExprOr(
+    Surf.SurfNameRef("flag"),
+    Surf.SurfBool(true)
+))
+assert(bool_or == Elab.ElabExprOr(
+    Elab.ElabTBool,
+    Elab.ElabBindingExpr(Elab.ElabLocalValue("env.flag", "flag", Elab.ElabTBool)),
+    Elab.ElabBool(true, Elab.ElabTBool)
+))
+
 local casted = one(Surf.SurfExprCastTo(Surf.SurfTF64, Surf.SurfInt("7")))
 assert(casted == Elab.ElabExprCastTo(
     Elab.ElabTF64,

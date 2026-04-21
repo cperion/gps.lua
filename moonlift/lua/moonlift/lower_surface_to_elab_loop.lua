@@ -122,7 +122,7 @@ function M.Define(T)
         for i = 1, #bindings do
             local id = scoped_path(base_path, "binding." .. i)
             local b = one_binding(bindings[i], outer_env, id)
-            local binding = Elab.ElabLocalValue(b.id, b.name, b.ty)
+            local binding = Elab.ElabLocalStoredValue(b.id, b.name, b.ty)
             out[i] = b
             loop_bindings[b.name] = binding
             loop_env = extend_env_value(loop_env, Elab.ElabValueEntry(b.name, binding))
@@ -231,7 +231,7 @@ function M.Define(T)
             local base = path_or_implicit("loop.over.stmt", self, path)
             local carries, loop_env, loop_bindings = lower_bindings(self.carries, env, scoped_path(base, "carries"))
             local domain = one_domain(self.domain, loop_env)
-            local index_binding = Elab.ElabLocalValue(scoped_path(base, "index"), self.index_name, Elab.ElabTIndex)
+            local index_binding = Elab.ElabLocalStoredValue(scoped_path(base, "index"), self.index_name, Elab.ElabTIndex)
             loop_env = extend_env_value(loop_env, Elab.ElabValueEntry(self.index_name, index_binding))
             local body, body_env = lower_stmt_list(self.body, loop_env, scoped_path(base, "body"))
             local next_out = {}
@@ -263,7 +263,7 @@ function M.Define(T)
             local base = path_or_implicit("loop.over.expr", self, path)
             local carries, loop_env, loop_bindings = lower_bindings(self.carries, env, scoped_path(base, "carries"))
             local domain = one_domain(self.domain, loop_env)
-            local index_binding = Elab.ElabLocalValue(scoped_path(base, "index"), self.index_name, Elab.ElabTIndex)
+            local index_binding = Elab.ElabLocalStoredValue(scoped_path(base, "index"), self.index_name, Elab.ElabTIndex)
             loop_env = extend_env_value(loop_env, Elab.ElabValueEntry(self.index_name, index_binding))
             local body, body_env = lower_stmt_list(self.body, loop_env, scoped_path(base, "body"))
             local next_out = {}

@@ -171,6 +171,19 @@ function M.Define(T)
         end
     end
 
+    local function bool_binary(ctor)
+        return function(self, env)
+            local lhs = one_expr(self.lhs, env, Elab.ElabTBool)
+            local lhs_ty = one_expr_type(lhs)
+            local rhs = one_expr(self.rhs, env, Elab.ElabTBool)
+            local rhs_ty = one_expr_type(rhs)
+            if lhs_ty ~= Elab.ElabTBool or rhs_ty ~= Elab.ElabTBool then
+                error("surface_to_elab_expr: logical and/or currently require bool operands")
+            end
+            return pvm.once(ctor(Elab.ElabTBool, lhs, rhs))
+        end
+    end
+
     local function unary_same_type(ctor)
         return function(self, env, expected_ty)
             local value = one_expr(self.value, env, expected_ty)
@@ -438,8 +451,8 @@ function M.Define(T)
         [Surf.SurfExprLe] = cmp_binary(Elab.ElabExprLe),
         [Surf.SurfExprGt] = cmp_binary(Elab.ElabExprGt),
         [Surf.SurfExprGe] = cmp_binary(Elab.ElabExprGe),
-        [Surf.SurfExprAnd] = cmp_binary(Elab.ElabExprAnd),
-        [Surf.SurfExprOr] = cmp_binary(Elab.ElabExprOr),
+        [Surf.SurfExprAnd] = bool_binary(Elab.ElabExprAnd),
+        [Surf.SurfExprOr] = bool_binary(Elab.ElabExprOr),
         [Surf.SurfExprBitAnd] = same_type_binary(Elab.ElabExprBitAnd),
         [Surf.SurfExprBitOr] = same_type_binary(Elab.ElabExprBitOr),
         [Surf.SurfExprBitXor] = same_type_binary(Elab.ElabExprBitXor),

@@ -463,14 +463,15 @@ by elaborating the count expression into the `ElabTArray(count, elem)` form.
 
 Current explicit limitation:
 
-- only the current literal count subset is accepted at this boundary
-- richer non-literal array-count elaboration is still not implemented
+- the current non-literal count subset is still intentionally small
+- richer const/name-driven array-count elaboration is still not implemented
 
 So currently:
 
 - array literals work
 - array type syntax lowers through the real frontend path
-- non-literal array-count elaboration is still pending
+- arithmetic array-count expressions like add/sub/mul are supported
+- broader const/name-driven count elaboration is still pending
 
 ---
 
@@ -491,20 +492,16 @@ So ref/deref are now real typed frontend features, but the full lvalue/addressab
 
 ---
 
-## 5.9 Logical `and` / `or` are currently strict bool ops, not short-circuit control flow
+## 5.9 Logical `and` / `or` now lower as short-circuit boolean control flow
 
 Current lowering treats:
 
 - `SurfExprAnd`
 - `SurfExprOr`
 
-as typed binary operations, and `Sem -> Back` lowers them as bool bit-ops.
+as boolean-only operators in the frontend, and `Sem -> Back` lowers them through explicit CFG short-circuiting rather than strict bool bit-ops.
 
-So today they are implemented as strict boolean operations.
-
-If the intended language semantics require short-circuiting, that implementation is still missing.
-
-This should be treated as a semantic decision point.
+So today they are implemented as short-circuit boolean operations.
 
 ---
 
@@ -667,15 +664,15 @@ The address-of / lvalue model is incomplete, but it is stronger than before.
 Implemented now:
 - address of arguments through canonical entry stack slots
 - address of immutable `let` locals through stored-local bindings and canonical stack slots
+- address of loop-carried locals and `over`-loop index bindings through canonical loop slots
 - address of globals/const data through `SemBindGlobal`
 
 Still missing or restricted:
-- address of pure SSA immutable locals such as loop-carried locals/index bindings
 - address of many computed values except where explicit materialization already exists
 - a fully general addressability model across all lvalue categories
-- a final documented rule for which source-level locals become stored locals vs pure SSA locals
+- a final documented rule for the remaining manual/internal pure-SSA local cases
 
-So references exist in the IR and now work for args plus stored immutable locals, but the full lvalue/storage model is still partial.
+So references exist in the IR and now work for args, stored immutable locals, loop-carried/index locals, and globals/const data, but the full lvalue/storage model is still partial.
 
 ---
 

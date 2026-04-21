@@ -462,11 +462,17 @@ function M.Define(T)
     local function emit_aliases_for_loop_bindings(cmds, bindings, param_ids)
         for i = 1, #bindings do
             cmds[#cmds + 1] = Back.BackCmdAlias(local_value_id(bindings[i].id), param_ids[i])
+            local addr = Back.BackValId("loop.slot.addr:" .. bindings[i].id)
+            cmds[#cmds + 1] = Back.BackCmdStackAddr(addr, local_value_slot_id(bindings[i].id))
+            cmds[#cmds + 1] = Back.BackCmdStore(one_scalar(bindings[i].ty), addr, param_ids[i])
         end
     end
 
     local function emit_alias_for_index_binding(cmds, binding, value_id)
         cmds[#cmds + 1] = Back.BackCmdAlias(one_over_index_value(binding), value_id)
+        local addr = Back.BackValId("loop.index.slot.addr:" .. binding.id)
+        cmds[#cmds + 1] = Back.BackCmdStackAddr(addr, local_value_slot_id(binding.id))
+        cmds[#cmds + 1] = Back.BackCmdStore(one_scalar(binding.ty), addr, value_id)
     end
 
     local function loop_binding_value_args(bindings)
@@ -2030,6 +2036,40 @@ function M.Define(T)
         return Back.BackExprPlan(cmds, dst, ty)
     end
 
+    local function short_circuit_bool_expr(path, lhs, rhs, short_value)
+        local dst = Back.BackValId(path)
+        local rhs_block = Back.BackBlockId(path .. ".rhs.block")
+        local short_block = Back.BackBlockId(path .. ".short.block")
+        local join_block = Back.BackBlockId(path .. ".join.block")
+        local cmds = {}
+        append_expr_cmds(cmds, lhs)
+        if expr_terminates(lhs) then
+            return terminated_expr(cmds)
+        end
+        cmds[#cmds + 1] = Back.BackCmdCreateBlock(rhs_block)
+        cmds[#cmds + 1] = Back.BackCmdCreateBlock(short_block)
+        cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
+        cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(join_block, dst, Back.BackBool)
+        cmds[#cmds + 1] = Back.BackCmdBrIf(lhs.value, rhs_block, {}, short_block, {})
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(rhs_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(short_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(short_block)
+        local short_id = Back.BackValId(path .. ".short")
+        cmds[#cmds + 1] = Back.BackCmdConstBool(short_id, short_value)
+        cmds[#cmds + 1] = Back.BackCmdJump(join_block, { short_id })
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(rhs_block)
+        append_expr_cmds(cmds, rhs)
+        if expr_has_value(rhs) then
+            cmds[#cmds + 1] = Back.BackCmdJump(join_block, { rhs.value })
+        end
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
+        if expr_terminates(rhs) then
+            return Back.BackExprPlan(cmds, dst, Back.BackBool)
+        end
+        return Back.BackExprPlan(cmds, dst, Back.BackBool)
+    end
+
     lower_expr = pvm.phase("sem_to_back_expr", {
         [Sem.SemExprConstInt] = function(self, path)
             local dst = Back.BackValId(path)
@@ -2190,22 +2230,14 @@ function M.Define(T)
             end))
         end,
         [Sem.SemExprAnd] = function(self, path, layout_env, break_block, break_args, continue_block, continue_args)
-            local dst = Back.BackValId(path)
             local lhs = one_expr(self.lhs, path .. ".lhs", layout_env, break_block, break_args, continue_block, continue_args)
             local rhs = one_expr(self.rhs, path .. ".rhs", layout_env, break_block, break_args, continue_block, continue_args)
-            local ty = one_scalar(self.ty)
-            return pvm.once(binary_expr_plan(lhs, rhs, dst, ty, function(l, r)
-                return one_and_cmd(self.ty, dst, ty, l, r)
-            end))
+            return pvm.once(short_circuit_bool_expr(path, lhs, rhs, false))
         end,
         [Sem.SemExprOr] = function(self, path, layout_env, break_block, break_args, continue_block, continue_args)
-            local dst = Back.BackValId(path)
             local lhs = one_expr(self.lhs, path .. ".lhs", layout_env, break_block, break_args, continue_block, continue_args)
             local rhs = one_expr(self.rhs, path .. ".rhs", layout_env, break_block, break_args, continue_block, continue_args)
-            local ty = one_scalar(self.ty)
-            return pvm.once(binary_expr_plan(lhs, rhs, dst, ty, function(l, r)
-                return one_or_cmd(self.ty, dst, ty, l, r)
-            end))
+            return pvm.once(short_circuit_bool_expr(path, lhs, rhs, true))
         end,
         [Sem.SemExprBitAnd] = function(self, path, layout_env, break_block, break_args, continue_block, continue_args)
             local dst = Back.BackValId(path)
@@ -2427,6 +2459,9 @@ function M.Define(T)
         [Sem.SemBindLocalValue] = function(self)
             return pvm.once(local_value_id(self.id))
         end,
+        [Sem.SemBindLocalStoredValue] = function(self)
+            return pvm.once(local_value_id(self.id))
+        end,
         [Sem.SemBindLocalCell] = function(self)
             error("sem_to_back_over_index_value: over-loop index binding must be immutable; got mutable local '" .. self.name .. "'")
         end,
@@ -2457,6 +2492,7 @@ function M.Define(T)
         local header_jump_args = { header_index }
         local current_args = over_loop_current_args(loop.index_binding, loop.carries)
         local cmds = {
+            Back.BackCmdCreateStackSlot(local_value_slot_id(loop.index_binding.id), 8, 8),
             Back.BackCmdCreateBlock(header_block),
             Back.BackCmdCreateBlock(body_block),
             Back.BackCmdCreateBlock(continue_block),
@@ -2469,6 +2505,8 @@ function M.Define(T)
         append_expr_cmds(cmds, start_plan)
         init_args[1] = start_plan.value
         for i = 1, #loop.carries do
+            local carry_spec = one_stack_slot_spec(loop.carries[i].ty, layout_env)
+            cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(local_value_slot_id(loop.carries[i].id), carry_spec.size, carry_spec.align)
             local header_param = Back.BackValId(path .. ".header.carry." .. i)
             local body_param = Back.BackValId(path .. ".body.carry." .. i)
             local continue_param = Back.BackValId(path .. ".continue.carry." .. i)
@@ -2541,6 +2579,7 @@ function M.Define(T)
         local exit_jump_args = { header_index }
         local current_args = over_loop_current_args(loop.index_binding, loop.carries)
         local cmds = {
+            Back.BackCmdCreateStackSlot(local_value_slot_id(loop.index_binding.id), 8, 8),
             Back.BackCmdCreateBlock(header_block),
             Back.BackCmdCreateBlock(body_block),
             Back.BackCmdCreateBlock(continue_block),
@@ -2554,6 +2593,8 @@ function M.Define(T)
         append_expr_cmds(cmds, start_plan)
         init_args[1] = start_plan.value
         for i = 1, #loop.carries do
+            local carry_spec = one_stack_slot_spec(loop.carries[i].ty, layout_env)
+            cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(local_value_slot_id(loop.carries[i].id), carry_spec.size, carry_spec.align)
             local header_param = Back.BackValId(path .. ".header.carry." .. i)
             local body_param = Back.BackValId(path .. ".body.carry." .. i)
             local continue_param = Back.BackValId(path .. ".continue.carry." .. i)
@@ -2669,6 +2710,7 @@ function M.Define(T)
         local exit_jump_args = { header_index }
         local current_args = over_loop_current_args(loop.index_binding, loop.carries)
         local cmds = {
+            Back.BackCmdCreateStackSlot(local_value_slot_id(loop.index_binding.id), 8, 8),
             Back.BackCmdCreateBlock(header_block),
             Back.BackCmdCreateBlock(body_block),
             Back.BackCmdCreateBlock(continue_block),
@@ -2685,6 +2727,8 @@ function M.Define(T)
         end
         init_args[1] = start_plan.value
         for i = 1, #loop.carries do
+            local carry_spec = one_stack_slot_spec(loop.carries[i].ty, layout_env)
+            cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(local_value_slot_id(loop.carries[i].id), carry_spec.size, carry_spec.align)
             local header_param = Back.BackValId(path .. ".header.carry." .. i)
             local body_param = Back.BackValId(path .. ".body.carry." .. i)
             local continue_param = Back.BackValId(path .. ".continue.carry." .. i)
@@ -2793,6 +2837,8 @@ function M.Define(T)
             }
             local init_values = {}
             for i = 1, #self.vars do
+                local var_spec = one_stack_slot_spec(self.vars[i].ty, layout_env)
+                cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(local_value_slot_id(self.vars[i].id), var_spec.size, var_spec.align)
                 local header_param = Back.BackValId(path .. ".header.param." .. i)
                 local body_param = Back.BackValId(path .. ".body.param." .. i)
                 local continue_param = Back.BackValId(path .. ".continue.param." .. i)
@@ -2862,6 +2908,8 @@ function M.Define(T)
             }
             local init_values = {}
             for i = 1, #self.vars do
+                local var_spec = one_stack_slot_spec(self.vars[i].ty, layout_env)
+                cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(local_value_slot_id(self.vars[i].id), var_spec.size, var_spec.align)
                 local header_param = Back.BackValId(path .. ".header.param." .. i)
                 local body_param = Back.BackValId(path .. ".body.param." .. i)
                 local continue_param = Back.BackValId(path .. ".continue.param." .. i)
@@ -2936,6 +2984,8 @@ function M.Define(T)
             }
             local init_values = {}
             for i = 1, #self.vars do
+                local var_spec = one_stack_slot_spec(self.vars[i].ty, layout_env)
+                cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(local_value_slot_id(self.vars[i].id), var_spec.size, var_spec.align)
                 local header_param = Back.BackValId(path .. ".header.param." .. i)
                 local body_param = Back.BackValId(path .. ".body.param." .. i)
                 local continue_param = Back.BackValId(path .. ".continue.param." .. i)

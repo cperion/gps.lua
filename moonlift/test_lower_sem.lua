@@ -30,6 +30,18 @@ end
 assert(one_type(Elab.ElabTI32) == Sem.SemTI32)
 assert(one_type(Elab.ElabTPtr(Elab.ElabTI32)) == Sem.SemTPtrTo(Sem.SemTI32))
 assert(one_type(Elab.ElabTArray(Elab.ElabInt("4", Elab.ElabTI32), Elab.ElabTI32)) == Sem.SemTArray(Sem.SemTI32, 4))
+assert(one_type(Elab.ElabTArray(
+    Elab.ElabExprAdd(
+        Elab.ElabTIndex,
+        Elab.ElabInt("2", Elab.ElabTIndex),
+        Elab.ElabExprMul(
+            Elab.ElabTIndex,
+            Elab.ElabInt("3", Elab.ElabTIndex),
+            Elab.ElabInt("4", Elab.ElabTIndex)
+        )
+    ),
+    Elab.ElabTI32
+)) == Sem.SemTArray(Sem.SemTI32, 14))
 
 local x = Elab.ElabBindingExpr(Elab.ElabLocalValue("lx", "x", Elab.ElabTI32))
 local add = one_expr(Elab.ElabExprAdd(Elab.ElabTI32, x, Elab.ElabInt("1", Elab.ElabTI32)))
@@ -164,31 +176,31 @@ local loop_expr = one_expr(Elab.ElabLoopExprNode(
         },
         Elab.ElabExprLt(
             Elab.ElabTBool,
-            Elab.ElabBindingExpr(Elab.ElabLocalValue("loop.i", "i", Elab.ElabTI32)),
+            Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("loop.i", "i", Elab.ElabTI32)),
             Elab.ElabBindingExpr(Elab.ElabArg(0, "n", Elab.ElabTI32))
         ),
         {
-            Elab.ElabExprStmt(Elab.ElabBindingExpr(Elab.ElabLocalValue("loop.acc", "acc", Elab.ElabTI32))),
+            Elab.ElabExprStmt(Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("loop.acc", "acc", Elab.ElabTI32))),
         },
         {
             Elab.ElabLoopNext(
-                Elab.ElabLocalValue("loop.i", "i", Elab.ElabTI32),
+                Elab.ElabLocalStoredValue("loop.i", "i", Elab.ElabTI32),
                 Elab.ElabExprAdd(
                     Elab.ElabTI32,
-                    Elab.ElabBindingExpr(Elab.ElabLocalValue("loop.i", "i", Elab.ElabTI32)),
+                    Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("loop.i", "i", Elab.ElabTI32)),
                     Elab.ElabInt("1", Elab.ElabTI32)
                 )
             ),
             Elab.ElabLoopNext(
-                Elab.ElabLocalValue("loop.acc", "acc", Elab.ElabTI32),
+                Elab.ElabLocalStoredValue("loop.acc", "acc", Elab.ElabTI32),
                 Elab.ElabExprAdd(
                     Elab.ElabTI32,
-                    Elab.ElabBindingExpr(Elab.ElabLocalValue("loop.acc", "acc", Elab.ElabTI32)),
-                    Elab.ElabBindingExpr(Elab.ElabLocalValue("loop.i", "i", Elab.ElabTI32))
+                    Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("loop.acc", "acc", Elab.ElabTI32)),
+                    Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("loop.i", "i", Elab.ElabTI32))
                 )
             ),
         },
-        Elab.ElabBindingExpr(Elab.ElabLocalValue("loop.acc", "acc", Elab.ElabTI32))
+        Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("loop.acc", "acc", Elab.ElabTI32))
     ),
     Elab.ElabTI32
 ))
@@ -200,31 +212,31 @@ assert(loop_expr == Sem.SemExprLoop(
         },
         Sem.SemExprLt(
             Sem.SemTBool,
-            Sem.SemExprBinding(Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32)),
+            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32)),
             Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTI32))
         ),
         {
-            Sem.SemStmtExpr(Sem.SemExprBinding(Sem.SemBindLocalValue("loop.acc", "acc", Sem.SemTI32))),
+            Sem.SemStmtExpr(Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.acc", "acc", Sem.SemTI32))),
         },
         {
             Sem.SemLoopNext(
-                Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32),
+                Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32),
                 Sem.SemExprAdd(
                     Sem.SemTI32,
-                    Sem.SemExprBinding(Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32)),
+                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32)),
                     Sem.SemExprConstInt(Sem.SemTI32, "1")
                 )
             ),
             Sem.SemLoopNext(
-                Sem.SemBindLocalValue("loop.acc", "acc", Sem.SemTI32),
+                Sem.SemBindLocalStoredValue("loop.acc", "acc", Sem.SemTI32),
                 Sem.SemExprAdd(
                     Sem.SemTI32,
-                    Sem.SemExprBinding(Sem.SemBindLocalValue("loop.acc", "acc", Sem.SemTI32)),
-                    Sem.SemExprBinding(Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32))
+                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.acc", "acc", Sem.SemTI32)),
+                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32))
                 )
             ),
         },
-        Sem.SemExprBinding(Sem.SemBindLocalValue("loop.acc", "acc", Sem.SemTI32))
+        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.acc", "acc", Sem.SemTI32))
     ),
     Sem.SemTI32
 ))

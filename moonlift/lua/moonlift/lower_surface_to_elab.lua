@@ -44,9 +44,22 @@ function M.Define(T)
         return nil
     end
 
+    local function one_count_expr(node, env)
+        return pvm.one(lower_array_count_expr(node, env))
+    end
+
     lower_array_count_expr = pvm.phase("surface_to_elab_array_count_expr", {
         [Surf.SurfInt] = function(self)
             return pvm.once(Elab.ElabInt(self.raw, Elab.ElabTIndex))
+        end,
+        [Surf.SurfExprAdd] = function(self, env)
+            return pvm.once(Elab.ElabExprAdd(Elab.ElabTIndex, one_count_expr(self.lhs, env), one_count_expr(self.rhs, env)))
+        end,
+        [Surf.SurfExprSub] = function(self, env)
+            return pvm.once(Elab.ElabExprSub(Elab.ElabTIndex, one_count_expr(self.lhs, env), one_count_expr(self.rhs, env)))
+        end,
+        [Surf.SurfExprMul] = function(self, env)
+            return pvm.once(Elab.ElabExprMul(Elab.ElabTIndex, one_count_expr(self.lhs, env), one_count_expr(self.rhs, env)))
         end,
     })
 
@@ -97,7 +110,7 @@ function M.Define(T)
             return pvm.once(Elab.ElabTSlice(one_type(self.elem, env)))
         end,
         [Surf.SurfTArray] = function(self, env)
-            return pvm.once(Elab.ElabTArray(pvm.one(lower_array_count_expr(self.count, env)), one_type(self.elem, env)))
+            return pvm.once(Elab.ElabTArray(one_count_expr(self.count, env), one_type(self.elem, env)))
         end,
         [Surf.SurfTFunc] = function(self, env)
             return pvm.once(Elab.ElabTFunc(lower_type_list(self.params, env), one_type(self.result, env)))

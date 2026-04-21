@@ -82,6 +82,58 @@ assert(cell_read == Back.BackExprPlan({
     Back.BackCmdLoad(Back.BackValId("expr.cell"), Back.BackI32, Back.BackValId("expr.cell.addr")),
 }, Back.BackValId("expr.cell"), Back.BackI32))
 
+local bool_and = one_expr(
+    Sem.SemExprAnd(
+        Sem.SemTBool,
+        Sem.SemExprBinding(Sem.SemBindArg(0, "b", Sem.SemTBool)),
+        Sem.SemExprConstBool(true)
+    ),
+    "expr.and"
+)
+assert(bool_and == Back.BackExprPlan({
+    Back.BackCmdCreateBlock(Back.BackBlockId("expr.and.rhs.block")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("expr.and.short.block")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("expr.and.join.block")),
+    Back.BackCmdAppendBlockParam(Back.BackBlockId("expr.and.join.block"), Back.BackValId("expr.and"), Back.BackBool),
+    Back.BackCmdBrIf(Back.BackValId("arg:0:b"), Back.BackBlockId("expr.and.rhs.block"), {}, Back.BackBlockId("expr.and.short.block"), {}),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.and.rhs.block")),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.and.short.block")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.and.short.block")),
+    Back.BackCmdConstBool(Back.BackValId("expr.and.short"), false),
+    Back.BackCmdJump(Back.BackBlockId("expr.and.join.block"), { Back.BackValId("expr.and.short") }),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.and.rhs.block")),
+    Back.BackCmdConstBool(Back.BackValId("expr.and.rhs"), true),
+    Back.BackCmdJump(Back.BackBlockId("expr.and.join.block"), { Back.BackValId("expr.and.rhs") }),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.and.join.block")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.and.join.block")),
+}, Back.BackValId("expr.and"), Back.BackBool))
+
+local bool_or = one_expr(
+    Sem.SemExprOr(
+        Sem.SemTBool,
+        Sem.SemExprBinding(Sem.SemBindArg(0, "b", Sem.SemTBool)),
+        Sem.SemExprConstBool(false)
+    ),
+    "expr.or"
+)
+assert(bool_or == Back.BackExprPlan({
+    Back.BackCmdCreateBlock(Back.BackBlockId("expr.or.rhs.block")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("expr.or.short.block")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("expr.or.join.block")),
+    Back.BackCmdAppendBlockParam(Back.BackBlockId("expr.or.join.block"), Back.BackValId("expr.or"), Back.BackBool),
+    Back.BackCmdBrIf(Back.BackValId("arg:0:b"), Back.BackBlockId("expr.or.rhs.block"), {}, Back.BackBlockId("expr.or.short.block"), {}),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.or.rhs.block")),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.or.short.block")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.or.short.block")),
+    Back.BackCmdConstBool(Back.BackValId("expr.or.short"), true),
+    Back.BackCmdJump(Back.BackBlockId("expr.or.join.block"), { Back.BackValId("expr.or.short") }),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.or.rhs.block")),
+    Back.BackCmdConstBool(Back.BackValId("expr.or.rhs"), false),
+    Back.BackCmdJump(Back.BackBlockId("expr.or.join.block"), { Back.BackValId("expr.or.rhs") }),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.or.join.block")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.or.join.block")),
+}, Back.BackValId("expr.or"), Back.BackBool))
+
 local ref_cell = one_expr(
     Sem.SemExprRef(
         Sem.SemTPtrTo(Sem.SemTI32),
@@ -371,9 +423,9 @@ local loop_field_value = one_expr(
                 { Sem.SemLoopBinding("li", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")) },
                 Sem.SemExprConstBool(false),
                 {},
-                { Sem.SemLoopNext(Sem.SemBindLocalValue("li", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalValue("li", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) },
+                { Sem.SemLoopNext(Sem.SemBindLocalStoredValue("li", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalStoredValue("li", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) },
                 Sem.SemExprAgg(Sem.SemTNamed("Demo", "Pair"), {
-                    Sem.SemFieldInit("left", Sem.SemExprBinding(Sem.SemBindLocalValue("li", "i", Sem.SemTI32))),
+                    Sem.SemFieldInit("left", Sem.SemExprBinding(Sem.SemBindLocalStoredValue("li", "i", Sem.SemTI32))),
                     Sem.SemFieldInit("right", Sem.SemExprConstInt(Sem.SemTI32, "7")),
                 })
             ),
@@ -679,18 +731,18 @@ local loop_stmt = one_stmt(
             },
             Sem.SemExprLt(
                 Sem.SemTBool,
-                Sem.SemExprBinding(Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32)),
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32)),
                 Sem.SemExprConstInt(Sem.SemTI32, "4")
             ),
             {
-                Sem.SemStmtExpr(Sem.SemExprBinding(Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32))),
+                Sem.SemStmtExpr(Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32))),
             },
             {
                 Sem.SemLoopNext(
-                    Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32),
+                    Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32),
                     Sem.SemExprAdd(
                         Sem.SemTI32,
-                        Sem.SemExprBinding(Sem.SemBindLocalValue("loop.i", "i", Sem.SemTI32)),
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop.i", "i", Sem.SemTI32)),
                         Sem.SemExprConstInt(Sem.SemTI32, "1")
                     )
                 ),
@@ -713,23 +765,23 @@ local loop_expr = one_expr(
             },
             Sem.SemExprLt(
                 Sem.SemTBool,
-                Sem.SemExprBinding(Sem.SemBindLocalValue("loop2.i", "i", Sem.SemTI32)),
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop2.i", "i", Sem.SemTI32)),
                 Sem.SemExprConstInt(Sem.SemTI32, "2")
             ),
             {
-                Sem.SemStmtExpr(Sem.SemExprBinding(Sem.SemBindLocalValue("loop2.i", "i", Sem.SemTI32))),
+                Sem.SemStmtExpr(Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop2.i", "i", Sem.SemTI32))),
             },
             {
                 Sem.SemLoopNext(
-                    Sem.SemBindLocalValue("loop2.i", "i", Sem.SemTI32),
+                    Sem.SemBindLocalStoredValue("loop2.i", "i", Sem.SemTI32),
                     Sem.SemExprAdd(
                         Sem.SemTI32,
-                        Sem.SemExprBinding(Sem.SemBindLocalValue("loop2.i", "i", Sem.SemTI32)),
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop2.i", "i", Sem.SemTI32)),
                         Sem.SemExprConstInt(Sem.SemTI32, "1")
                     )
                 ),
             },
-            Sem.SemExprBinding(Sem.SemBindLocalValue("loop2.i", "i", Sem.SemTI32))
+            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("loop2.i", "i", Sem.SemTI32))
         ),
         Sem.SemTI32
     ),
@@ -744,7 +796,7 @@ assert(contains_cmd(loop_expr, Back.BackCmdAlias(Back.BackValId("local:loop2.i")
 local over_stmt = one_stmt(
     Sem.SemStmtLoop(
         Sem.SemLoopOverStmt(
-            Sem.SemBindLocalValue("stmt.over.index", "i", Sem.SemTIndex),
+            Sem.SemBindLocalStoredValue("stmt.over.index", "i", Sem.SemTIndex),
             Sem.SemDomainRange(Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTIndex))),
             {
                 Sem.SemLoopBinding("over.acc", "acc", Sem.SemTIndex, Sem.SemExprConstInt(Sem.SemTIndex, "0")),
@@ -752,11 +804,11 @@ local over_stmt = one_stmt(
             {},
             {
                 Sem.SemLoopNext(
-                    Sem.SemBindLocalValue("over.acc", "acc", Sem.SemTIndex),
+                    Sem.SemBindLocalStoredValue("over.acc", "acc", Sem.SemTIndex),
                     Sem.SemExprAdd(
                         Sem.SemTIndex,
-                        Sem.SemExprBinding(Sem.SemBindLocalValue("over.acc", "acc", Sem.SemTIndex)),
-                        Sem.SemExprBinding(Sem.SemBindLocalValue("stmt.over.index", "i", Sem.SemTIndex))
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("over.acc", "acc", Sem.SemTIndex)),
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("stmt.over.index", "i", Sem.SemTIndex))
                     )
                 ),
             }
@@ -773,7 +825,7 @@ assert(contains_cmd(over_stmt, Back.BackCmdAlias(Back.BackValId("local:over.acc"
 local over_expr = one_expr(
     Sem.SemExprLoop(
         Sem.SemLoopOverExpr(
-            Sem.SemBindLocalValue("expr.over.index", "i", Sem.SemTIndex),
+            Sem.SemBindLocalStoredValue("expr.over.index", "i", Sem.SemTIndex),
             Sem.SemDomainRange(Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTIndex))),
             {
                 Sem.SemLoopBinding("overe.acc", "acc", Sem.SemTIndex, Sem.SemExprConstInt(Sem.SemTIndex, "0")),
@@ -781,15 +833,15 @@ local over_expr = one_expr(
             {},
             {
                 Sem.SemLoopNext(
-                    Sem.SemBindLocalValue("overe.acc", "acc", Sem.SemTIndex),
+                    Sem.SemBindLocalStoredValue("overe.acc", "acc", Sem.SemTIndex),
                     Sem.SemExprAdd(
                         Sem.SemTIndex,
-                        Sem.SemExprBinding(Sem.SemBindLocalValue("overe.acc", "acc", Sem.SemTIndex)),
-                        Sem.SemExprBinding(Sem.SemBindLocalValue("expr.over.index", "i", Sem.SemTIndex))
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overe.acc", "acc", Sem.SemTIndex)),
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("expr.over.index", "i", Sem.SemTIndex))
                     )
                 ),
             },
-            Sem.SemExprBinding(Sem.SemBindLocalValue("overe.acc", "acc", Sem.SemTIndex))
+            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overe.acc", "acc", Sem.SemTIndex))
         ),
         Sem.SemTIndex
     ),
@@ -820,7 +872,7 @@ local break_loop_stmt = one_stmt(
             { Sem.SemLoopBinding("break.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")) },
             Sem.SemExprConstBool(true),
             { Sem.SemStmtBreak },
-            { Sem.SemLoopNext(Sem.SemBindLocalValue("break.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalValue("break.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
+            { Sem.SemLoopNext(Sem.SemBindLocalStoredValue("break.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalStoredValue("break.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
         )
     ),
     "stmt.break_loop"
@@ -835,7 +887,7 @@ local continue_loop_stmt = one_stmt(
             { Sem.SemLoopBinding("continue.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")) },
             Sem.SemExprConstBool(true),
             { Sem.SemStmtContinue },
-            { Sem.SemLoopNext(Sem.SemBindLocalValue("continue.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalValue("continue.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
+            { Sem.SemLoopNext(Sem.SemBindLocalStoredValue("continue.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalStoredValue("continue.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
         )
     ),
     "stmt.continue_loop"
@@ -852,7 +904,7 @@ local continue_block_expr_loop_stmt = one_stmt(
             {
                 Sem.SemStmtExpr(Sem.SemExprBlock({ Sem.SemStmtContinue }, Sem.SemExprConstInt(Sem.SemTI32, "7"), Sem.SemTI32)),
             },
-            { Sem.SemLoopNext(Sem.SemBindLocalValue("cb.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalValue("cb.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
+            { Sem.SemLoopNext(Sem.SemBindLocalStoredValue("cb.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalStoredValue("cb.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
         )
     ),
     "stmt.continue_block_expr_loop"
@@ -879,7 +931,7 @@ local break_switch_expr_loop_stmt = one_stmt(
                     Sem.SemTI32
                 )),
             },
-            { Sem.SemLoopNext(Sem.SemBindLocalValue("sb.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalValue("sb.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
+            { Sem.SemLoopNext(Sem.SemBindLocalStoredValue("sb.i", "i", Sem.SemTI32), Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sb.i", "i", Sem.SemTI32)), Sem.SemExprConstInt(Sem.SemTI32, "1"))) }
         )
     ),
     "stmt.break_switch_expr_loop"

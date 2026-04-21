@@ -270,13 +270,25 @@ function M.Define(T)
         [Sem.SemExprLoop] = function(self) return pvm.once(self.ty) end,
     })
 
+    local function checked_array_count(n)
+        if n == nil or n < 0 or n ~= math.floor(n) then
+            error("elab_to_sem_type: array count must evaluate to a non-negative integer")
+        end
+        return n
+    end
+
     elab_array_count = pvm.phase("moonlift_elab_array_count", {
         [Elab.ElabInt] = function(self)
-            local n = tonumber(self.raw)
-            if n == nil or n < 0 or n ~= math.floor(n) then
-                error("elab_to_sem_type: array count must be a non-negative integer literal")
-            end
-            return pvm.once(n)
+            return pvm.once(checked_array_count(tonumber(self.raw)))
+        end,
+        [Elab.ElabExprAdd] = function(self)
+            return pvm.once(checked_array_count(pvm.one(elab_array_count(self.lhs)) + pvm.one(elab_array_count(self.rhs))))
+        end,
+        [Elab.ElabExprSub] = function(self)
+            return pvm.once(checked_array_count(pvm.one(elab_array_count(self.lhs)) - pvm.one(elab_array_count(self.rhs))))
+        end,
+        [Elab.ElabExprMul] = function(self)
+            return pvm.once(checked_array_count(pvm.one(elab_array_count(self.lhs)) * pvm.one(elab_array_count(self.rhs))))
         end,
     })
 
