@@ -1582,6 +1582,98 @@ function M.Define(T)
         error("sem_const_eval: unknown constant statement result")
     end
 
+    const_ops.visible_bindings = function(local_env)
+        local env = const_ops.ensure_local_env(local_env)
+        local bindings = {}
+        for i = 1, #env.entries do
+            local binding = env.entries[i].binding
+            local seen = false
+            for j = 1, #bindings do
+                if const_ops.same_local_binding(bindings[j], binding) then
+                    seen = true
+                    break
+                end
+            end
+            if not seen then
+                bindings[#bindings + 1] = binding
+            end
+        end
+        return bindings
+    end
+
+    const_ops.project_env_to_bindings = function(local_env, bindings)
+        local env = const_ops.ensure_local_env(local_env)
+        local entries = {}
+        for i = 1, #bindings do
+            local entry = const_ops.find_local_entry(env, bindings[i])
+            if entry ~= nil then
+                entries[#entries + 1] = Sem.SemConstLocalEntry(bindings[i], entry.value)
+            end
+        end
+        return Sem.SemConstLocalEnv(entries)
+    end
+
+    const_ops.project_env_to_base = function(local_env, base_env)
+        return const_ops.project_env_to_bindings(local_env, const_ops.visible_bindings(base_env))
+    end
+
+    const_ops.project_stmt_result_to_bindings = function(result, bindings)
+        local cls = const_ops.node_class(result)
+        local projected_env = const_ops.project_env_to_bindings(result.local_env, bindings)
+        if cls == Sem.SemConstStmtFallsThrough then
+            return Sem.SemConstStmtFallsThrough(projected_env)
+        end
+        if cls == Sem.SemConstStmtReturnVoid then
+            return Sem.SemConstStmtReturnVoid(projected_env)
+        end
+        if cls == Sem.SemConstStmtReturnValue then
+            return Sem.SemConstStmtReturnValue(projected_env, result.value)
+        end
+        if cls == Sem.SemConstStmtBreak then
+            return Sem.SemConstStmtBreak(projected_env)
+        end
+        if cls == Sem.SemConstStmtContinue then
+            return Sem.SemConstStmtContinue(projected_env)
+        end
+        error("sem_const_eval: unknown constant statement result")
+    end
+
+    const_ops.loop_binding_as_binding = function(loop_binding)
+        return Sem.SemBindLocalStoredValue(loop_binding.id, loop_binding.name, loop_binding.ty)
+    end
+
+    const_ops.with_loop_bindings = function(local_env, bindings, values)
+        local env = const_ops.ensure_local_env(local_env)
+        for i = 1, #bindings do
+            env = const_ops.append_local_entry(env, bindings[i], values[i])
+        end
+        return env
+    end
+
+    const_ops.eval_loop_init_values = function(bindings, const_env, local_env, visiting)
+        local values = {}
+        for i = 1, #bindings do
+            values[i] = one_const_eval(bindings[i].init, const_env, local_env, visiting)
+            if const_value_ty(values[i]) ~= bindings[i].ty then
+                error("sem_const_eval: loop init constant type mismatch")
+            end
+        end
+        return values
+    end
+
+    const_ops.eval_loop_next_values = function(nexts, const_env, local_env, visiting)
+        local values = {}
+        for i = 1, #nexts do
+            values[i] = one_const_eval(nexts[i].value, const_env, local_env, visiting)
+            if const_value_ty(values[i]) ~= nexts[i].binding.ty then
+                error("sem_const_eval: loop next constant type mismatch")
+            end
+        end
+        return values
+    end
+
+    const_ops.loop_iteration_limit = 100000
+
     const_ops.eval_stmt_list = function(stmts, const_env, local_env, visiting)
         local env = const_ops.ensure_local_env(local_env)
         for i = 1, #stmts do
@@ -2004,20 +2096,224 @@ function M.Define(T)
             end
             return pvm.once(Sem.SemConstStmtFallsThrough(const_ops.ensure_local_env(local_env)))
         end,
-        [Sem.SemStmtReturnVoid] = function()
-            return pvm.once(Sem.SemConstStmtReturnVoid)
+        [Sem.SemStmtReturnVoid] = function(self, const_env, local_env)
+            return pvm.once(Sem.SemConstStmtReturnVoid(const_ops.ensure_local_env(local_env)))
         end,
         [Sem.SemStmtReturnValue] = function(self, const_env, local_env, visiting)
-            return pvm.once(Sem.SemConstStmtReturnValue(one_const_eval(self.value, const_env, local_env, visiting)))
+            return pvm.once(Sem.SemConstStmtReturnValue(
+                const_ops.ensure_local_env(local_env),
+                one_const_eval(self.value, const_env, local_env, visiting)
+            ))
         end,
-        [Sem.SemStmtBreak] = function()
-            return pvm.once(Sem.SemConstStmtBreak)
+        [Sem.SemStmtBreak] = function(self, const_env, local_env)
+            return pvm.once(Sem.SemConstStmtBreak(const_ops.ensure_local_env(local_env)))
         end,
-        [Sem.SemStmtContinue] = function()
-            return pvm.once(Sem.SemConstStmtContinue)
+        [Sem.SemStmtContinue] = function(self, const_env, local_env)
+            return pvm.once(Sem.SemConstStmtContinue(const_ops.ensure_local_env(local_env)))
         end,
-        [Sem.SemStmtLoop] = function()
-            error("sem_const_stmt_eval: loop statements are not supported during constant evaluation")
+        [Sem.SemStmtLoop] = function(self, const_env, local_env, visiting)
+            return const_ops.sem_const_loop_stmt_eval(self.loop, const_env, local_env, visiting)
+        end,
+    })
+
+    const_ops.sem_const_over_loop_start = pvm.phase("sem_const_over_loop_start", {
+        [Sem.SemDomainRange] = function(self, index_ty)
+            return pvm.once(const_int_value(index_ty, 0))
+        end,
+        [Sem.SemDomainRange2] = function(self, index_ty, const_env, local_env, visiting)
+            local start = one_const_eval(self.start, const_env, local_env, visiting)
+            if const_value_ty(start) ~= index_ty then
+                error("sem_const_eval: over-loop start constant type mismatch")
+            end
+            return pvm.once(start)
+        end,
+        [Sem.SemDomainBoundedValue] = function()
+            error("sem_const_eval: bounded-value over loops are not supported during constant evaluation")
+        end,
+        [Sem.SemDomainZipEq] = function()
+            error("sem_const_eval: zip-eq over loops are not supported during constant evaluation")
+        end,
+    })
+
+    const_ops.sem_const_over_loop_stop = pvm.phase("sem_const_over_loop_stop", {
+        [Sem.SemDomainRange] = function(self, index_ty, const_env, local_env, visiting)
+            local stop = one_const_eval(self.stop, const_env, local_env, visiting)
+            if const_value_ty(stop) ~= index_ty then
+                error("sem_const_eval: over-loop stop constant type mismatch")
+            end
+            return pvm.once(stop)
+        end,
+        [Sem.SemDomainRange2] = function(self, index_ty, const_env, local_env, visiting)
+            local stop = one_const_eval(self.stop, const_env, local_env, visiting)
+            if const_value_ty(stop) ~= index_ty then
+                error("sem_const_eval: over-loop stop constant type mismatch")
+            end
+            return pvm.once(stop)
+        end,
+        [Sem.SemDomainBoundedValue] = function()
+            error("sem_const_eval: bounded-value over loops are not supported during constant evaluation")
+        end,
+        [Sem.SemDomainZipEq] = function()
+            error("sem_const_eval: zip-eq over loops are not supported during constant evaluation")
+        end,
+    })
+
+    const_ops.sem_const_loop_stmt_eval = pvm.phase("sem_const_loop_stmt_eval", {
+        [Sem.SemLoopWhileStmt] = function(self, const_env, local_env, visiting)
+            local outer_env = const_ops.ensure_local_env(local_env)
+            local outer_bindings = const_ops.visible_bindings(outer_env)
+            local loop_bindings = {}
+            for i = 1, #self.vars do
+                loop_bindings[i] = const_ops.loop_binding_as_binding(self.vars[i])
+            end
+            local current_outer = outer_env
+            local current_values = const_ops.eval_loop_init_values(self.vars, const_env, outer_env, visiting)
+            local iterations = 0
+            while true do
+                iterations = iterations + 1
+                if iterations > const_ops.loop_iteration_limit then
+                    error("sem_const_eval: exceeded constant loop iteration limit")
+                end
+                local loop_env = const_ops.with_loop_bindings(current_outer, loop_bindings, current_values)
+                local cond = one_const_eval(self.cond, const_env, loop_env, visiting)
+                if not expect_const_bool(cond, "while loop condition") then
+                    return pvm.once(Sem.SemConstStmtFallsThrough(current_outer))
+                end
+                local body_result = const_ops.eval_stmt_list(self.body, const_env, loop_env, visiting)
+                local cls = const_ops.node_class(body_result)
+                if cls == Sem.SemConstStmtFallsThrough or cls == Sem.SemConstStmtContinue then
+                    current_outer = const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)
+                    current_values = const_ops.eval_loop_next_values(self.next, const_env, body_result.local_env, visiting)
+                elseif cls == Sem.SemConstStmtBreak then
+                    return pvm.once(Sem.SemConstStmtFallsThrough(const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)))
+                else
+                    return pvm.once(const_ops.project_stmt_result_to_bindings(body_result, outer_bindings))
+                end
+            end
+        end,
+        [Sem.SemLoopOverStmt] = function(self, const_env, local_env, visiting)
+            local outer_env = const_ops.ensure_local_env(local_env)
+            local outer_bindings = const_ops.visible_bindings(outer_env)
+            local current_outer = outer_env
+            local carry_bindings = {}
+            for i = 1, #self.carries do
+                carry_bindings[i] = const_ops.loop_binding_as_binding(self.carries[i])
+            end
+            local current_values = const_ops.eval_loop_init_values(self.carries, const_env, outer_env, visiting)
+            local index_ty = self.index_binding.ty
+            local current_index = pvm.one(const_ops.sem_const_over_loop_start(self.domain, index_ty, const_env, outer_env, visiting))
+            local iterations = 0
+            while true do
+                iterations = iterations + 1
+                if iterations > const_ops.loop_iteration_limit then
+                    error("sem_const_eval: exceeded constant loop iteration limit")
+                end
+                local loop_env = const_ops.with_loop_bindings(current_outer, carry_bindings, current_values)
+                loop_env = const_ops.append_local_entry(loop_env, self.index_binding, current_index)
+                local stop = pvm.one(const_ops.sem_const_over_loop_stop(self.domain, index_ty, const_env, loop_env, visiting))
+                if parse_int_raw(index_ty, current_index.raw) >= parse_int_raw(index_ty, stop.raw) then
+                    return pvm.once(Sem.SemConstStmtFallsThrough(current_outer))
+                end
+                local body_result = const_ops.eval_stmt_list(self.body, const_env, loop_env, visiting)
+                local cls = const_ops.node_class(body_result)
+                if cls == Sem.SemConstStmtFallsThrough or cls == Sem.SemConstStmtContinue then
+                    current_outer = const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)
+                    current_values = const_ops.eval_loop_next_values(self.next, const_env, body_result.local_env, visiting)
+                    current_index = const_int_value(index_ty, parse_int_raw(index_ty, current_index.raw) + 1)
+                elseif cls == Sem.SemConstStmtBreak then
+                    return pvm.once(Sem.SemConstStmtFallsThrough(const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)))
+                else
+                    return pvm.once(const_ops.project_stmt_result_to_bindings(body_result, outer_bindings))
+                end
+            end
+        end,
+        [Sem.SemLoopWhileExpr] = function()
+            error("sem_const_loop_stmt_eval: expected stmt loop, got expr loop")
+        end,
+        [Sem.SemLoopOverExpr] = function()
+            error("sem_const_loop_stmt_eval: expected stmt loop, got expr loop")
+        end,
+    })
+
+    const_ops.sem_const_loop_expr_eval = pvm.phase("sem_const_loop_expr_eval", {
+        [Sem.SemLoopWhileExpr] = function(self, const_env, local_env, visiting)
+            local outer_env = const_ops.ensure_local_env(local_env)
+            local outer_bindings = const_ops.visible_bindings(outer_env)
+            local loop_bindings = {}
+            for i = 1, #self.vars do
+                loop_bindings[i] = const_ops.loop_binding_as_binding(self.vars[i])
+            end
+            local current_outer = outer_env
+            local current_values = const_ops.eval_loop_init_values(self.vars, const_env, outer_env, visiting)
+            local iterations = 0
+            while true do
+                iterations = iterations + 1
+                if iterations > const_ops.loop_iteration_limit then
+                    error("sem_const_eval: exceeded constant loop iteration limit")
+                end
+                local loop_env = const_ops.with_loop_bindings(current_outer, loop_bindings, current_values)
+                local cond = one_const_eval(self.cond, const_env, loop_env, visiting)
+                if not expect_const_bool(cond, "while loop condition") then
+                    return pvm.once(one_const_eval(self.result, const_env, loop_env, visiting))
+                end
+                local body_result = const_ops.eval_stmt_list(self.body, const_env, loop_env, visiting)
+                local cls = const_ops.node_class(body_result)
+                if cls == Sem.SemConstStmtFallsThrough or cls == Sem.SemConstStmtContinue then
+                    current_outer = const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)
+                    current_values = const_ops.eval_loop_next_values(self.next, const_env, body_result.local_env, visiting)
+                elseif cls == Sem.SemConstStmtBreak then
+                    local exit_outer = const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)
+                    local exit_env = const_ops.with_loop_bindings(exit_outer, loop_bindings, current_values)
+                    return pvm.once(one_const_eval(self.result, const_env, exit_env, visiting))
+                else
+                    error("sem_const_eval: loop constants cannot return from constant data")
+                end
+            end
+        end,
+        [Sem.SemLoopOverExpr] = function(self, const_env, local_env, visiting)
+            local outer_env = const_ops.ensure_local_env(local_env)
+            local outer_bindings = const_ops.visible_bindings(outer_env)
+            local current_outer = outer_env
+            local carry_bindings = {}
+            for i = 1, #self.carries do
+                carry_bindings[i] = const_ops.loop_binding_as_binding(self.carries[i])
+            end
+            local current_values = const_ops.eval_loop_init_values(self.carries, const_env, outer_env, visiting)
+            local index_ty = self.index_binding.ty
+            local current_index = pvm.one(const_ops.sem_const_over_loop_start(self.domain, index_ty, const_env, outer_env, visiting))
+            local iterations = 0
+            while true do
+                iterations = iterations + 1
+                if iterations > const_ops.loop_iteration_limit then
+                    error("sem_const_eval: exceeded constant loop iteration limit")
+                end
+                local loop_env = const_ops.with_loop_bindings(current_outer, carry_bindings, current_values)
+                loop_env = const_ops.append_local_entry(loop_env, self.index_binding, current_index)
+                local stop = pvm.one(const_ops.sem_const_over_loop_stop(self.domain, index_ty, const_env, loop_env, visiting))
+                if parse_int_raw(index_ty, current_index.raw) >= parse_int_raw(index_ty, stop.raw) then
+                    return pvm.once(one_const_eval(self.result, const_env, loop_env, visiting))
+                end
+                local body_result = const_ops.eval_stmt_list(self.body, const_env, loop_env, visiting)
+                local cls = const_ops.node_class(body_result)
+                if cls == Sem.SemConstStmtFallsThrough or cls == Sem.SemConstStmtContinue then
+                    current_outer = const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)
+                    current_values = const_ops.eval_loop_next_values(self.next, const_env, body_result.local_env, visiting)
+                    current_index = const_int_value(index_ty, parse_int_raw(index_ty, current_index.raw) + 1)
+                elseif cls == Sem.SemConstStmtBreak then
+                    local exit_outer = const_ops.project_env_to_bindings(body_result.local_env, outer_bindings)
+                    local exit_env = const_ops.with_loop_bindings(exit_outer, carry_bindings, current_values)
+                    exit_env = const_ops.append_local_entry(exit_env, self.index_binding, current_index)
+                    return pvm.once(one_const_eval(self.result, const_env, exit_env, visiting))
+                else
+                    error("sem_const_eval: loop constants cannot return from constant data")
+                end
+            end
+        end,
+        [Sem.SemLoopWhileStmt] = function()
+            error("sem_const_loop_expr_eval: expected expr loop, got stmt loop")
+        end,
+        [Sem.SemLoopOverStmt] = function()
+            error("sem_const_loop_expr_eval: expected expr loop, got stmt loop")
         end,
     })
 
@@ -2364,7 +2660,13 @@ function M.Define(T)
         [Sem.SemExprLoad] = function() error("sem_const_eval: load constants are not supported") end,
         [Sem.SemExprIntrinsicCall] = function() error("sem_const_eval: intrinsic-call constants are not supported") end,
         [Sem.SemExprCall] = function() error("sem_const_eval: call constants are not supported") end,
-        [Sem.SemExprLoop] = function() error("sem_const_eval: loop constants are not supported") end,
+        [Sem.SemExprLoop] = function(self, const_env, local_env, visiting)
+            local value = pvm.one(const_ops.sem_const_loop_expr_eval(self.loop, const_env, local_env, visiting))
+            if const_value_ty(value) ~= self.ty then
+                error("sem_const_eval: loop constant type mismatch")
+            end
+            return pvm.once(value)
+        end,
         [Sem.SemExprRef] = function() error("sem_const_eval: ref constants are not supported") end,
         [Sem.SemExprDeref] = function() error("sem_const_eval: deref constants are not supported") end,
     })

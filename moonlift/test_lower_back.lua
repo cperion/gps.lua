@@ -1458,6 +1458,214 @@ assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.Back
 assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:BLOCKIF"), 0, Back.BackI32, "42")))
 assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:ASSERTOK"), 0, Back.BackI32, "42")))
 
+local loop_const_module = one_module(Sem.SemModule({
+    Sem.SemItemConst(Sem.SemConst(
+        "WHILEACC",
+        Sem.SemTI32,
+        Sem.SemExprLoop(
+            Sem.SemLoopWhileExpr(
+                {
+                    Sem.SemLoopBinding("whileacc.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                    Sem.SemLoopBinding("whileacc.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                },
+                Sem.SemExprLt(
+                    Sem.SemTBool,
+                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whileacc.i", "i", Sem.SemTI32)),
+                    Sem.SemExprConstInt(Sem.SemTI32, "5")
+                ),
+                {},
+                {
+                    Sem.SemLoopNext(
+                        Sem.SemBindLocalStoredValue("whileacc.i", "i", Sem.SemTI32),
+                        Sem.SemExprAdd(
+                            Sem.SemTI32,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whileacc.i", "i", Sem.SemTI32)),
+                            Sem.SemExprConstInt(Sem.SemTI32, "1")
+                        )
+                    ),
+                    Sem.SemLoopNext(
+                        Sem.SemBindLocalStoredValue("whileacc.acc", "acc", Sem.SemTI32),
+                        Sem.SemExprAdd(
+                            Sem.SemTI32,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whileacc.acc", "acc", Sem.SemTI32)),
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whileacc.i", "i", Sem.SemTI32))
+                        )
+                    ),
+                },
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whileacc.acc", "acc", Sem.SemTI32))
+            ),
+            Sem.SemTI32
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "WHILEBREAK",
+        Sem.SemTI32,
+        Sem.SemExprLoop(
+            Sem.SemLoopWhileExpr(
+                {
+                    Sem.SemLoopBinding("whilebreak.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                },
+                Sem.SemExprConstBool(true),
+                {
+                    Sem.SemStmtIf(
+                        Sem.SemExprGe(
+                            Sem.SemTBool,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whilebreak.i", "i", Sem.SemTI32)),
+                            Sem.SemExprConstInt(Sem.SemTI32, "3")
+                        ),
+                        { Sem.SemStmtBreak },
+                        {}
+                    ),
+                },
+                {
+                    Sem.SemLoopNext(
+                        Sem.SemBindLocalStoredValue("whilebreak.i", "i", Sem.SemTI32),
+                        Sem.SemExprAdd(
+                            Sem.SemTI32,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whilebreak.i", "i", Sem.SemTI32)),
+                            Sem.SemExprConstInt(Sem.SemTI32, "1")
+                        )
+                    ),
+                },
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("whilebreak.i", "i", Sem.SemTI32))
+            ),
+            Sem.SemTI32
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "STMTCONTINUE",
+        Sem.SemTI32,
+        Sem.SemExprBlock({
+            Sem.SemStmtVar("stmtcontinue.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+            Sem.SemStmtLoop(Sem.SemLoopWhileStmt(
+                {
+                    Sem.SemLoopBinding("stmtcontinue.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                },
+                Sem.SemExprLt(
+                    Sem.SemTBool,
+                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("stmtcontinue.i", "i", Sem.SemTI32)),
+                    Sem.SemExprConstInt(Sem.SemTI32, "4")
+                ),
+                {
+                    Sem.SemStmtIf(
+                        Sem.SemExprEq(
+                            Sem.SemTBool,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("stmtcontinue.i", "i", Sem.SemTI32)),
+                            Sem.SemExprConstInt(Sem.SemTI32, "2")
+                        ),
+                        {
+                            Sem.SemStmtSet(
+                                Sem.SemBindLocalCell("stmtcontinue.acc", "acc", Sem.SemTI32),
+                                Sem.SemExprAdd(
+                                    Sem.SemTI32,
+                                    Sem.SemExprBinding(Sem.SemBindLocalCell("stmtcontinue.acc", "acc", Sem.SemTI32)),
+                                    Sem.SemExprConstInt(Sem.SemTI32, "100")
+                                )
+                            ),
+                            Sem.SemStmtContinue,
+                        },
+                        {}
+                    ),
+                    Sem.SemStmtSet(
+                        Sem.SemBindLocalCell("stmtcontinue.acc", "acc", Sem.SemTI32),
+                        Sem.SemExprAdd(
+                            Sem.SemTI32,
+                            Sem.SemExprBinding(Sem.SemBindLocalCell("stmtcontinue.acc", "acc", Sem.SemTI32)),
+                            Sem.SemExprConstInt(Sem.SemTI32, "1")
+                        )
+                    ),
+                },
+                {
+                    Sem.SemLoopNext(
+                        Sem.SemBindLocalStoredValue("stmtcontinue.i", "i", Sem.SemTI32),
+                        Sem.SemExprAdd(
+                            Sem.SemTI32,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("stmtcontinue.i", "i", Sem.SemTI32)),
+                            Sem.SemExprConstInt(Sem.SemTI32, "1")
+                        )
+                    ),
+                }
+            )),
+        }, Sem.SemExprBinding(Sem.SemBindLocalCell("stmtcontinue.acc", "acc", Sem.SemTI32)), Sem.SemTI32)
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "OVERRANGE",
+        Sem.SemTI32,
+        Sem.SemExprLoop(
+            Sem.SemLoopOverExpr(
+                Sem.SemBindLocalStoredValue("overrange.i", "i", Sem.SemTIndex),
+                Sem.SemDomainRange(Sem.SemExprConstInt(Sem.SemTIndex, "4")),
+                {
+                    Sem.SemLoopBinding("overrange.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                },
+                {},
+                {
+                    Sem.SemLoopNext(
+                        Sem.SemBindLocalStoredValue("overrange.acc", "acc", Sem.SemTI32),
+                        Sem.SemExprAdd(
+                            Sem.SemTI32,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overrange.acc", "acc", Sem.SemTI32)),
+                            Sem.SemExprCastTo(
+                                Sem.SemTI32,
+                                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overrange.i", "i", Sem.SemTIndex))
+                            )
+                        )
+                    ),
+                },
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overrange.acc", "acc", Sem.SemTI32))
+            ),
+            Sem.SemTI32
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "OVERRANGE2BREAK",
+        Sem.SemTIndex,
+        Sem.SemExprLoop(
+            Sem.SemLoopOverExpr(
+                Sem.SemBindLocalStoredValue("overrange2.i", "i", Sem.SemTIndex),
+                Sem.SemDomainRange2(
+                    Sem.SemExprConstInt(Sem.SemTIndex, "1"),
+                    Sem.SemExprConstInt(Sem.SemTIndex, "5")
+                ),
+                {
+                    Sem.SemLoopBinding("overrange2.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                },
+                {
+                    Sem.SemStmtIf(
+                        Sem.SemExprEq(
+                            Sem.SemTBool,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overrange2.i", "i", Sem.SemTIndex)),
+                            Sem.SemExprConstInt(Sem.SemTIndex, "3")
+                        ),
+                        { Sem.SemStmtBreak },
+                        {}
+                    ),
+                },
+                {
+                    Sem.SemLoopNext(
+                        Sem.SemBindLocalStoredValue("overrange2.acc", "acc", Sem.SemTI32),
+                        Sem.SemExprAdd(
+                            Sem.SemTI32,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overrange2.acc", "acc", Sem.SemTI32)),
+                            Sem.SemExprCastTo(
+                                Sem.SemTI32,
+                                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overrange2.i", "i", Sem.SemTIndex))
+                            )
+                        )
+                    ),
+                },
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("overrange2.i", "i", Sem.SemTIndex))
+            ),
+            Sem.SemTIndex
+        )
+    )),
+}))
+assert(contains_cmd(loop_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:WHILEACC"), 0, Back.BackI32, "10")))
+assert(contains_cmd(loop_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:WHILEBREAK"), 0, Back.BackI32, "3")))
+assert(contains_cmd(loop_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:STMTCONTINUE"), 0, Back.BackI32, "103")))
+assert(contains_cmd(loop_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:OVERRANGE"), 0, Back.BackI32, "6")))
+assert(contains_cmd(loop_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:OVERRANGE2BREAK"), 0, Back.BackIndex, "3")))
+
 local cycle_ok, cycle_err = pcall(function()
     return one_module(Sem.SemModule({
         Sem.SemItemConst(Sem.SemConst(

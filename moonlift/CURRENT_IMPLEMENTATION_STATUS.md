@@ -699,6 +699,11 @@ Current const-data lowering supports:
   - pure `if` / `select`
 - constant `block` / `switch` expressions through explicit `SemConstLocalEnv`
   and `SemConstStmtResult`
+- constant loop evaluation through explicit const statement-flow and local-env threading for:
+  - `while` stmt loops
+  - `while` expr loops
+  - `over range(...)`
+  - `over range(start, stop)`
 - constant statement execution for the currently supported subset:
   - `let`
   - `var`
@@ -707,6 +712,8 @@ Current const-data lowering supports:
   - `if`
   - `switch`
   - `assert`
+  - loop stmt
+  - loop-local `break` / `continue`
 - aggregate field projection from constant aggregates
 - array index projection from constant arrays
 - recursive aggregate/array constant materialization through the evaluator
@@ -723,7 +730,7 @@ General value-level const evaluation still explicitly does not support several f
 - address-taking / dereference / loads
 - intrinsic calls
 - normal calls
-- loop constant expressions
+- `over bounded value` / `zip_eq` constant loops
 - store statements in constant blocks
 - a fully documented final const-expression subset
 - a complete multi-module const-reference story
