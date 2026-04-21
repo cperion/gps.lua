@@ -286,9 +286,9 @@ Goal:
 
 ## 4.4 Addressability/lvalue model completion
 - [ ] define what counts as an addressable lvalue
-- [ ] support address of args if intended
-- [ ] support address of immutable locals if intended
-- [ ] support address of globals/const data where meaningful
+- [x] support address of args if intended
+- [x] support address of immutable locals if intended
+- [x] support address of globals/const data where meaningful
 - [ ] define when temporaries are materialized to stack
 - [ ] make `ref`/`deref` semantics coherent across scalar and aggregate cases
 

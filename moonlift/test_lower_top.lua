@@ -98,7 +98,7 @@ assert(lowered == Elab.ElabModule({
             ),
             Elab.ElabReturnValue(Elab.ElabExprAdd(
                 Elab.ElabTI32,
-                Elab.ElabBindingExpr(Elab.ElabLocalValue("func.main.stmt.1", "y", Elab.ElabTI32)),
+                Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("func.main.stmt.1", "y", Elab.ElabTI32)),
                 Elab.ElabBindingExpr(Elab.ElabGlobal("", "K", Elab.ElabTI32))
             )),
         }

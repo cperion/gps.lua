@@ -317,6 +317,7 @@ function M.Define(T)
 
     lower_binding = pvm.phase("elab_to_sem_binding", {
         [Elab.ElabLocalValue] = function(self) return pvm.once(Sem.SemBindLocalValue(self.id, self.name, one_type(self.ty))) end,
+        [Elab.ElabLocalStoredValue] = function(self) return pvm.once(Sem.SemBindLocalStoredValue(self.id, self.name, one_type(self.ty))) end,
         [Elab.ElabLocalCell] = function(self) return pvm.once(Sem.SemBindLocalCell(self.id, self.name, one_type(self.ty))) end,
         [Elab.ElabArg] = function(self) return pvm.once(Sem.SemBindArg(self.index, self.name, one_type(self.ty))) end,
         [Elab.ElabGlobal] = function(self) return pvm.once(Sem.SemBindGlobal(self.module_name, self.item_name, one_type(self.ty))) end,
@@ -325,6 +326,9 @@ function M.Define(T)
 
     binding_call_target = pvm.phase("elab_binding_call_target", {
         [Elab.ElabLocalValue] = function(self, fn_ty)
+            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self)), fn_ty))
+        end,
+        [Elab.ElabLocalStoredValue] = function(self, fn_ty)
             return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self)), fn_ty))
         end,
         [Elab.ElabLocalCell] = function(self, fn_ty)

@@ -662,15 +662,20 @@ So externs are callable, but not fully first-class values.
 
 ## 5.18 Addressability is still partial
 
-The address-of / lvalue model is incomplete.
+The address-of / lvalue model is incomplete, but it is stronger than before.
 
-Missing or restricted:
-- address of arguments
-- address of immutable scalar locals
-- address of many computed values
+Implemented now:
+- address of arguments through canonical entry stack slots
+- address of immutable `let` locals through stored-local bindings and canonical stack slots
+- address of globals/const data through `SemBindGlobal`
+
+Still missing or restricted:
+- address of pure SSA immutable locals such as loop-carried locals/index bindings
+- address of many computed values except where explicit materialization already exists
 - a fully general addressability model across all lvalue categories
+- a final documented rule for which source-level locals become stored locals vs pure SSA locals
 
-So references exist in the IR, but the lvalue/storage model is still partial.
+So references exist in the IR and now work for args plus stored immutable locals, but the full lvalue/storage model is still partial.
 
 ---
 

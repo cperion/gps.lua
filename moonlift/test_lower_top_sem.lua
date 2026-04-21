@@ -52,7 +52,7 @@ local module_node = Elab.ElabModule({
             ),
             Elab.ElabReturnValue(Elab.ElabExprAdd(
                 Elab.ElabTI32,
-                Elab.ElabBindingExpr(Elab.ElabLocalValue("func.main.stmt.1", "y", Elab.ElabTI32)),
+                Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("func.main.stmt.1", "y", Elab.ElabTI32)),
                 Elab.ElabBindingExpr(Elab.ElabGlobal("", "K", Elab.ElabTI32))
             )),
         }
@@ -102,7 +102,7 @@ assert(lowered == Sem.SemModule({
             ),
             Sem.SemStmtReturnValue(Sem.SemExprAdd(
                 Sem.SemTI32,
-                Sem.SemExprBinding(Sem.SemBindLocalValue("func.main.stmt.1", "y", Sem.SemTI32)),
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("func.main.stmt.1", "y", Sem.SemTI32)),
                 Sem.SemExprBinding(Sem.SemBindGlobal("", "K", Sem.SemTI32))
             )),
         }

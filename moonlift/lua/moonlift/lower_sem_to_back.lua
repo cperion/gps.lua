@@ -382,6 +382,10 @@ function M.Define(T)
         return Back.BackStackSlotId("slot:local:" .. id)
     end
 
+    local function arg_slot_id(index, name)
+        return Back.BackStackSlotId("slot:arg:" .. index .. ":" .. name)
+    end
+
     local function local_cell_slot_id(id)
         return Back.BackStackSlotId("slot:" .. id)
     end
@@ -562,6 +566,9 @@ function M.Define(T)
         [Sem.SemBindLocalValue] = function(self)
             return pvm.once(local_value_id(self.id))
         end,
+        [Sem.SemBindLocalStoredValue] = function(self)
+            return pvm.once(local_value_id(self.id))
+        end,
         [Sem.SemBindArg] = function(self)
             return pvm.once(Back.BackValId("arg:" .. self.index .. ":" .. self.name))
         end,
@@ -569,6 +576,14 @@ function M.Define(T)
 
     lower_binding_expr = pvm.phase("sem_to_back_binding_expr", {
         [Sem.SemBindLocalValue] = function(self)
+            if not one_type_is_scalar(self.ty) then
+                error("sem_to_back_binding_expr: non-scalar immutable local '" .. self.name .. "' has no direct value form in Sem->Back; use address-based access")
+            end
+            local ty = one_scalar(self.ty)
+            local value = local_value_id(self.id)
+            return pvm.once(Back.BackExprPlan({}, value, ty))
+        end,
+        [Sem.SemBindLocalStoredValue] = function(self)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar immutable local '" .. self.name .. "' has no direct value form in Sem->Back; use address-based access")
             end
@@ -627,17 +642,20 @@ function M.Define(T)
                 Back.BackCmdDataAddr(addr, const_data_id(self.module_name, self.item_name)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindLocalValue] = function(self, path)
-            if one_type_is_scalar(self.ty) then
-                error("sem_to_back_binding_addr: immutable scalar local '" .. self.name .. "' has no addressable storage in Sem->Back")
-            end
+        [Sem.SemBindLocalValue] = function(self)
+            error("sem_to_back_binding_addr: pure immutable local '" .. self.name .. "' has no canonical storage in Sem->Back")
+        end,
+        [Sem.SemBindLocalStoredValue] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, local_value_slot_id(self.id)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindArg] = function(self)
-            error("sem_to_back_binding_addr: argument '" .. self.name .. "' has no addressable storage in Sem->Back")
+        [Sem.SemBindArg] = function(self, path)
+            local addr = Back.BackValId(path)
+            return pvm.once(Back.BackExprPlan({
+                Back.BackCmdStackAddr(addr, arg_slot_id(self.index, self.name)),
+            }, addr, Back.BackPtr))
         end,
         [Sem.SemBindExtern] = function(self)
             error("sem_to_back_binding_addr: extern '" .. self.symbol .. "' has no addressable storage in Sem->Back")
@@ -652,6 +670,9 @@ function M.Define(T)
             }, addr, Back.BackPtr))
         end,
         [Sem.SemBindLocalValue] = function(self)
+            error("sem_to_back_binding_store_addr: cannot assign to immutable local '" .. self.name .. "'")
+        end,
+        [Sem.SemBindLocalStoredValue] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to immutable local '" .. self.name .. "'")
         end,
         [Sem.SemBindArg] = function(self)
@@ -3172,22 +3193,22 @@ function M.Define(T)
 
     lower_stmt = pvm.phase("sem_to_back_stmt", {
         [Sem.SemStmtLet] = function(self, path, layout_env, break_block, break_args, continue_block, continue_args)
-            if one_type_is_scalar(self.ty) then
-                local init = one_expr(self.init, path .. ".init", layout_env, break_block, break_args, continue_block, continue_args)
-                local cmds = {}
-                append_expr_cmds(cmds, init)
-                if expr_terminates(init) then
-                    return pvm.once(Back.BackStmtPlan(cmds, Back.BackTerminates))
-                end
-                cmds[#cmds + 1] = Back.BackCmdAlias(local_value_id(self.id), init.value)
-                return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
-            end
             local spec = one_stack_slot_spec(self.ty, layout_env)
             local addr = Back.BackValId(path .. ".addr")
             local cmds = {
                 Back.BackCmdCreateStackSlot(local_value_slot_id(self.id), spec.size, spec.align),
                 Back.BackCmdStackAddr(addr, local_value_slot_id(self.id)),
             }
+            if one_type_is_scalar(self.ty) then
+                local init = one_expr(self.init, path .. ".init", layout_env, break_block, break_args, continue_block, continue_args)
+                append_expr_cmds(cmds, init)
+                if expr_terminates(init) then
+                    return pvm.once(Back.BackStmtPlan(cmds, Back.BackTerminates))
+                end
+                cmds[#cmds + 1] = Back.BackCmdAlias(local_value_id(self.id), init.value)
+                cmds[#cmds + 1] = Back.BackCmdStore(one_scalar(self.ty), addr, init.value)
+                return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
+            end
             local init_plan = one_expr_into_addr(self.init, addr, path .. ".init_store", layout_env, break_block, break_args, continue_block, continue_args)
             append_addr_cmds(cmds, init_plan)
             return pvm.once(Back.BackStmtPlan(cmds, addr_to_stmt_flow(init_plan)))
@@ -3456,6 +3477,16 @@ function M.Define(T)
             }
             if #entry_vals > 0 then
                 cmds[#cmds + 1] = Back.BackCmdBindEntryParams(entry_id, entry_vals)
+                for i = 1, #self.params do
+                    local param = self.params[i]
+                    local slot = arg_slot_id(i - 1, param.name)
+                    local addr = Back.BackValId("arg.addr:" .. (i - 1) .. ":" .. param.name)
+                    local value = Back.BackValId("arg:" .. (i - 1) .. ":" .. param.name)
+                    local spec = one_stack_slot_spec(param.ty, layout_env)
+                    cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(slot, spec.size, spec.align)
+                    cmds[#cmds + 1] = Back.BackCmdStackAddr(addr, slot)
+                    cmds[#cmds + 1] = Back.BackCmdStore(one_scalar(param.ty), addr, value)
+                end
             end
             copy_cmds(body_cmds, cmds)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(entry_id)
@@ -3487,6 +3518,16 @@ function M.Define(T)
             }
             if #entry_vals > 0 then
                 cmds[#cmds + 1] = Back.BackCmdBindEntryParams(entry_id, entry_vals)
+                for i = 1, #self.params do
+                    local param = self.params[i]
+                    local slot = arg_slot_id(i - 1, param.name)
+                    local addr = Back.BackValId("arg.addr:" .. (i - 1) .. ":" .. param.name)
+                    local value = Back.BackValId("arg:" .. (i - 1) .. ":" .. param.name)
+                    local spec = one_stack_slot_spec(param.ty, layout_env)
+                    cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(slot, spec.size, spec.align)
+                    cmds[#cmds + 1] = Back.BackCmdStackAddr(addr, slot)
+                    cmds[#cmds + 1] = Back.BackCmdStore(one_scalar(param.ty), addr, value)
+                end
             end
             copy_cmds(body_cmds, cmds)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(entry_id)

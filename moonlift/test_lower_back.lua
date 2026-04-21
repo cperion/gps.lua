@@ -93,6 +93,39 @@ assert(ref_cell == Back.BackExprPlan({
     Back.BackCmdStackAddr(Back.BackValId("expr.ref"), Back.BackStackSlotId("slot:cx")),
 }, Back.BackValId("expr.ref"), Back.BackPtr))
 
+local ref_stored = one_expr(
+    Sem.SemExprRef(
+        Sem.SemTPtrTo(Sem.SemTI32),
+        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("ls", "s", Sem.SemTI32))
+    ),
+    "expr.refstored"
+)
+assert(ref_stored == Back.BackExprPlan({
+    Back.BackCmdStackAddr(Back.BackValId("expr.refstored"), Back.BackStackSlotId("slot:local:ls")),
+}, Back.BackValId("expr.refstored"), Back.BackPtr))
+
+local ref_arg = one_expr(
+    Sem.SemExprRef(
+        Sem.SemTPtrTo(Sem.SemTI32),
+        Sem.SemExprBinding(Sem.SemBindArg(0, "x", Sem.SemTI32))
+    ),
+    "expr.refarg"
+)
+assert(ref_arg == Back.BackExprPlan({
+    Back.BackCmdStackAddr(Back.BackValId("expr.refarg"), Back.BackStackSlotId("slot:arg:0:x")),
+}, Back.BackValId("expr.refarg"), Back.BackPtr))
+
+local ref_global = one_expr(
+    Sem.SemExprRef(
+        Sem.SemTPtrTo(Sem.SemTI32),
+        Sem.SemExprBinding(Sem.SemBindGlobal("", "K", Sem.SemTI32))
+    ),
+    "expr.refglobal"
+)
+assert(ref_global == Back.BackExprPlan({
+    Back.BackCmdDataAddr(Back.BackValId("expr.refglobal"), Back.BackDataId("data:const:K")),
+}, Back.BackValId("expr.refglobal"), Back.BackPtr))
+
 local deref_ptr = one_expr(
     Sem.SemExprDeref(
         Sem.SemTI32,
@@ -172,7 +205,7 @@ assert(agg_let == Back.BackStmtPlan({
 
 local local_field_value = one_expr(
     Sem.SemExprField(
-        Sem.SemExprBinding(Sem.SemBindLocalValue("lp", "p", Sem.SemTNamed("Demo", "Pair"))),
+        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("lp", "p", Sem.SemTNamed("Demo", "Pair"))),
         Sem.SemFieldByOffset("right", 4, Sem.SemTI32)
     ),
     "expr.localfield",
@@ -525,8 +558,11 @@ local let_stmt = one_stmt(
     "stmt.let"
 )
 assert(let_stmt == Back.BackStmtPlan({
+    Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:local:lx"), 4, 4),
+    Back.BackCmdStackAddr(Back.BackValId("stmt.let.addr"), Back.BackStackSlotId("slot:local:lx")),
     Back.BackCmdConstInt(Back.BackValId("stmt.let.init"), Back.BackI32, "3"),
     Back.BackCmdAlias(Back.BackValId("local:lx"), Back.BackValId("stmt.let.init")),
+    Back.BackCmdStore(Back.BackI32, Back.BackValId("stmt.let.addr"), Back.BackValId("stmt.let.init")),
 }, Back.BackFallsThrough))
 
 local var_stmt = one_stmt(
@@ -985,8 +1021,14 @@ assert(mod == Back.BackProgram({
     Back.BackCmdCreateBlock(Back.BackBlockId("main:entry")),
     Back.BackCmdSwitchToBlock(Back.BackBlockId("main:entry")),
     Back.BackCmdBindEntryParams(Back.BackBlockId("main:entry"), { Back.BackValId("arg:0:x") }),
+    Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:arg:0:x"), 4, 4),
+    Back.BackCmdStackAddr(Back.BackValId("arg.addr:0:x"), Back.BackStackSlotId("slot:arg:0:x")),
+    Back.BackCmdStore(Back.BackI32, Back.BackValId("arg.addr:0:x"), Back.BackValId("arg:0:x")),
+    Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:local:main.lx"), 4, 4),
+    Back.BackCmdStackAddr(Back.BackValId("func:main.stmt.1.addr"), Back.BackStackSlotId("slot:local:main.lx")),
     Back.BackCmdConstInt(Back.BackValId("func:main.stmt.1.init"), Back.BackI32, "1"),
     Back.BackCmdAlias(Back.BackValId("local:main.lx"), Back.BackValId("func:main.stmt.1.init")),
+    Back.BackCmdStore(Back.BackI32, Back.BackValId("func:main.stmt.1.addr"), Back.BackValId("func:main.stmt.1.init")),
     Back.BackCmdIadd(Back.BackValId("func:main.stmt.2.value"), Back.BackI32, Back.BackValId("arg:0:x"), Back.BackValId("local:main.lx")),
     Back.BackCmdReturnValue(Back.BackValId("func:main.stmt.2.value")),
     Back.BackCmdSealBlock(Back.BackBlockId("main:entry")),

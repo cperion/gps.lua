@@ -132,7 +132,7 @@ function M.Define(T)
 
     stmt_env_effect = pvm.phase("elab_stmt_env_effect", {
         [Elab.ElabLet] = function(self)
-            return pvm.once(Elab.ElabAddBinding(Elab.ElabValueEntry(self.name, Elab.ElabLocalValue(self.id, self.name, self.ty))))
+            return pvm.once(Elab.ElabAddBinding(Elab.ElabValueEntry(self.name, Elab.ElabLocalStoredValue(self.id, self.name, self.ty))))
         end,
         [Elab.ElabVar] = function(self)
             return pvm.once(Elab.ElabAddBinding(Elab.ElabValueEntry(self.name, Elab.ElabLocalCell(self.id, self.name, self.ty))))
@@ -163,6 +163,9 @@ function M.Define(T)
             return pvm.once(self)
         end,
         [Elab.ElabLocalValue] = function(self)
+            error("surface_to_elab_stmt: cannot assign to immutable local '" .. self.name .. "'")
+        end,
+        [Elab.ElabLocalStoredValue] = function(self)
             error("surface_to_elab_stmt: cannot assign to immutable local '" .. self.name .. "'")
         end,
         [Elab.ElabArg] = function(self)

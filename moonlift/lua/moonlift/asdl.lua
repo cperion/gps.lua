@@ -119,6 +119,7 @@ module MoonliftElab {
              | ElabTNamed(string module_name, string type_name) unique
 
     ElabBinding = ElabLocalValue(string id, string name, MoonliftElab.ElabType ty) unique
+                | ElabLocalStoredValue(string id, string name, MoonliftElab.ElabType ty) unique
                 | ElabLocalCell(string id, string name, MoonliftElab.ElabType ty) unique
                 | ElabArg(number index, string name, MoonliftElab.ElabType ty) unique
                 | ElabGlobal(string module_name, string item_name, MoonliftElab.ElabType ty) unique
@@ -250,6 +251,7 @@ module MoonliftSem {
 
     SemParam = (string name, MoonliftSem.SemType ty) unique
     SemBinding = SemBindLocalValue(string id, string name, MoonliftSem.SemType ty) unique
+               | SemBindLocalStoredValue(string id, string name, MoonliftSem.SemType ty) unique
                | SemBindLocalCell(string id, string name, MoonliftSem.SemType ty) unique
                | SemBindArg(number index, string name, MoonliftSem.SemType ty) unique
                | SemBindGlobal(string module_name, string item_name, MoonliftSem.SemType ty) unique

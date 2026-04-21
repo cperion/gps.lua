@@ -239,6 +239,9 @@ function M.Define(T)
         [Elab.ElabLocalValue] = function(self, entry_name, full_text)
             return pvm.once(entry_name == full_text)
         end,
+        [Elab.ElabLocalStoredValue] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
         [Elab.ElabLocalCell] = function(self, entry_name, full_text)
             return pvm.once(entry_name == full_text)
         end,
