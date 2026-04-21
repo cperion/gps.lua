@@ -13,8 +13,9 @@ Current focus:
 
 Design docs for the current direction:
 
+- `moonlift/CONTRIBUTING.md` — ASDL-first contribution rules and architecture discipline
 - `moonlift/CURRENT_IMPLEMENTATION_STATUS.md` — what is and is not coded yet
-- `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md` — checklist from current state to complete language + hosting + FFI
+- `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md` — living checklist from current state to complete language + hosting + FFI
 - `moonlift/QUOTING_SYSTEM_DESIGN.md` — fragment/function metaprogramming design
 - `moonlift/LUAJIT_HOSTED_INTEGRATION.md` — why deeper LuaJIT hosting + hosted parsing is attractive
 
@@ -84,12 +85,12 @@ The Rust tests currently validate:
 - direct exported function compilation and invocation
 - registered extern symbol calls
 - block-param CFG lowering with a loop-shaped function
+- data object declaration / initialization / readback
 
 ## LuaJIT FFI bridge
 
 This is the **current** practical bridge and remains useful.
-Longer-term, Moonlift may prefer a deeper LuaJIT/state-aware hosted integration, but that does **not** rule out also providing a plain FFI-facing API later for LuaJIT users who want the simpler library/loading model.
-
+Longer-term, Moonlift may prefer a deeper LuaJIT/state-aware hosted integration, but that does **not** rule out continuing to provide the current plain FFI-facing path for LuaJIT users who want the simpler library/loading model.
 
 There is now also a direct LuaJIT bridge at:
 

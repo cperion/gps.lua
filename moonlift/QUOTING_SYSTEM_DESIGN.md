@@ -2,6 +2,9 @@
 
 Status: current design document for the rebooted `moonlift/` architecture.
 
+The `MoonliftMeta` layer described here is **not** implemented yet.
+What is implemented today is the closed compiler stack that this document builds on.
+
 This document replaces the earlier lighter fragment proposal with a design that is grounded in the **current actual ASDL** in:
 
 - `moonlift/lua/moonlift/asdl.lua`

@@ -6,8 +6,14 @@ This document is about **what has and has not actually been coded yet**, based o
 
 - `moonlift/lua/moonlift/asdl.lua`
 
+This file should be kept in sync eagerly with the implementation.
+For the contribution rules that define what counts as an architecturally correct implementation, see:
+
+- `moonlift/CONTRIBUTING.md`
+
 This is **not** a test-status document.
-It is intentionally focused on implementation coverage, even if some tests may currently fail or drift.
+It is intentionally focused on implementation coverage rather than test enumeration.
+All current Lua and Rust tests pass as of this review, but this file is about implementation coverage.
 
 For the future open-code / metaprogramming direction, see:
 
@@ -20,6 +26,9 @@ For the future richer LuaJIT/self-hosted integration and parser-hosting directio
 ---
 
 # 1. Scope of this review
+
+If this file and the code disagree, the file should be fixed immediately.
+Do not leave known drift here just because a checklist item or design note existed earlier.
 
 This inventory was based on the current implementation files:
 
@@ -213,6 +222,8 @@ Implemented in:
 - select
 - direct / extern / indirect calls
 - block params / CFG lowering
+- explicit expr-flow lowering through `BackExprLowering`
+- explicit address/materialization-flow lowering through `BackAddrLowering`
 - `if` / `switch`
 - `while` loops
 - `over range(...)`
@@ -244,12 +255,19 @@ Implemented in:
 - `moonlift/lua/moonlift/jit.lua`
 
 This currently replays the `BackCmd` stream into the Rust builder via FFI.
+There is already a thin plain FFI-facing path today; what is still missing is a more polished/stable final public FFI surface.
 
 ### Rust side
 Implemented in:
 
 - `moonlift/src/lib.rs`
 - `moonlift/src/ffi.rs`
+
+The current C ABI already exposes opaque handles for:
+
+- `moonlift_jit_t`
+- `moonlift_program_t`
+- `moonlift_artifact_t`
 
 The Rust host already supports a broad subset of current `BackCmd`, including:
 

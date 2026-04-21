@@ -1,29 +1,39 @@
-# PVM Discipline Rules for AI Coding
+# PVM Discipline
 
-> This document defines the architectural discipline for working with pvm.
-> Every rule exists because violating it silently degrades caching, type
-> safety, memory management, or performance. There are no optional rules.
+This is the **long-form architectural discipline** for working in the PVM codebase.
 
----
+Use `AGENTS.md` for the short operational rules.
+Use this file for the deeper doctrine, anti-pattern catalog, and review reference.
 
-## The One Principle
+Grounding docs:
 
-**If it isn't an ASDL value, it doesn't exist to the system.**
-
-Phase caches key on ASDL identity. Structural sharing works through ASDL
-interning. Type dispatch works through ASDL class lookup. `pvm.with` operates
-on ASDL nodes. `pvm.report` diagnoses ASDL-keyed caches.
-
-The moment something meaningful lives outside the ASDL — in a ctx, a closure,
-a registry, a global, a plain table — it becomes invisible to every mechanism
-that makes pvm work.
+- `docs/COMPILER_PATTERN.md`
+- `docs/PVM_GUIDE.md`
+- `pvm.lua`
 
 ---
 
-## The Execution Model
+# 1. The one principle
 
-There is no separate "execution layer." The phase boundary returns a triplet
-`(gen, param, state)`. You consume it. That IS execution.
+> **If it isn't an ASDL value, it doesn't exist to the system.**
+
+Phase caches key on ASDL identity.
+Structural sharing works through ASDL interning.
+Type dispatch works through ASDL classes.
+`pvm.with` operates on ASDL nodes.
+`pvm.report` diagnoses ASDL-keyed caches.
+
+The moment something meaningful lives outside the ASDL — in a ctx table,
+a closure capture, a registry, a global, a plain table, a string tag, or a
+non-ASDL wrapper — it becomes invisible to the mechanisms that make PVM work.
+
+---
+
+# 2. The execution model
+
+There is no separate execution layer.
+The phase boundary returns a triplet `(gen, param, state)`. You consume it.
+That **is** execution.
 
 ```lua
 for _, v in phase(node) do
@@ -31,457 +41,451 @@ for _, v in phase(node) do
 end
 ```
 
-Or equivalently: `pvm.each(phase(node), fn)`, `pvm.drain(phase(node))`,
-`pvm.fold(phase(node), init, fn)`.
+Or equivalently:
 
-The triplet is not an abstraction over execution. It IS execution factored
-into its three irreducible roles: step function, invariant environment,
-mutable cursor. Every phase boundary returns one. Every consumer runs one.
-Cache fills as a side effect of full consumption. There is nothing else.
+- `pvm.each(...)`
+- `pvm.drain(...)`
+- `pvm.fold(...)`
+- `pvm.one(...)` for scalar boundaries
+
+The triplet is not an abstraction layered over execution.
+It **is** execution factored into step function, invariant environment, and mutable cursor.
 
 ---
 
-## ASDL Rules
+# 3. ASDL rules
 
-### R1: No plain tables as domain values
+## 3.1 No plain tables as domain values
 
-NEVER:
+Wrong:
+
 ```lua
 { tag = "btn", w = 100, h = 30 }
 ```
-ALWAYS:
+
+Right:
+
 ```lua
 T.App.Button("btn", 100, 30, ...)
 ```
 
-Plain tables have no interning, no identity, no cache keying, no structural
-sharing, no type safety, no `pvm.with`, no phase dispatch, and no weak-key
-compatibility with pvm's cache system.
+Plain tables have no interning, no identity, no cache keying, no structural sharing,
+no type safety, no `pvm.with`, and no phase dispatch.
 
-### R2: No strings where sum types belong
+## 3.2 No strings where sum types belong
 
-NEVER:
+Wrong:
+
 ```lua
 kind = "button"
 ```
-ALWAYS:
-```lua
+
+Right:
+
+```asdl
 Kind = Button | Slider | Meter
 ```
 
-Strings lose exhaustiveness, variant-specific fields, singleton identity
-comparison, and phase dispatch.
+Every boolean flag that constrains another boolean is probably a sum type.
 
-Every boolean flag that constrains another boolean is a sum type:
+## 3.3 No optional fields as variant discrimination
 
-```lua
--- WRONG: boolean soup with implicit constraints
-is_playing = true, is_recording = false, is_paused = false
+Wrong:
 
--- RIGHT: impossible invalid state
-TransportState = Stopped | Playing | Recording | Paused
+```asdl
+Param = (number value, Automation? automation) unique
 ```
 
-### R3: No optional fields as variant discrimination
+then branching on `node.automation ~= nil`.
 
-NEVER branch behavior on nil-checking an optional field.
-ALWAYS use a sum type with explicit variants:
+Right:
 
-```lua
--- WRONG
-Param = (number value, Automation? automation) unique
--- then: if node.automation ~= nil then ...
-
--- RIGHT
+```asdl
 ParamSource = Static(number value) unique
             | Automated(Automation curve) unique
 ```
 
-### R4: No derived data in source ASDL
+## 3.4 Keep derived data out of source ASDL
 
-If a value is computed from other values, it belongs in a later phase.
+Source ASDL answers:
 
-```lua
--- WRONG: coefficients are derived from freq and q
-Filter = (number freq, number q, number b0, number b1, number b2) unique
+- what did the user author?
+- what survives save/load?
+- what does undo restore?
 
--- RIGHT: source has only authored fields
-Filter = (number freq, number q) unique
--- coefficients computed in a phase boundary
-```
+Derived values belong in later phases.
 
-The source ASDL answers: what did the user author? What survives save/load?
-What does undo restore? Nothing else belongs there.
+## 3.5 Mark cacheable domain types `unique`
 
-### R5: Always mark types `unique`
+Without `unique`, constructors allocate fresh nodes and identity never stabilizes.
+The code may still run, but caching will quietly degrade.
 
-Types without `unique` don't intern. Every constructor allocates a new object.
-Phase caches never hit because identity comparison fails. The code runs. It
-just runs slowly and leaks.
+## 3.6 Never mutate ASDL nodes
 
-### R6: Never mutate ASDL nodes
-
-NEVER use `rawset(node, field, value)` or any other mutation path.
-ALWAYS use `pvm.with(node, { field = value })`.
-
-Mutation corrupts the interning trie. The node stored at the old key now has
-different values. Every future lookup for those keys returns a corrupt node.
-Interning is globally and silently broken.
-
-The `__newindex` error on ASDL nodes exists for this reason. Do not bypass it.
-
-### R7: Use `pvm.with`, not manual reconstruction
+Wrong:
 
 ```lua
--- WRONG: fragile, breaks when fields are added
-local new = T.App.Track(t.name, t.color, new_vol, t.pan, t.mute, t.solo, t.level)
-
--- RIGHT: only name what changes
-local new = pvm.with(t, { vol = new_vol })
+rawset(node, "vol", 0.7)
+node.vol = 0.7
 ```
 
-### R8: Use `pvm.with`, not deep copy
+Right:
 
-Deep copy creates new objects for everything. Every cache lookup misses.
-Zero structural sharing.
+```lua
+local next_node = pvm.with(node, { vol = 0.7 })
+```
 
-`pvm.with` produces a new node for changed fields only. All unchanged fields
-keep their interned identity. All phase caches hit on unchanged subtrees.
+Mutation corrupts interning and silently breaks structural identity.
+
+## 3.7 Use `pvm.with`, not manual reconstruction
+
+Wrong:
+
+```lua
+local next = T.App.Track(t.name, t.color, new_vol, t.pan, t.mute, t.solo)
+```
+
+Right:
+
+```lua
+local next = pvm.with(t, { vol = new_vol })
+```
+
+## 3.8 Use `pvm.with`, not deep copy
+
+Deep copy destroys structural sharing.
+`pvm.with` preserves unchanged identities and lets phase caches hit.
 
 ---
 
-## Phase Boundary Rules
+# 4. Event and state discipline
 
-### R9: Handlers MUST return triplets
+Input is Event ASDL.
+State change is pure `Apply(state, event) -> state`.
 
-NEVER return nil, a raw value, or a table from a phase handler.
-ALWAYS return `(gen, param, ctrl)`:
+Do not register callbacks on nodes.
+Do not attach closures to ASDL values.
+Do not build event buses.
 
-```lua
--- One output element
-return pvm.once(value)
-
--- Map phase over children
-return pvm.children(phase_fn, self.children)
-
--- Multiple elements
-return pvm.concat2(pvm.once(a), pvm.once(b))
-
--- Zero output
-return pvm.empty()
-```
-
-Returning nil from a handler is an error. Returning a raw value or table
-breaks the recording protocol.
-
-### R10: No parallel caching
-
-NEVER add `local cache = {}` or `local memo = {}` alongside pvm phases.
-NEVER write manual memoization wrappers.
+Wrong:
 
 ```lua
--- WRONG: parallel cache with string keys, manual invalidation, strong refs
-local memo = {}
-local function get_layout(node)
-    local key = node.tag .. ":" .. node.w .. ":" .. node.h
-    if memo[key] then return memo[key] end
-    local result = compute_layout(node)
-    memo[key] = result
-    return result
-end
+node.on_click = function() ... end
 ```
 
-The phase boundary IS the cache. `pvm.phase` records on miss, commits on
-full drain, and returns seq on hit. If you see `local cache = {}` or
-`local memo = {}` anywhere outside pvm's own machinery, it is a bug.
+Right:
 
-Either the work belongs in a `pvm.phase` boundary (which caches
-automatically), or it's genuinely ephemeral and shouldn't be cached at all.
-
-The one legitimate exception is a multi-key cache like layout measurement
-`cached_measure(node, max_width)` that keys on `(node identity × constraint)`.
-Even this MUST use weak keys.
-
-### R11: No ctx / bag-of-state arguments
-
-NEVER thread an opaque context table through handlers or build functions:
-
-```lua
--- WRONG
-local function build_row(ctx, track, index)
-    local bg = index == ctx.selected and ACTIVE or NORMAL
-    ...
-end
-```
-
-If a handler's output depends on a value, that value MUST be a field on the
-ASDL node:
-
-```lua
--- RIGHT: everything the handler needs is in the node
-T.App.TrackRow(index, track, is_selected, is_hovered)
-```
-
-**Why this is fatal:** Phase caches key on node identity. The ctx is invisible
-to the cache. When ctx changes but the node doesn't, the cache returns stale
-results. The AI introduces an invisible dependency that the phase boundary
-cannot track.
-
-**The fix is always the same:** whatever the handler reads from ctx belongs as
-a field on the ASDL type. If `hover_tag` affects output, it's a field. If
-`theme` affects colors, resolve theme to concrete color values BEFORE
-constructing the node.
-
-### R12: No closures over mutable state in handlers
-
-```lua
--- WRONG: output depends on captured `selected`, cache keys on node only
-local selected = 1
-[T.App.TrackRow] = function(self)
-    if self.index == selected then ...  -- captured mutable!
-```
-
-The value of `selected` must be a field on the node itself. Same reason as
-R11: the cache can't see it.
-
-### R13: Call phases, not handlers directly
-
-NEVER call a handler function directly or inline its logic.
-ALWAYS call through the phase boundary:
-
-```lua
--- WRONG: bypasses recording, caching, shared deduplication
-local result = my_handler_fn(node)
-
--- RIGHT: goes through the phase machinery
-for _, v in phase(node) do ... end
-```
-
-### R14: Understand partial drain
-
-If a for-loop over a phase triplet breaks early, the recording does NOT
-commit to cache. This is correct and safe. Do NOT add manual caching to
-"fix" the re-evaluation on next access.
-
-If you need the full cache, drain fully.
+- model the event as Event ASDL
+- update state structurally with `pvm.with`
 
 ---
 
-## Memory Rules
+# 5. Phase boundary rules
 
-### R15: No strong references to ASDL nodes in external tables
+## 5.1 A phase answers a specific question
 
-pvm's caches use `__mode = "k"` (weak keys). When a node leaves the live
-source tree, GC collects it and its cache entries die naturally.
+Examples:
 
-If you store nodes in a plain table without weak keys, those nodes and all
-their downstream cache entries are pinned forever:
+- `measure(node) -> Size`
+- `resolve(project) -> ResolvedProject`
+- `lower(widget) -> DrawCmd stream`
+- `hit_regions(root) -> HitRegion stream`
+
+Name phases with verbs.
+Do not create vague phases like `process`, `handle`, or `update`.
+
+## 5.2 Streaming handlers must return triplets
+
+Wrong:
 
 ```lua
--- WRONG: strong key, pins node and all downstream forever
+[T.App.Button] = function(self)
+    return Cmd(...)
+end
+```
+
+Right:
+
+```lua
+[T.App.Button] = function(self)
+    return pvm.once(Cmd(...))
+end
+```
+
+Other canonical cases:
+
+- zero output: `pvm.empty()`
+- recurse over children: `pvm.children(...)`
+- multiple streams: `pvm.concat2/3/all(...)`
+
+## 5.3 Scalar boundaries use `pvm.phase(name, fn)` + `pvm.one(...)`
+
+If the question produces exactly one value per node, use the scalar form.
+Do not build manual memo wrappers.
+
+## 5.4 No hidden dependencies in handlers
+
+If handler output depends on a value, that value must be visible in:
+
+- the ASDL node identity, or
+- explicit phase arguments
+
+No hidden `ctx`, mutable capture, or ambient global should affect output.
+
+## 5.5 No parallel caches
+
+The phase boundary **is** the cache.
+Do not add `local cache = {}` or `local memo = {}` alongside proper phases.
+
+## 5.6 Call phases, not handlers directly
+
+Calling a handler directly bypasses recording, hits, shared in-flight use, and cache commit.
+Always call through the phase boundary.
+
+## 5.7 Understand partial drain
+
+If a consumer breaks early, the recording does not commit.
+This is correct.
+Do not patch around it with manual caching.
+
+---
+
+# 6. Flattening and execution discipline
+
+## 6.1 Flatten before the final loop
+
+The final execution loop should consume flat facts.
+It must not recursively interpret source nodes.
+
+## 6.2 Prefer uniform command product types in hot loops
+
+For hot output streams, prefer one flat product type with a singleton `Kind` field.
+Use singleton ASDL values, not string command tags.
+
+## 6.3 Containment becomes push/pop facts
+
+Examples:
+
+- `PushClip / PopClip`
+- `PushTransform / PopTransform`
+- `PushOpacity / PopOpacity`
+
+Execution state is usually a stack.
+
+## 6.4 The final loop must not rediscover source semantics
+
+The source tree has already been compiled.
+The loop should execute facts, not reinterpret authored structure.
+
+---
+
+# 7. Field classification discipline
+
+Classify fields before choosing a representation.
+
+## 7.1 Code-shaping fields
+
+These affect structure, branching, layout, or which facts are produced.
+They belong in ASDL because phase output depends on them.
+
+Examples:
+
+- children
+- orientation
+- selected
+- visible
+- mode variants
+- layout constraints
+
+## 7.2 Payload fields
+
+These are carried downstream but do not decide structure much.
+Examples:
+
+- x/y/w/h in final commands
+- rgba8
+- shaped text payload
+
+## 7.3 Dead fields
+
+These are not authored and not needed downstream.
+Remove them.
+
+### Classification invariant
+
+If changing a field changes phase output, it must be part of the phase cache key
+through ASDL identity or explicit phase arguments.
+
+---
+
+# 8. Memory discipline
+
+## 8.1 Use weak side tables only
+
+Wrong:
+
+```lua
 local index = {}
 index[node] = data
+```
 
--- RIGHT: weak key, node dies when no longer in live tree
+Right:
+
+```lua
 local index = setmetatable({}, { __mode = "k" })
 index[node] = data
 ```
 
-**This is the primary memory leak vector in pvm applications.**
+Strong side tables pin nodes and their downstream cache chains.
 
-### R16: No accumulating results across frames
+## 8.2 Do not accumulate results across frames
 
-NEVER append to a growing table each frame:
-
-```lua
--- WRONG: grows forever, pins all nodes
-all_results[#all_results + 1] = pvm.drain(phase(root))
-
--- RIGHT: replace, old results become garbage
-current_results = pvm.drain(phase(root))
-```
-
-### R17: No non-ASDL wrappers holding ASDL nodes
-
-NEVER wrap an ASDL node in a plain Lua object:
+Wrong:
 
 ```lua
--- WRONG: strong reference pins the node
-local wrapper = { node = my_node, extra = "stuff" }
+all_results[#all_results + 1] = pvm.drain(render(root))
 ```
 
-If you need extra data associated with a node, either add it as a field on
-the ASDL type, or store it in a weak-keyed side table.
+Right:
+
+```lua
+current_results = pvm.drain(render(root))
+```
+
+## 8.3 Do not wrap ASDL nodes in plain objects
+
+If extra data is meaningful, put it in ASDL.
+If the association is external, use a justified weak-key side table.
 
 ---
 
-## Anti-Pattern Catalog
+# 9. Anti-pattern catalog
 
-These are patterns that look like normal good programming but are
-fundamentally incompatible with pvm.
+Reject or refactor these patterns unless there is an explicit, justified escape hatch.
 
-### Functions that take IDs instead of values
+## 9.1 Plain domain tables
 
-```lua
--- WRONG: indirection, opaque lookup, untestable without the table
-local function render_track(track_id, tracks_table)
-    local track = tracks_table[track_id]
-    ...
-end
+Use ASDL.
 
--- RIGHT: the node IS the value, pass it directly
-local function render_track(track_node)
-    ...
-end
-```
+## 9.2 String dispatch
 
-IDs belong only where there is a real authored cross-reference between
-independent subtrees (a send referencing another track). Even then, resolve
-the ID in an explicit early phase, producing a new ASDL node carrying the
-resolved value.
+Use ASDL sum types and singleton values.
 
-### Mutable accumulator threading
+## 9.3 Opaque context threading
+
+Wrong:
 
 ```lua
--- WRONG: output depends on call order, caching impossible
-local function build_ui(node, state)
-    state.y = state.y + ROW_H
-    state.count = state.count + 1
-    ...
-end
+render(node, ctx)
 ```
 
-Phase handlers must be pure functions of their node. If position depends on
-sibling layout, that's a layout pass that runs inside a scalar phase boundary
-and caches the entire result.
+If `ctx` affects output, its values belong in ASDL nodes or explicit phase args.
 
-### Observer / callback registration
+## 9.4 Callback registration
 
-```lua
--- WRONG: interpreter pattern, breaks interning
-node.on_click = function() ... end
-node:addEventListener("hover", fn)
-```
+Use Event ASDL + Apply.
 
-In pvm, input is Event ASDL, state change is `Apply : (state, event) → state`,
-the new state compiles through phases. There is no listener. There is no
-event bus. There is: poll → apply → compile → execute.
+## 9.5 Managers and registries
 
-Callbacks also break interning — function identity is reference identity in
-Lua, so two structurally identical nodes with different closures can never
-intern to the same value.
+Use ASDL lists and structural updates.
+Do not build manager objects as the primary architecture.
 
-### Managers and registries
+## 9.6 Mutable accumulators that shape output
 
-```lua
--- WRONG: opaque mutable container, invisible to ASDL and caching
-local WidgetManager = {
-    widgets = {},
-    register = function(self, w) ... end,
-    update = function(self, id, props) ... end,
-}
-```
+If sibling layout is needed, use a proper layout phase.
+Do not thread mutable state through handlers as hidden semantics.
 
-The collection is an ASDL list field: `Project(App.Track* tracks) unique`.
-Updating a track is `pvm.with(project, { tracks = new_tracks })`. No manager.
+## 9.7 Manual dirty flags
 
-### Ad hoc type wrappers / classes
+Use structural identity and phase caches.
 
-```lua
--- WRONG: reinventing types outside ASDL
-local Button = {}
-Button.__index = Button
-function Button.new(tag, w, h)
-    return setmetatable({ tag = tag, w = w, h = h }, Button)
-end
-```
+## 9.8 Non-ASDL classes for domain values
 
-This is an ASDL type: `Button = (string tag, number w, number h) unique`.
-ASDL gives you interning, immutability, type checking, phase dispatch,
-`pvm.with`, and structural sharing. The ad hoc class gives you none of those.
-
-### Imperative state machines with mode flags
-
-```lua
--- WRONG: mode string controlling behavior
-local mode = "editing"
-if mode == "editing" then ...
-elseif mode == "previewing" then ...
-```
-
-This is a sum type in the source ASDL:
-```
-AppMode = Editing(EditState state) unique
-        | Previewing(PreviewState state) unique
-```
-
-Phase handlers dispatch on the variant. Each variant carries its own state.
-Impossible to be in "editing" mode with preview state.
+Use ASDL product/sum types.
+Do not reinvent the domain type system in plain Lua objects.
 
 ---
 
-## The Diagnostic Questions
+# 10. Testing discipline
 
-When reviewing or writing pvm code, apply these tests:
+## 10.1 One-constructor test
 
-### The one-constructor test
+A good PVM function should often be testable with one ASDL constructor and one assertion.
+If testing requires managers, registries, mutable context, listeners, or manual caches,
+the design likely hid state outside ASDL.
 
-> Can you test this function with one ASDL constructor call and one assertion,
-> with nothing else?
+## 10.2 Cache-correctness test
 
-If the answer requires building a ctx, populating a registry, setting up a
-listener, initializing a mutable accumulator, constructing a lookup table,
-or resetting a manual cache — the ASDL is incomplete, a dependency is hidden,
-or the work is in the wrong layer.
+Ask for every handler:
 
-### The cache-correctness test
+> Can this handler produce different output for the same ASDL node identity?
 
-> If this node is unchanged next frame, will the phase cache return the
-> correct result?
+If yes, find the hidden dependency and move it into ASDL or explicit phase args.
 
-If the handler reads ANYTHING not in the node (globals, captures, ctx,
-side tables), the answer is no. The cache will return stale results.
+## 10.3 Memory test
 
-### The memory test
+Ask:
 
-> If this node leaves the source tree, will it be garbage collected?
+> If this node leaves the source tree, can it be garbage collected?
 
-If anything holds a strong reference to it (a plain table without `__mode`,
-a closure capture, a non-ASDL wrapper), the answer is no. The node and its
-entire cache chain are pinned.
+If a plain table, closure, or wrapper still references it, fix the lifetime.
 
-### The pvm.report test
+## 10.4 Diagnostics test
 
-> Does `pvm.report_string` show healthy reuse ratios?
+Use:
 
-- 90%+ = healthy, structural sharing works, incrementality is real
-- 70-90% = acceptable during genuine change (animation, editing)
-- Below 50% = ASDL design problem — types aren't interning, boundaries
-  are wrong, or invisible dependencies are defeating the cache
+```lua
+print(pvm.report_string({ phase1, phase2, phase3 }))
+```
 
-If the hit ratio is low but the data hasn't changed, something outside the
-ASDL is varying (ctx, capture, accumulator) and poisoning the cache key.
+Interpretation:
+
+- `90%+ reuse` = healthy
+- `70–90%` = acceptable during genuine change
+- `<50%` = architecture smell
+
+Low reuse usually means:
+
+- hidden dependencies
+- wrong boundary placement
+- missing `unique`
+- excess reconstruction
+- deep copy
+- execution rediscovering structure
 
 ---
 
-## Summary of What pvm Eliminates
+# 11. How to think when a smell appears
 
-When the discipline is followed, these things do not exist in the codebase:
+If the code you are about to write feels like a framework smell, stop.
 
-- State managers, stores, or reducers (Apply is a pure function, source ASDL is the state)
-- Observer patterns, event buses, or listener registration (Event ASDL + Apply)
-- Manual caching, memoization wrappers, or invalidation logic (phase boundaries)
-- Dirty flags or change tracking (ASDL identity comparison)
-- Virtual DOM or diffing (structural sharing via `pvm.with` + interning)
-- Object-relational mapping or ID-based registries (ASDL nodes are values, pass them)
-- Deep equality checks (interned `==` is reference equality)
-- Type-checking boilerplate (ASDL constructors validate)
-- Opaque context threading (all inputs are ASDL fields)
-- Ad hoc Lua classes or metatables for domain types (ASDL types)
-- Manager objects or service containers (ASDL list fields + `pvm.with`)
+Typical smells:
 
-Every item on this list represents a failure mode where an AI will reach for
-the standard solution instead of the ASDL-first solution. The standard
-solution will appear to work. It will silently degrade caching, leak memory,
-defeat type safety, or introduce stale-data bugs that are invisible until
-`pvm.report` reveals the damage.
+- “I’ll just add a helper switch for now”
+- “I’ll pass a ctx table through this boundary”
+- “I’ll return a raw Lua shape and inspect it later”
+- “I’ll add a Rust-only intermediate form to avoid fixing the Lua design”
+
+Correct response:
+
+1. go back to ASDL
+2. make the distinction explicit
+3. put it in the right layer
+4. dispatch through `pvm.phase(...)`
+5. keep execution flat
+
+Do not postpone architectural fixes if the smell has already appeared.
+Fix the design as soon as it becomes visible.
+
+---
+
+# 12. Final doctrine
+
+A PVM application is a live compiler:
+
+- ASDL is the source language
+- events edit the source
+- `Apply` produces the next source program
+- phases compile it into flat facts
+- a loop executes those facts
+- structural identity makes unchanged work disappear

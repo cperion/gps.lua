@@ -8,6 +8,11 @@ Status: end-to-end checklist from the **current reboot state** to a **complete M
 - plain FFI layer
 
 This document is intentionally a **checklist**, not a narrative status report.
+It is a **living document** and should be updated eagerly whenever implementation reality changes.
+Boxes should only be checked when the implementation is real and architecturally correct under the ASDL-first rules in:
+
+- `moonlift/CONTRIBUTING.md`
+
 For the current implementation inventory, see:
 
 - `moonlift/CURRENT_IMPLEMENTATION_STATUS.md`
@@ -59,10 +64,18 @@ The current reboot already has:
 - real `Sem -> Back`
 - real `Back -> Cranelift`
 - real FFI replay of `BackCmd`
+- a thin plain FFI path already usable today:
+  - opaque `jit/program/artifact` handles
+  - `BackProgram -> Artifact` compilation
+  - function-pointer lookup
+  - explicit free APIs
 
 But it is still missing major authored-language, meta, hosting, and FFI-completion pieces.
 
 Use this file as the forward checklist from that state.
+
+When checking a box, prefer updating this file in the same change that updates the implementation.
+If the implementation required an architectural correction, update the wording here too rather than preserving stale milestones.
 
 ---
 
@@ -454,13 +467,17 @@ This is the preferred rich integration path.
 
 ---
 
-# 8. Phase F — Add the plain FFI layer
+# 8. Phase F — Stabilize and complete the plain FFI layer
 
 Goal:
 
-- also provide a simpler public FFI-facing API for LuaJIT users who do not want the richer hosted path
+- keep the existing thin public FFI-facing path
+- make it explicit, documented, and complete enough for LuaJIT users who do not want the richer hosted path
 
 This is the **secondary** path, not the richer architectural center.
+
+There is already a thin FFI layer today (`moonlift/src/ffi.rs` + `moonlift/lua/moonlift/jit.lua`).
+This phase is about stabilizing, documenting, and extending that path rather than inventing it from scratch.
 
 ## 8.1 Stable FFI surface design
 - [ ] decide stable C ABI surface
@@ -473,11 +490,11 @@ This is the **secondary** path, not the richer architectural center.
 - [ ] define error reporting surface clearly
 
 ## 8.2 FFI compile/build APIs
-- [ ] compile from `BackProgram`
+- [x] compile from `BackProgram`
 - [ ] compile from higher-level forms if desired
-- [ ] function lookup APIs
+- [x] function lookup APIs
 - [ ] module lookup APIs if desired
-- [ ] explicit free/destruction APIs
+- [x] explicit free/destruction APIs
 
 ## 8.3 FFI calling APIs
 - [ ] scalar call helpers
@@ -488,13 +505,13 @@ This is the **secondary** path, not the richer architectural center.
 
 ## 8.4 FFI marshalling/documentation
 - [ ] document ABI rules for all public-callable types
-- [ ] document lifetime rules
-- [ ] provide minimal LuaJIT FFI examples
-- [ ] provide non-hosted library-loading examples
+- [x] document lifetime rules
+- [x] provide minimal LuaJIT FFI examples
+- [x] provide non-hosted library-loading examples
 
 ## 8.5 Relationship to hosted path
 - [ ] ensure hosted path can reuse the core native machinery
-- [ ] ensure FFI path remains a thinner compatibility layer, not a second compiler architecture
+- [x] ensure FFI path remains a thinner compatibility layer, not a second compiler architecture
 
 ---
 
@@ -520,7 +537,9 @@ Goal:
 
 ## 9.3 Documentation coherence
 - [ ] keep `README.md` aligned with actual architecture
+- [ ] keep `CONTRIBUTING.md` aligned with actual architecture discipline
 - [ ] keep `CURRENT_IMPLEMENTATION_STATUS.md` current
+- [ ] keep this checklist current as a living document whenever boxes become true/false or need wording changes
 - [ ] keep `QUOTING_SYSTEM_DESIGN.md` aligned with real implementation
 - [ ] keep `LUAJIT_HOSTED_INTEGRATION.md` aligned with real integration plan
 - [ ] document the final compile pipeline end-to-end
@@ -581,13 +600,15 @@ Moonlift reaches the intended complete state only when all of these are true:
 
 A good way to use the current docs together is:
 
-1. `moonlift/CURRENT_IMPLEMENTATION_STATUS.md`
+1. `moonlift/CONTRIBUTING.md`
+   - the ASDL-first rules for making changes correctly
+2. `moonlift/CURRENT_IMPLEMENTATION_STATUS.md`
    - what exists right now
-2. `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md`
+3. `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md`
    - what remains to reach completion
-3. `moonlift/QUOTING_SYSTEM_DESIGN.md`
+4. `moonlift/QUOTING_SYSTEM_DESIGN.md`
    - the target `Meta` / open-code design
-4. `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
+5. `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
    - the richer future hosting strategy
 
 That set is the current roadmap stack.

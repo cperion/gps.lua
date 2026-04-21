@@ -6,6 +6,9 @@ Status: design document for a future Moonlift integration direction in which Moo
 - FFI-loaded shared libraries
 - builder API only
 
+This hosted/state-aware path is **not** the current implementation.
+Today the implemented bridge is the thinner `moonlift/lua/moonlift/jit.lua` FFI replay path over `BackProgram`.
+
 This document explains the ergonomic, architectural, and compiler-architecture wins of a LuaJIT-hosted and parser-hosted design.
 
 It is complementary to:
