@@ -11,20 +11,20 @@ local L = Lower.Define(T)
 local Elab = T.MoonliftElab
 local Sem = T.MoonliftSem
 
-local function one_type(node)
-    return pvm.one(L.lower_type(node))
+local function one_type(node, const_env)
+    return pvm.one(L.lower_type(node, const_env))
 end
 
-local function one_expr(node)
-    return pvm.one(L.lower_expr(node))
+local function one_expr(node, const_env)
+    return pvm.one(L.lower_expr(node, const_env))
 end
 
-local function one_domain(node)
-    return pvm.one(L.lower_domain(node))
+local function one_domain(node, const_env)
+    return pvm.one(L.lower_domain(node, const_env))
 end
 
-local function one_stmt(node)
-    return pvm.one(L.lower_stmt(node))
+local function one_stmt(node, const_env)
+    return pvm.one(L.lower_stmt(node, const_env))
 end
 
 assert(one_type(Elab.ElabTI32) == Sem.SemTI32)
@@ -42,6 +42,27 @@ assert(one_type(Elab.ElabTArray(
     ),
     Elab.ElabTI32
 )) == Sem.SemTArray(Sem.SemTI32, 14))
+
+local const_env = Elab.ElabConstEnv({
+    Elab.ElabConstEntry("", "N", Elab.ElabTIndex, Elab.ElabInt("4", Elab.ElabTIndex)),
+    Elab.ElabConstEntry(
+        "",
+        "M",
+        Elab.ElabTIndex,
+        Elab.ElabExprAdd(
+            Elab.ElabTIndex,
+            Elab.ElabBindingExpr(Elab.ElabGlobal("", "N", Elab.ElabTIndex)),
+            Elab.ElabInt("2", Elab.ElabTIndex)
+        )
+    ),
+})
+assert(one_type(
+    Elab.ElabTArray(
+        Elab.ElabBindingExpr(Elab.ElabGlobal("", "M", Elab.ElabTIndex)),
+        Elab.ElabTI32
+    ),
+    const_env
+) == Sem.SemTArray(Sem.SemTI32, 6))
 
 local x = Elab.ElabBindingExpr(Elab.ElabLocalValue("lx", "x", Elab.ElabTI32))
 local add = one_expr(Elab.ElabExprAdd(Elab.ElabTI32, x, Elab.ElabInt("1", Elab.ElabTI32)))

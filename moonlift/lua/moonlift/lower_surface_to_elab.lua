@@ -19,6 +19,8 @@ function M.Define(T)
 
     local lower_type
     local lower_array_count_expr
+    local array_count_binding_expr
+    local array_count_path_binding_matches
 
     local function one_type(node, env)
         return pvm.one(lower_type(node, env))
@@ -44,9 +46,96 @@ function M.Define(T)
         return nil
     end
 
+    local function find_value_binding(env, name)
+        local values = env and env.values or nil
+        if values == nil then return nil end
+        for i = #values, 1, -1 do
+            local entry = values[i]
+            if entry.name == name then
+                return entry.binding
+            end
+        end
+        return nil
+    end
+
+    local function split_value_path(path)
+        local parts = collect_name_parts(path)
+        if #parts == 0 then
+            error("surface_to_elab_type: empty value path in array count")
+        end
+        local full_text = table.concat(parts, ".")
+        if #parts == 1 then
+            return full_text, "", parts[1]
+        end
+        local item_name = parts[#parts]
+        parts[#parts] = nil
+        return full_text, table.concat(parts, "."), item_name
+    end
+
+    local function find_path_binding(env, path)
+        local values = env and env.values or nil
+        if values == nil then return nil end
+        local full_text, module_name, item_name = split_value_path(path)
+        for i = #values, 1, -1 do
+            local entry = values[i]
+            if pvm.one(array_count_path_binding_matches(entry.binding, entry.name, full_text, module_name, item_name)) then
+                return entry.binding
+            end
+        end
+        return nil
+    end
+
     local function one_count_expr(node, env)
         return pvm.one(lower_array_count_expr(node, env))
     end
+
+    array_count_path_binding_matches = pvm.phase("surface_to_elab_array_count_path_binding_matches", {
+        [Elab.ElabLocalValue] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabLocalStoredValue] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabLocalCell] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabArg] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabExtern] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabGlobal] = function(self, entry_name, full_text, module_name, item_name)
+            if entry_name == full_text then
+                return pvm.once(true)
+            end
+            return pvm.once(self.module_name == module_name and self.item_name == item_name)
+        end,
+    })
+
+    array_count_binding_expr = pvm.phase("surface_to_elab_array_count_binding_expr", {
+        [Elab.ElabGlobal] = function(self)
+            if self.ty ~= Elab.ElabTIndex then
+                error("surface_to_elab_type: array count refs must resolve to index-typed global const bindings")
+            end
+            return pvm.once(Elab.ElabBindingExpr(self))
+        end,
+        [Elab.ElabLocalValue] = function()
+            error("surface_to_elab_type: array count refs cannot depend on runtime local bindings")
+        end,
+        [Elab.ElabLocalStoredValue] = function()
+            error("surface_to_elab_type: array count refs cannot depend on runtime local bindings")
+        end,
+        [Elab.ElabLocalCell] = function()
+            error("surface_to_elab_type: array count refs cannot depend on mutable local bindings")
+        end,
+        [Elab.ElabArg] = function()
+            error("surface_to_elab_type: array count refs cannot depend on runtime argument bindings")
+        end,
+        [Elab.ElabExtern] = function()
+            error("surface_to_elab_type: array count refs cannot depend on extern bindings")
+        end,
+    })
 
     lower_array_count_expr = pvm.phase("surface_to_elab_array_count_expr", {
         [Surf.SurfInt] = function(self)
@@ -60,6 +149,21 @@ function M.Define(T)
         end,
         [Surf.SurfExprMul] = function(self, env)
             return pvm.once(Elab.ElabExprMul(Elab.ElabTIndex, one_count_expr(self.lhs, env), one_count_expr(self.rhs, env)))
+        end,
+        [Surf.SurfNameRef] = function(self, env)
+            local binding = find_value_binding(env, self.name)
+            if binding == nil then
+                error("surface_to_elab_type: unknown array count binding '" .. self.name .. "'")
+            end
+            return pvm.once(pvm.one(array_count_binding_expr(binding)))
+        end,
+        [Surf.SurfPathRef] = function(self, env)
+            local binding = find_path_binding(env, self.path)
+            if binding == nil then
+                local full_text = split_value_path(self.path)
+                error("surface_to_elab_type: unknown qualified array count binding '" .. full_text .. "'")
+            end
+            return pvm.once(pvm.one(array_count_binding_expr(binding)))
         end,
     })
 

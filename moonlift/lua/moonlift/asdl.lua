@@ -130,6 +130,8 @@ module MoonliftElab {
     ElabFieldType = (string field_name, MoonliftElab.ElabType ty) unique
     ElabTypeLayout = ElabLayoutNamed(string module_name, string type_name, MoonliftElab.ElabFieldType* fields) unique
     ElabEnv = (MoonliftElab.ElabValueEntry* values, MoonliftElab.ElabTypeEntry* types, MoonliftElab.ElabTypeLayout* layouts) unique
+    ElabConstEntry = (string module_name, string item_name, MoonliftElab.ElabType ty, MoonliftElab.ElabExpr value) unique
+    ElabConstEnv = (MoonliftElab.ElabConstEntry* entries) unique
     ElabStmtEnvEffect = ElabNoBinding
                       | ElabAddBinding(MoonliftElab.ElabValueEntry entry) unique
 

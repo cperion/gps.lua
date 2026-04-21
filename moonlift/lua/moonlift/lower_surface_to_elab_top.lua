@@ -21,6 +21,7 @@ function M.Define(T)
     local lower_param
     local lower_param_entry
     local lower_item_value_entry
+    local count_decl_type
     local lower_func
     local lower_extern_func
     local lower_const
@@ -49,6 +50,10 @@ function M.Define(T)
 
     local function one_item_value_entry(node, env)
         return pvm.one(lower_item_value_entry(node, env))
+    end
+
+    local function one_count_decl_type(node)
+        return pvm.one(count_decl_type(node))
     end
 
     local function one_func(node, env)
@@ -122,6 +127,29 @@ function M.Define(T)
         end,
     })
 
+    count_decl_type = pvm.phase("surface_to_elab_count_decl_type", {
+        [Surf.SurfTIndex] = function()
+            return pvm.once(true)
+        end,
+        [Surf.SurfTVoid] = function() return pvm.once(false) end,
+        [Surf.SurfTBool] = function() return pvm.once(false) end,
+        [Surf.SurfTI8] = function() return pvm.once(false) end,
+        [Surf.SurfTI16] = function() return pvm.once(false) end,
+        [Surf.SurfTI32] = function() return pvm.once(false) end,
+        [Surf.SurfTI64] = function() return pvm.once(false) end,
+        [Surf.SurfTU8] = function() return pvm.once(false) end,
+        [Surf.SurfTU16] = function() return pvm.once(false) end,
+        [Surf.SurfTU32] = function() return pvm.once(false) end,
+        [Surf.SurfTU64] = function() return pvm.once(false) end,
+        [Surf.SurfTF32] = function() return pvm.once(false) end,
+        [Surf.SurfTF64] = function() return pvm.once(false) end,
+        [Surf.SurfTPtr] = function() return pvm.once(false) end,
+        [Surf.SurfTArray] = function() return pvm.once(false) end,
+        [Surf.SurfTSlice] = function() return pvm.once(false) end,
+        [Surf.SurfTFunc] = function() return pvm.once(false) end,
+        [Surf.SurfTNamed] = function() return pvm.once(false) end,
+    })
+
     lower_func = pvm.phase("surface_to_elab_func", {
         [Surf.SurfFunc] = function(self, env)
             local module_env = ensure_env(env)
@@ -176,11 +204,19 @@ function M.Define(T)
     lower_module = pvm.phase("surface_to_elab_module", {
         [Surf.SurfModule] = function(self, env)
             local module_env = ensure_env(env)
+            local provisional_count_entries = {}
+            for i = 1, #self.items do
+                local item = self.items[i]
+                if item.c ~= nil and one_count_decl_type(item.c.ty) then
+                    provisional_count_entries[#provisional_count_entries + 1] = Elab.ElabValueEntry(item.c.name, Elab.ElabGlobal("", item.c.name, Elab.ElabTIndex))
+                end
+            end
+            local count_env = extend_env_values(module_env, provisional_count_entries)
             local item_entries = {}
             for i = 1, #self.items do
-                item_entries[i] = one_item_value_entry(self.items[i], module_env)
+                item_entries[i] = one_item_value_entry(self.items[i], count_env)
             end
-            local lowered_env = extend_env_values(module_env, item_entries)
+            local lowered_env = extend_env_values(count_env, item_entries)
             local items = {}
             for i = 1, #self.items do
                 items[i] = one_item(self.items[i], lowered_env)

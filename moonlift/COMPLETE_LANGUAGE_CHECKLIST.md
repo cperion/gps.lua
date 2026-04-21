@@ -190,7 +190,7 @@ This depends on the intended reboot language surface.
 - [ ] implement field/index projection const eval if intended
 - [ ] implement aggregate/array const eval coherently
 - [ ] define whether calls/intrinsics can appear in const eval
-- [ ] support const references between sibling consts/modules if intended
+- [ ] support const references between sibling consts/modules in the general const-eval system if intended
 
 ## 3.9 Intrinsics completion
 

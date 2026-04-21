@@ -25,6 +25,8 @@ function M.Define(T)
     local lower_switch_stmt_arm
     local lower_switch_expr_arm
     local lower_field_init
+    local lower_const_env_effect
+    local apply_const_env_effect
     local sem_field_ref_type
     local elab_expr_type
     local sem_expr_type
@@ -32,72 +34,72 @@ function M.Define(T)
     local binding_call_target
     local expr_call_target
 
-    local function one_type(node)
-        return pvm.one(lower_type(node))
+    local function one_type(node, const_env)
+        return pvm.one(lower_type(node, const_env))
     end
 
-    local function one_param(node)
-        return pvm.one(lower_param(node))
+    local function one_param(node, const_env)
+        return pvm.one(lower_param(node, const_env))
     end
 
-    local function one_binding(node)
-        return pvm.one(lower_binding(node))
+    local function one_binding(node, const_env)
+        return pvm.one(lower_binding(node, const_env))
     end
 
-    local function one_expr(node)
-        return pvm.one(lower_expr(node))
+    local function one_expr(node, const_env)
+        return pvm.one(lower_expr(node, const_env))
     end
 
-    local function one_domain(node)
-        return pvm.one(lower_domain(node))
+    local function one_domain(node, const_env)
+        return pvm.one(lower_domain(node, const_env))
     end
 
-    local function one_stmt(node)
-        return pvm.one(lower_stmt(node))
+    local function one_stmt(node, const_env)
+        return pvm.one(lower_stmt(node, const_env))
     end
 
-    local function one_loop(node)
-        return pvm.one(lower_loop(node))
+    local function one_loop(node, const_env)
+        return pvm.one(lower_loop(node, const_env))
     end
 
-    local function one_func(node)
-        return pvm.one(lower_func(node))
+    local function one_func(node, const_env)
+        return pvm.one(lower_func(node, const_env))
     end
 
-    local function one_extern_func(node)
-        return pvm.one(lower_extern_func(node))
+    local function one_extern_func(node, const_env)
+        return pvm.one(lower_extern_func(node, const_env))
     end
 
-    local function one_const(node)
-        return pvm.one(lower_const(node))
+    local function one_const(node, const_env)
+        return pvm.one(lower_const(node, const_env))
     end
 
-    local function one_item(node)
-        return pvm.one(lower_item(node))
+    local function one_item(node, const_env)
+        return pvm.one(lower_item(node, const_env))
     end
 
-    local function one_module(node)
-        return pvm.one(lower_module(node))
+    local function one_module(node, const_env)
+        return pvm.one(lower_module(node, const_env))
     end
 
-    local function one_loop_binding(node)
-        return pvm.one(lower_loop_binding(node))
+    local function one_loop_binding(node, const_env)
+        return pvm.one(lower_loop_binding(node, const_env))
     end
 
-    local function one_loop_next(node)
-        return pvm.one(lower_loop_next(node))
+    local function one_loop_next(node, const_env)
+        return pvm.one(lower_loop_next(node, const_env))
     end
 
-    local function one_switch_stmt_arm(node)
-        return pvm.one(lower_switch_stmt_arm(node))
+    local function one_switch_stmt_arm(node, const_env)
+        return pvm.one(lower_switch_stmt_arm(node, const_env))
     end
 
-    local function one_switch_expr_arm(node)
-        return pvm.one(lower_switch_expr_arm(node))
+    local function one_switch_expr_arm(node, const_env)
+        return pvm.one(lower_switch_expr_arm(node, const_env))
     end
 
-    local function one_field_init(node)
-        return pvm.one(lower_field_init(node))
+    local function one_field_init(node, const_env)
+        return pvm.one(lower_field_init(node, const_env))
     end
 
     local function one_sem_field_ref_type(node)
@@ -112,105 +114,138 @@ function M.Define(T)
         return pvm.one(sem_expr_type(node))
     end
 
-    local function one_call_target_from_binding(binding, fn_ty)
-        return pvm.one(binding_call_target(binding, fn_ty))
+    local function one_call_target_from_binding(binding, fn_ty, const_env)
+        return pvm.one(binding_call_target(binding, fn_ty, const_env))
     end
 
-    local function one_call_target_from_expr(expr, fn_ty)
-        return pvm.one(expr_call_target(expr, fn_ty))
+    local function one_call_target_from_expr(expr, fn_ty, const_env)
+        return pvm.one(expr_call_target(expr, fn_ty, const_env))
     end
 
-    local function lower_expr_list(nodes)
+    local function lower_switch_expr_arm_list(nodes, const_env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_expr(nodes[i])
+            out[i] = one_switch_expr_arm(nodes[i], const_env)
         end
         return out
     end
 
-    local function lower_stmt_list(nodes)
+    local function lower_switch_stmt_arm_list(nodes, const_env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_stmt(nodes[i])
+            out[i] = one_switch_stmt_arm(nodes[i], const_env)
         end
         return out
     end
 
-    local function lower_field_init_list(nodes)
+    local function lower_field_init_list(nodes, const_env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_field_init(nodes[i])
+            out[i] = one_field_init(nodes[i], const_env)
         end
         return out
     end
 
-    local function lower_switch_stmt_arm_list(nodes)
+    local function lower_stmt_list(nodes, const_env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_switch_stmt_arm(nodes[i])
+            out[i] = one_stmt(nodes[i], const_env)
         end
         return out
     end
 
-    local function lower_switch_expr_arm_list(nodes)
+    local function lower_expr_list(nodes, const_env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_switch_expr_arm(nodes[i])
+            out[i] = one_expr(nodes[i], const_env)
         end
         return out
+    end
+
+    local function ensure_const_env(const_env)
+        if const_env ~= nil then
+            return const_env
+        end
+        return Elab.ElabConstEnv({})
+    end
+
+    local function find_const_entry(const_env, module_name, item_name)
+        local env = ensure_const_env(const_env)
+        for i = #env.entries, 1, -1 do
+            local entry = env.entries[i]
+            if entry.module_name == module_name and entry.item_name == item_name then
+                return entry
+            end
+        end
+        return nil
+    end
+
+    local function with_visiting(visiting, key)
+        local out = {}
+        if visiting ~= nil then
+            for k, v in pairs(visiting) do
+                out[k] = v
+            end
+        end
+        out[key] = true
+        return out
+    end
+
+    local function one_array_count(node, const_env, visiting)
+        return pvm.one(elab_array_count(node, const_env, visiting))
     end
 
     local function indirect_call_target_handler()
-        return function(self, fn_ty)
-            return pvm.once(Sem.SemCallIndirect(one_expr(self), fn_ty))
+        return function(self, fn_ty, const_env)
+            return pvm.once(Sem.SemCallIndirect(one_expr(self, const_env), fn_ty))
         end
     end
 
     elab_expr_type = pvm.phase("moonlift_elab_expr_type", {
-        [Elab.ElabInt] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabFloat] = function(self) return pvm.once(self.ty) end,
+        [Elab.ElabInt] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabFloat] = function(self, const_env) return pvm.once(self.ty) end,
         [Elab.ElabBool] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabNil] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabBindingExpr] = function(self) return pvm.once(self.binding.ty) end,
-        [Elab.ElabExprNeg] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprNot] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprBNot] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprRef] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprDeref] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprAdd] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprSub] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprMul] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprDiv] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprRem] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprEq] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprNe] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprLt] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprLe] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprGt] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprGe] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprAnd] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprOr] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprBitAnd] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprBitOr] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprBitXor] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprShl] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprLShr] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprAShr] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprCastTo] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprTruncTo] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprZExtTo] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprSExtTo] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprBitcastTo] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprSatCastTo] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabCall] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabField] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabIndex] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabAgg] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabArrayLit] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabIfExpr] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabSwitchExpr] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabLoopExprNode] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabBlockExpr] = function(self) return pvm.once(self.ty) end,
+        [Elab.ElabNil] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabBindingExpr] = function(self, const_env) return pvm.once(self.binding.ty) end,
+        [Elab.ElabExprNeg] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprNot] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprBNot] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprRef] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprDeref] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprAdd] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprSub] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprMul] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprDiv] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprRem] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprEq] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprNe] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprLt] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprLe] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprGt] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprGe] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprAnd] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprOr] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprBitAnd] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprBitOr] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprBitXor] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprShl] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprLShr] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprAShr] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprCastTo] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprTruncTo] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprZExtTo] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprSExtTo] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprBitcastTo] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabExprSatCastTo] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabCall] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabField] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabIndex] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabAgg] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabArrayLit] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabIfExpr] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabSwitchExpr] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabLoopExprNode] = function(self, const_env) return pvm.once(self.ty) end,
+        [Elab.ElabBlockExpr] = function(self, const_env) return pvm.once(self.ty) end,
     })
 
     sem_field_ref_type = pvm.phase("moonlift_sem_field_ref_type", {
@@ -277,18 +312,46 @@ function M.Define(T)
         return n
     end
 
+    local function binding_count_name(binding)
+        if binding.module_name ~= "" then
+            return binding.module_name .. "." .. binding.item_name
+        end
+        return binding.item_name
+    end
+
     elab_array_count = pvm.phase("moonlift_elab_array_count", {
-        [Elab.ElabInt] = function(self)
+        [Elab.ElabInt] = function(self, const_env)
             return pvm.once(checked_array_count(tonumber(self.raw)))
         end,
-        [Elab.ElabExprAdd] = function(self)
-            return pvm.once(checked_array_count(pvm.one(elab_array_count(self.lhs)) + pvm.one(elab_array_count(self.rhs))))
+        [Elab.ElabBindingExpr] = function(self, const_env, visiting)
+            local binding = self.binding
+            if binding.module_name == nil or binding.item_name == nil then
+                error("elab_to_sem_type: array count refs must resolve to global const bindings")
+            end
+            if binding.ty ~= Elab.ElabTIndex then
+                error("elab_to_sem_type: array count refs must resolve to index-typed const bindings")
+            end
+            local key = binding_count_name(binding)
+            if visiting ~= nil and visiting[key] then
+                error("elab_to_sem_type: cyclic const dependency in array count at '" .. key .. "'")
+            end
+            local entry = find_const_entry(const_env, binding.module_name, binding.item_name)
+            if entry == nil then
+                error("elab_to_sem_type: unknown const binding '" .. key .. "' in array count")
+            end
+            if entry.ty ~= Elab.ElabTIndex then
+                error("elab_to_sem_type: array count const '" .. key .. "' must have type index")
+            end
+            return pvm.once(one_array_count(entry.value, const_env, with_visiting(visiting, key)))
         end,
-        [Elab.ElabExprSub] = function(self)
-            return pvm.once(checked_array_count(pvm.one(elab_array_count(self.lhs)) - pvm.one(elab_array_count(self.rhs))))
+        [Elab.ElabExprAdd] = function(self, const_env, visiting)
+            return pvm.once(checked_array_count(one_array_count(self.lhs, const_env, visiting) + one_array_count(self.rhs, const_env, visiting)))
         end,
-        [Elab.ElabExprMul] = function(self)
-            return pvm.once(checked_array_count(pvm.one(elab_array_count(self.lhs)) * pvm.one(elab_array_count(self.rhs))))
+        [Elab.ElabExprSub] = function(self, const_env, visiting)
+            return pvm.once(checked_array_count(one_array_count(self.lhs, const_env, visiting) - one_array_count(self.rhs, const_env, visiting)))
+        end,
+        [Elab.ElabExprMul] = function(self, const_env, visiting)
+            return pvm.once(checked_array_count(one_array_count(self.lhs, const_env, visiting) * one_array_count(self.rhs, const_env, visiting)))
         end,
     })
 
@@ -306,48 +369,48 @@ function M.Define(T)
         [Elab.ElabTF32] = function() return pvm.once(Sem.SemTF32) end,
         [Elab.ElabTF64] = function() return pvm.once(Sem.SemTF64) end,
         [Elab.ElabTIndex] = function() return pvm.once(Sem.SemTIndex) end,
-        [Elab.ElabTPtr] = function(self) return pvm.once(Sem.SemTPtrTo(one_type(self.elem))) end,
-        [Elab.ElabTArray] = function(self)
-            return pvm.once(Sem.SemTArray(one_type(self.elem), pvm.one(elab_array_count(self.count))))
+        [Elab.ElabTPtr] = function(self, const_env) return pvm.once(Sem.SemTPtrTo(one_type(self.elem, const_env))) end,
+        [Elab.ElabTArray] = function(self, const_env)
+            return pvm.once(Sem.SemTArray(one_type(self.elem, const_env), one_array_count(self.count, const_env, nil)))
         end,
-        [Elab.ElabTSlice] = function(self) return pvm.once(Sem.SemTSlice(one_type(self.elem))) end,
-        [Elab.ElabTFunc] = function(self)
+        [Elab.ElabTSlice] = function(self, const_env) return pvm.once(Sem.SemTSlice(one_type(self.elem, const_env))) end,
+        [Elab.ElabTFunc] = function(self, const_env)
             local params = {}
             for i = 1, #self.params do
-                params[i] = one_type(self.params[i])
+                params[i] = one_type(self.params[i], const_env)
             end
-            return pvm.once(Sem.SemTFunc(params, one_type(self.result)))
+            return pvm.once(Sem.SemTFunc(params, one_type(self.result, const_env)))
         end,
         [Elab.ElabTNamed] = function(self) return pvm.once(Sem.SemTNamed(self.module_name, self.type_name)) end,
     })
 
     lower_param = pvm.phase("elab_to_sem_param", {
-        [Elab.ElabParam] = function(self)
-            return pvm.once(Sem.SemParam(self.name, one_type(self.ty)))
+        [Elab.ElabParam] = function(self, const_env)
+            return pvm.once(Sem.SemParam(self.name, one_type(self.ty, const_env)))
         end,
     })
 
     lower_binding = pvm.phase("elab_to_sem_binding", {
-        [Elab.ElabLocalValue] = function(self) return pvm.once(Sem.SemBindLocalValue(self.id, self.name, one_type(self.ty))) end,
-        [Elab.ElabLocalStoredValue] = function(self) return pvm.once(Sem.SemBindLocalStoredValue(self.id, self.name, one_type(self.ty))) end,
-        [Elab.ElabLocalCell] = function(self) return pvm.once(Sem.SemBindLocalCell(self.id, self.name, one_type(self.ty))) end,
-        [Elab.ElabArg] = function(self) return pvm.once(Sem.SemBindArg(self.index, self.name, one_type(self.ty))) end,
-        [Elab.ElabGlobal] = function(self) return pvm.once(Sem.SemBindGlobal(self.module_name, self.item_name, one_type(self.ty))) end,
-        [Elab.ElabExtern] = function(self) return pvm.once(Sem.SemBindExtern(self.symbol, one_type(self.ty))) end,
+        [Elab.ElabLocalValue] = function(self, const_env) return pvm.once(Sem.SemBindLocalValue(self.id, self.name, one_type(self.ty, const_env))) end,
+        [Elab.ElabLocalStoredValue] = function(self, const_env) return pvm.once(Sem.SemBindLocalStoredValue(self.id, self.name, one_type(self.ty, const_env))) end,
+        [Elab.ElabLocalCell] = function(self, const_env) return pvm.once(Sem.SemBindLocalCell(self.id, self.name, one_type(self.ty, const_env))) end,
+        [Elab.ElabArg] = function(self, const_env) return pvm.once(Sem.SemBindArg(self.index, self.name, one_type(self.ty, const_env))) end,
+        [Elab.ElabGlobal] = function(self, const_env) return pvm.once(Sem.SemBindGlobal(self.module_name, self.item_name, one_type(self.ty, const_env))) end,
+        [Elab.ElabExtern] = function(self, const_env) return pvm.once(Sem.SemBindExtern(self.symbol, one_type(self.ty, const_env))) end,
     })
 
     binding_call_target = pvm.phase("elab_binding_call_target", {
-        [Elab.ElabLocalValue] = function(self, fn_ty)
-            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self)), fn_ty))
+        [Elab.ElabLocalValue] = function(self, fn_ty, const_env)
+            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self, const_env)), fn_ty))
         end,
-        [Elab.ElabLocalStoredValue] = function(self, fn_ty)
-            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self)), fn_ty))
+        [Elab.ElabLocalStoredValue] = function(self, fn_ty, const_env)
+            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self, const_env)), fn_ty))
         end,
-        [Elab.ElabLocalCell] = function(self, fn_ty)
-            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self)), fn_ty))
+        [Elab.ElabLocalCell] = function(self, fn_ty, const_env)
+            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self, const_env)), fn_ty))
         end,
-        [Elab.ElabArg] = function(self, fn_ty)
-            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self)), fn_ty))
+        [Elab.ElabArg] = function(self, fn_ty, const_env)
+            return pvm.once(Sem.SemCallIndirect(Sem.SemExprBinding(one_binding(self, const_env)), fn_ty))
         end,
         [Elab.ElabGlobal] = function(self, fn_ty)
             return pvm.once(Sem.SemCallDirect(self.module_name, self.item_name, fn_ty))
@@ -358,8 +421,8 @@ function M.Define(T)
     })
 
     expr_call_target = pvm.phase("elab_expr_call_target", {
-        [Elab.ElabBindingExpr] = function(self, fn_ty)
-            return pvm.once(one_call_target_from_binding(self.binding, fn_ty))
+        [Elab.ElabBindingExpr] = function(self, fn_ty, const_env)
+            return pvm.once(one_call_target_from_binding(self.binding, fn_ty, const_env))
         end,
         [Elab.ElabInt] = indirect_call_target_handler(),
         [Elab.ElabFloat] = indirect_call_target_handler(),
@@ -407,32 +470,32 @@ function M.Define(T)
     })
 
     lower_field_init = pvm.phase("elab_to_sem_field_init", {
-        [Elab.ElabFieldInit] = function(self)
-            return pvm.once(Sem.SemFieldInit(self.name, one_expr(self.value)))
+        [Elab.ElabFieldInit] = function(self, const_env)
+            return pvm.once(Sem.SemFieldInit(self.name, one_expr(self.value, const_env)))
         end,
     })
 
     lower_switch_stmt_arm = pvm.phase("elab_to_sem_switch_stmt_arm", {
-        [Elab.ElabSwitchStmtArm] = function(self)
-            return pvm.once(Sem.SemSwitchStmtArm(one_expr(self.key), lower_stmt_list(self.body)))
+        [Elab.ElabSwitchStmtArm] = function(self, const_env)
+            return pvm.once(Sem.SemSwitchStmtArm(one_expr(self.key, const_env), lower_stmt_list(self.body, const_env)))
         end,
     })
 
     lower_switch_expr_arm = pvm.phase("elab_to_sem_switch_expr_arm", {
-        [Elab.ElabSwitchExprArm] = function(self)
-            return pvm.once(Sem.SemSwitchExprArm(one_expr(self.key), lower_stmt_list(self.body), one_expr(self.result)))
+        [Elab.ElabSwitchExprArm] = function(self, const_env)
+            return pvm.once(Sem.SemSwitchExprArm(one_expr(self.key, const_env), lower_stmt_list(self.body, const_env), one_expr(self.result, const_env)))
         end,
     })
 
     lower_loop_binding = pvm.phase("elab_to_sem_loop_binding", {
-        [Elab.ElabLoopBinding] = function(self)
-            return pvm.once(Sem.SemLoopBinding(self.id, self.name, one_type(self.ty), one_expr(self.init)))
+        [Elab.ElabLoopBinding] = function(self, const_env)
+            return pvm.once(Sem.SemLoopBinding(self.id, self.name, one_type(self.ty, const_env), one_expr(self.init, const_env)))
         end,
     })
 
     lower_loop_next = pvm.phase("elab_to_sem_loop_next", {
-        [Elab.ElabLoopNext] = function(self)
-            return pvm.once(Sem.SemLoopNext(one_binding(self.binding), one_expr(self.value)))
+        [Elab.ElabLoopNext] = function(self, const_env)
+            return pvm.once(Sem.SemLoopNext(one_binding(self.binding, const_env), one_expr(self.value, const_env)))
         end,
     })
 
@@ -444,214 +507,214 @@ function M.Define(T)
     end
 
     lower_domain = pvm.phase("elab_to_sem_domain", {
-        [Elab.ElabDomainRange] = function(self)
-            return pvm.once(Sem.SemDomainRange(coerce_index_expr(one_expr(self.stop))))
+        [Elab.ElabDomainRange] = function(self, const_env)
+            return pvm.once(Sem.SemDomainRange(coerce_index_expr(one_expr(self.stop, const_env))))
         end,
-        [Elab.ElabDomainRange2] = function(self)
-            return pvm.once(Sem.SemDomainRange2(coerce_index_expr(one_expr(self.start)), coerce_index_expr(one_expr(self.stop))))
+        [Elab.ElabDomainRange2] = function(self, const_env)
+            return pvm.once(Sem.SemDomainRange2(coerce_index_expr(one_expr(self.start, const_env)), coerce_index_expr(one_expr(self.stop, const_env))))
         end,
-        [Elab.ElabDomainZipEq] = function(self)
-            return pvm.once(Sem.SemDomainZipEq(lower_expr_list(self.values)))
+        [Elab.ElabDomainZipEq] = function(self, const_env)
+            return pvm.once(Sem.SemDomainZipEq(lower_expr_list(self.values, const_env)))
         end,
-        [Elab.ElabDomainValue] = function(self)
-            return pvm.once(Sem.SemDomainBoundedValue(one_expr(self.value)))
+        [Elab.ElabDomainValue] = function(self, const_env)
+            return pvm.once(Sem.SemDomainBoundedValue(one_expr(self.value, const_env)))
         end,
     })
 
     lower_loop = pvm.phase("elab_to_sem_loop", {
-        [Elab.ElabLoopWhileStmt] = function(self)
+        [Elab.ElabLoopWhileStmt] = function(self, const_env)
             local vars = {}
             local next = {}
-            for i = 1, #self.vars do vars[i] = one_loop_binding(self.vars[i]) end
-            for i = 1, #self.next do next[i] = one_loop_next(self.next[i]) end
-            return pvm.once(Sem.SemLoopWhileStmt(vars, one_expr(self.cond), lower_stmt_list(self.body), next))
+            for i = 1, #self.vars do vars[i] = one_loop_binding(self.vars[i], const_env) end
+            for i = 1, #self.next do next[i] = one_loop_next(self.next[i], const_env) end
+            return pvm.once(Sem.SemLoopWhileStmt(vars, one_expr(self.cond, const_env), lower_stmt_list(self.body, const_env), next))
         end,
-        [Elab.ElabLoopOverStmt] = function(self)
+        [Elab.ElabLoopOverStmt] = function(self, const_env)
             local carries = {}
             local next = {}
-            for i = 1, #self.carries do carries[i] = one_loop_binding(self.carries[i]) end
-            for i = 1, #self.next do next[i] = one_loop_next(self.next[i]) end
-            return pvm.once(Sem.SemLoopOverStmt(one_binding(self.index_binding), one_domain(self.domain), carries, lower_stmt_list(self.body), next))
+            for i = 1, #self.carries do carries[i] = one_loop_binding(self.carries[i], const_env) end
+            for i = 1, #self.next do next[i] = one_loop_next(self.next[i], const_env) end
+            return pvm.once(Sem.SemLoopOverStmt(one_binding(self.index_binding, const_env), one_domain(self.domain, const_env), carries, lower_stmt_list(self.body, const_env), next))
         end,
-        [Elab.ElabLoopWhileExpr] = function(self)
+        [Elab.ElabLoopWhileExpr] = function(self, const_env)
             local vars = {}
             local next = {}
-            for i = 1, #self.vars do vars[i] = one_loop_binding(self.vars[i]) end
-            for i = 1, #self.next do next[i] = one_loop_next(self.next[i]) end
-            return pvm.once(Sem.SemLoopWhileExpr(vars, one_expr(self.cond), lower_stmt_list(self.body), next, one_expr(self.result)))
+            for i = 1, #self.vars do vars[i] = one_loop_binding(self.vars[i], const_env) end
+            for i = 1, #self.next do next[i] = one_loop_next(self.next[i], const_env) end
+            return pvm.once(Sem.SemLoopWhileExpr(vars, one_expr(self.cond, const_env), lower_stmt_list(self.body, const_env), next, one_expr(self.result, const_env)))
         end,
-        [Elab.ElabLoopOverExpr] = function(self)
+        [Elab.ElabLoopOverExpr] = function(self, const_env)
             local carries = {}
             local next = {}
-            for i = 1, #self.carries do carries[i] = one_loop_binding(self.carries[i]) end
-            for i = 1, #self.next do next[i] = one_loop_next(self.next[i]) end
-            return pvm.once(Sem.SemLoopOverExpr(one_binding(self.index_binding), one_domain(self.domain), carries, lower_stmt_list(self.body), next, one_expr(self.result)))
+            for i = 1, #self.carries do carries[i] = one_loop_binding(self.carries[i], const_env) end
+            for i = 1, #self.next do next[i] = one_loop_next(self.next[i], const_env) end
+            return pvm.once(Sem.SemLoopOverExpr(one_binding(self.index_binding, const_env), one_domain(self.domain, const_env), carries, lower_stmt_list(self.body, const_env), next, one_expr(self.result, const_env)))
         end,
     })
 
     lower_expr = pvm.phase("elab_to_sem_expr", {
-        [Elab.ElabInt] = function(self)
-            return pvm.once(Sem.SemExprConstInt(one_type(self.ty), self.raw))
+        [Elab.ElabInt] = function(self, const_env)
+            return pvm.once(Sem.SemExprConstInt(one_type(self.ty, const_env), self.raw))
         end,
-        [Elab.ElabFloat] = function(self)
-            return pvm.once(Sem.SemExprConstFloat(one_type(self.ty), self.raw))
+        [Elab.ElabFloat] = function(self, const_env)
+            return pvm.once(Sem.SemExprConstFloat(one_type(self.ty, const_env), self.raw))
         end,
         [Elab.ElabBool] = function(self)
             return pvm.once(Sem.SemExprConstBool(self.value))
         end,
-        [Elab.ElabNil] = function(self)
-            return pvm.once(Sem.SemExprNil(one_type(self.ty)))
+        [Elab.ElabNil] = function(self, const_env)
+            return pvm.once(Sem.SemExprNil(one_type(self.ty, const_env)))
         end,
-        [Elab.ElabBindingExpr] = function(self)
-            return pvm.once(Sem.SemExprBinding(one_binding(self.binding)))
+        [Elab.ElabBindingExpr] = function(self, const_env)
+            return pvm.once(Sem.SemExprBinding(one_binding(self.binding, const_env)))
         end,
-        [Elab.ElabExprNeg] = function(self)
-            return pvm.once(Sem.SemExprNeg(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprNeg] = function(self, const_env)
+            return pvm.once(Sem.SemExprNeg(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprNot] = function(self)
-            return pvm.once(Sem.SemExprNot(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprNot] = function(self, const_env)
+            return pvm.once(Sem.SemExprNot(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprBNot] = function(self)
-            return pvm.once(Sem.SemExprBNot(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprBNot] = function(self, const_env)
+            return pvm.once(Sem.SemExprBNot(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprRef] = function(self)
-            return pvm.once(Sem.SemExprRef(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprRef] = function(self, const_env)
+            return pvm.once(Sem.SemExprRef(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprDeref] = function(self)
-            return pvm.once(Sem.SemExprDeref(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprDeref] = function(self, const_env)
+            return pvm.once(Sem.SemExprDeref(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprAdd] = function(self)
-            return pvm.once(Sem.SemExprAdd(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprAdd] = function(self, const_env)
+            return pvm.once(Sem.SemExprAdd(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprSub] = function(self)
-            return pvm.once(Sem.SemExprSub(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprSub] = function(self, const_env)
+            return pvm.once(Sem.SemExprSub(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprMul] = function(self)
-            return pvm.once(Sem.SemExprMul(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprMul] = function(self, const_env)
+            return pvm.once(Sem.SemExprMul(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprDiv] = function(self)
-            return pvm.once(Sem.SemExprDiv(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprDiv] = function(self, const_env)
+            return pvm.once(Sem.SemExprDiv(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprRem] = function(self)
-            return pvm.once(Sem.SemExprRem(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprRem] = function(self, const_env)
+            return pvm.once(Sem.SemExprRem(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprEq] = function(self)
-            return pvm.once(Sem.SemExprEq(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprEq] = function(self, const_env)
+            return pvm.once(Sem.SemExprEq(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprNe] = function(self)
-            return pvm.once(Sem.SemExprNe(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprNe] = function(self, const_env)
+            return pvm.once(Sem.SemExprNe(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprLt] = function(self)
-            return pvm.once(Sem.SemExprLt(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprLt] = function(self, const_env)
+            return pvm.once(Sem.SemExprLt(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprLe] = function(self)
-            return pvm.once(Sem.SemExprLe(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprLe] = function(self, const_env)
+            return pvm.once(Sem.SemExprLe(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprGt] = function(self)
-            return pvm.once(Sem.SemExprGt(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprGt] = function(self, const_env)
+            return pvm.once(Sem.SemExprGt(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprGe] = function(self)
-            return pvm.once(Sem.SemExprGe(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprGe] = function(self, const_env)
+            return pvm.once(Sem.SemExprGe(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprAnd] = function(self)
-            return pvm.once(Sem.SemExprAnd(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprAnd] = function(self, const_env)
+            return pvm.once(Sem.SemExprAnd(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprOr] = function(self)
-            return pvm.once(Sem.SemExprOr(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprOr] = function(self, const_env)
+            return pvm.once(Sem.SemExprOr(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprBitAnd] = function(self)
-            return pvm.once(Sem.SemExprBitAnd(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprBitAnd] = function(self, const_env)
+            return pvm.once(Sem.SemExprBitAnd(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprBitOr] = function(self)
-            return pvm.once(Sem.SemExprBitOr(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprBitOr] = function(self, const_env)
+            return pvm.once(Sem.SemExprBitOr(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprBitXor] = function(self)
-            return pvm.once(Sem.SemExprBitXor(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprBitXor] = function(self, const_env)
+            return pvm.once(Sem.SemExprBitXor(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprShl] = function(self)
-            return pvm.once(Sem.SemExprShl(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprShl] = function(self, const_env)
+            return pvm.once(Sem.SemExprShl(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprLShr] = function(self)
-            return pvm.once(Sem.SemExprLShr(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprLShr] = function(self, const_env)
+            return pvm.once(Sem.SemExprLShr(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprAShr] = function(self)
-            return pvm.once(Sem.SemExprAShr(one_type(self.ty), one_expr(self.lhs), one_expr(self.rhs)))
+        [Elab.ElabExprAShr] = function(self, const_env)
+            return pvm.once(Sem.SemExprAShr(one_type(self.ty, const_env), one_expr(self.lhs, const_env), one_expr(self.rhs, const_env)))
         end,
-        [Elab.ElabExprCastTo] = function(self)
-            return pvm.once(Sem.SemExprCastTo(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprCastTo] = function(self, const_env)
+            return pvm.once(Sem.SemExprCastTo(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprTruncTo] = function(self)
-            return pvm.once(Sem.SemExprTruncTo(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprTruncTo] = function(self, const_env)
+            return pvm.once(Sem.SemExprTruncTo(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprZExtTo] = function(self)
-            return pvm.once(Sem.SemExprZExtTo(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprZExtTo] = function(self, const_env)
+            return pvm.once(Sem.SemExprZExtTo(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprSExtTo] = function(self)
-            return pvm.once(Sem.SemExprSExtTo(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprSExtTo] = function(self, const_env)
+            return pvm.once(Sem.SemExprSExtTo(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprBitcastTo] = function(self)
-            return pvm.once(Sem.SemExprBitcastTo(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprBitcastTo] = function(self, const_env)
+            return pvm.once(Sem.SemExprBitcastTo(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprSatCastTo] = function(self)
-            return pvm.once(Sem.SemExprSatCastTo(one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabExprSatCastTo] = function(self, const_env)
+            return pvm.once(Sem.SemExprSatCastTo(one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabCall] = function(self)
-            local fn_ty = one_type(one_elab_expr_type(self.callee))
-            return pvm.once(Sem.SemExprCall(one_call_target_from_expr(self.callee, fn_ty), one_type(self.ty), lower_expr_list(self.args)))
+        [Elab.ElabCall] = function(self, const_env)
+            local fn_ty = one_type(one_elab_expr_type(self.callee), const_env)
+            return pvm.once(Sem.SemExprCall(one_call_target_from_expr(self.callee, fn_ty, const_env), one_type(self.ty, const_env), lower_expr_list(self.args, const_env)))
         end,
-        [Elab.ElabField] = function(self)
-            return pvm.once(Sem.SemExprField(one_expr(self.base), Sem.SemFieldByName(self.name, one_type(self.ty))))
+        [Elab.ElabField] = function(self, const_env)
+            return pvm.once(Sem.SemExprField(one_expr(self.base, const_env), Sem.SemFieldByName(self.name, one_type(self.ty, const_env))))
         end,
-        [Elab.ElabIndex] = function(self)
-            return pvm.once(Sem.SemExprIndex(one_expr(self.base), one_expr(self.index), one_type(self.ty)))
+        [Elab.ElabIndex] = function(self, const_env)
+            return pvm.once(Sem.SemExprIndex(one_expr(self.base, const_env), one_expr(self.index, const_env), one_type(self.ty, const_env)))
         end,
-        [Elab.ElabAgg] = function(self)
-            return pvm.once(Sem.SemExprAgg(one_type(self.ty), lower_field_init_list(self.fields)))
+        [Elab.ElabAgg] = function(self, const_env)
+            return pvm.once(Sem.SemExprAgg(one_type(self.ty, const_env), lower_field_init_list(self.fields, const_env)))
         end,
-        [Elab.ElabArrayLit] = function(self)
-            return pvm.once(Sem.SemExprArrayLit(one_type(self.ty.elem), lower_expr_list(self.elems)))
+        [Elab.ElabArrayLit] = function(self, const_env)
+            return pvm.once(Sem.SemExprArrayLit(one_type(self.ty.elem, const_env), lower_expr_list(self.elems, const_env)))
         end,
-        [Elab.ElabIfExpr] = function(self)
-            return pvm.once(Sem.SemExprIf(one_expr(self.cond), one_expr(self.then_expr), one_expr(self.else_expr), one_type(self.ty)))
+        [Elab.ElabIfExpr] = function(self, const_env)
+            return pvm.once(Sem.SemExprIf(one_expr(self.cond, const_env), one_expr(self.then_expr, const_env), one_expr(self.else_expr, const_env), one_type(self.ty, const_env)))
         end,
-        [Elab.ElabSwitchExpr] = function(self)
-            return pvm.once(Sem.SemExprSwitch(one_expr(self.value), lower_switch_expr_arm_list(self.arms), one_expr(self.default_expr), one_type(self.ty)))
+        [Elab.ElabSwitchExpr] = function(self, const_env)
+            return pvm.once(Sem.SemExprSwitch(one_expr(self.value, const_env), lower_switch_expr_arm_list(self.arms, const_env), one_expr(self.default_expr, const_env), one_type(self.ty, const_env)))
         end,
-        [Elab.ElabLoopExprNode] = function(self)
-            return pvm.once(Sem.SemExprLoop(one_loop(self.loop), one_type(self.ty)))
+        [Elab.ElabLoopExprNode] = function(self, const_env)
+            return pvm.once(Sem.SemExprLoop(one_loop(self.loop, const_env), one_type(self.ty, const_env)))
         end,
-        [Elab.ElabBlockExpr] = function(self)
-            return pvm.once(Sem.SemExprBlock(lower_stmt_list(self.stmts), one_expr(self.result), one_type(self.ty)))
+        [Elab.ElabBlockExpr] = function(self, const_env)
+            return pvm.once(Sem.SemExprBlock(lower_stmt_list(self.stmts, const_env), one_expr(self.result, const_env), one_type(self.ty, const_env)))
         end,
     })
 
     lower_stmt = pvm.phase("elab_to_sem_stmt", {
-        [Elab.ElabLet] = function(self)
-            return pvm.once(Sem.SemStmtLet(self.id, self.name, one_type(self.ty), one_expr(self.init)))
+        [Elab.ElabLet] = function(self, const_env)
+            return pvm.once(Sem.SemStmtLet(self.id, self.name, one_type(self.ty, const_env), one_expr(self.init, const_env)))
         end,
-        [Elab.ElabVar] = function(self)
-            return pvm.once(Sem.SemStmtVar(self.id, self.name, one_type(self.ty), one_expr(self.init)))
+        [Elab.ElabVar] = function(self, const_env)
+            return pvm.once(Sem.SemStmtVar(self.id, self.name, one_type(self.ty, const_env), one_expr(self.init, const_env)))
         end,
-        [Elab.ElabSet] = function(self)
-            return pvm.once(Sem.SemStmtSet(one_binding(self.binding), one_expr(self.value)))
+        [Elab.ElabSet] = function(self, const_env)
+            return pvm.once(Sem.SemStmtSet(one_binding(self.binding, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabStore] = function(self)
-            return pvm.once(Sem.SemStmtStore(one_type(self.ty), one_expr(self.addr), one_expr(self.value)))
+        [Elab.ElabStore] = function(self, const_env)
+            return pvm.once(Sem.SemStmtStore(one_type(self.ty, const_env), one_expr(self.addr, const_env), one_expr(self.value, const_env)))
         end,
-        [Elab.ElabExprStmt] = function(self)
-            return pvm.once(Sem.SemStmtExpr(one_expr(self.expr)))
+        [Elab.ElabExprStmt] = function(self, const_env)
+            return pvm.once(Sem.SemStmtExpr(one_expr(self.expr, const_env)))
         end,
-        [Elab.ElabIf] = function(self)
-            return pvm.once(Sem.SemStmtIf(one_expr(self.cond), lower_stmt_list(self.then_body), lower_stmt_list(self.else_body)))
+        [Elab.ElabIf] = function(self, const_env)
+            return pvm.once(Sem.SemStmtIf(one_expr(self.cond, const_env), lower_stmt_list(self.then_body, const_env), lower_stmt_list(self.else_body, const_env)))
         end,
-        [Elab.ElabSwitch] = function(self)
-            return pvm.once(Sem.SemStmtSwitch(one_expr(self.value), lower_switch_stmt_arm_list(self.arms), lower_stmt_list(self.default_body)))
+        [Elab.ElabSwitch] = function(self, const_env)
+            return pvm.once(Sem.SemStmtSwitch(one_expr(self.value, const_env), lower_switch_stmt_arm_list(self.arms, const_env), lower_stmt_list(self.default_body, const_env)))
         end,
         [Elab.ElabReturnVoid] = function()
             return pvm.once(Sem.SemStmtReturnVoid)
         end,
-        [Elab.ElabReturnValue] = function(self)
-            return pvm.once(Sem.SemStmtReturnValue(one_expr(self.value)))
+        [Elab.ElabReturnValue] = function(self, const_env)
+            return pvm.once(Sem.SemStmtReturnValue(one_expr(self.value, const_env)))
         end,
         [Elab.ElabBreak] = function()
             return pvm.once(Sem.SemStmtBreak)
@@ -659,54 +722,66 @@ function M.Define(T)
         [Elab.ElabContinue] = function()
             return pvm.once(Sem.SemStmtContinue)
         end,
-        [Elab.ElabLoopStmtNode] = function(self)
-            return pvm.once(Sem.SemStmtLoop(one_loop(self.loop)))
+        [Elab.ElabLoopStmtNode] = function(self, const_env)
+            return pvm.once(Sem.SemStmtLoop(one_loop(self.loop, const_env)))
         end,
     })
 
     lower_func = pvm.phase("elab_to_sem_func", {
-        [Elab.ElabFunc] = function(self)
+        [Elab.ElabFunc] = function(self, const_env)
             local params = {}
             for i = 1, #self.params do
-                params[i] = one_param(self.params[i])
+                params[i] = one_param(self.params[i], const_env)
             end
-            return pvm.once(Sem.SemFuncExport(self.name, params, one_type(self.result), lower_stmt_list(self.body)))
+            return pvm.once(Sem.SemFuncExport(self.name, params, one_type(self.result, const_env), lower_stmt_list(self.body, const_env)))
         end,
     })
 
     lower_extern_func = pvm.phase("elab_to_sem_extern_func", {
-        [Elab.ElabExternFunc] = function(self)
+        [Elab.ElabExternFunc] = function(self, const_env)
             local params = {}
             for i = 1, #self.params do
-                params[i] = one_param(self.params[i])
+                params[i] = one_param(self.params[i], const_env)
             end
-            return pvm.once(Sem.SemExternFunc(self.name, self.symbol, params, one_type(self.result)))
+            return pvm.once(Sem.SemExternFunc(self.name, self.symbol, params, one_type(self.result, const_env)))
         end,
     })
 
     lower_const = pvm.phase("elab_to_sem_const", {
-        [Elab.ElabConst] = function(self)
-            return pvm.once(Sem.SemConst(self.name, one_type(self.ty), one_expr(self.value)))
+        [Elab.ElabConst] = function(self, const_env)
+            return pvm.once(Sem.SemConst(self.name, one_type(self.ty, const_env), one_expr(self.value, const_env)))
         end,
     })
 
     lower_item = pvm.phase("elab_to_sem_item", {
-        [Elab.ElabItemFunc] = function(self)
-            return pvm.once(Sem.SemItemFunc(one_func(self.func)))
+        [Elab.ElabItemFunc] = function(self, const_env)
+            return pvm.once(Sem.SemItemFunc(one_func(self.func, const_env)))
         end,
-        [Elab.ElabItemExtern] = function(self)
-            return pvm.once(Sem.SemItemExtern(one_extern_func(self.func)))
+        [Elab.ElabItemExtern] = function(self, const_env)
+            return pvm.once(Sem.SemItemExtern(one_extern_func(self.func, const_env)))
         end,
-        [Elab.ElabItemConst] = function(self)
-            return pvm.once(Sem.SemItemConst(one_const(self.c)))
+        [Elab.ElabItemConst] = function(self, const_env)
+            return pvm.once(Sem.SemItemConst(one_const(self.c, const_env)))
         end,
     })
 
     lower_module = pvm.phase("elab_to_sem_module", {
-        [Elab.ElabModule] = function(self)
+        [Elab.ElabModule] = function(self, const_env)
+            local env = ensure_const_env(const_env)
+            local entries = {}
+            for i = 1, #env.entries do
+                entries[i] = env.entries[i]
+            end
+            for i = 1, #self.items do
+                local item = self.items[i]
+                if item.c ~= nil then
+                    entries[#entries + 1] = Elab.ElabConstEntry("", item.c.name, item.c.ty, item.c.value)
+                end
+            end
+            local module_const_env = Elab.ElabConstEnv(entries)
             local items = {}
             for i = 1, #self.items do
-                items[i] = one_item(self.items[i])
+                items[i] = one_item(self.items[i], module_const_env)
             end
             return pvm.once(Sem.SemModule(items))
         end,

@@ -109,4 +109,50 @@ assert(lowered == Sem.SemModule({
     )),
 }))
 
+local count_module = Elab.ElabModule({
+    Elab.ElabItemConst(Elab.ElabConst(
+        "N",
+        Elab.ElabTIndex,
+        Elab.ElabInt("4", Elab.ElabTIndex)
+    )),
+    Elab.ElabItemConst(Elab.ElabConst(
+        "M",
+        Elab.ElabTIndex,
+        Elab.ElabExprAdd(
+            Elab.ElabTIndex,
+            Elab.ElabBindingExpr(Elab.ElabGlobal("", "N", Elab.ElabTIndex)),
+            Elab.ElabInt("2", Elab.ElabTIndex)
+        )
+    )),
+    Elab.ElabItemFunc(Elab.ElabFunc(
+        "use_count",
+        { Elab.ElabParam("xs", Elab.ElabTArray(Elab.ElabBindingExpr(Elab.ElabGlobal("", "M", Elab.ElabTIndex)), Elab.ElabTI32)) },
+        Elab.ElabTVoid,
+        { Elab.ElabReturnVoid }
+    )),
+})
+
+assert(pvm.one(L.lower_module(count_module)) == Sem.SemModule({
+    Sem.SemItemConst(Sem.SemConst(
+        "N",
+        Sem.SemTIndex,
+        Sem.SemExprConstInt(Sem.SemTIndex, "4")
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "M",
+        Sem.SemTIndex,
+        Sem.SemExprAdd(
+            Sem.SemTIndex,
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "N", Sem.SemTIndex)),
+            Sem.SemExprConstInt(Sem.SemTIndex, "2")
+        )
+    )),
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "use_count",
+        { Sem.SemParam("xs", Sem.SemTArray(Sem.SemTI32, 6)) },
+        Sem.SemTVoid,
+        { Sem.SemStmtReturnVoid }
+    )),
+}))
+
 print("moonlift elab->sem top lowering ok")

@@ -105,4 +105,46 @@ assert(lowered == Elab.ElabModule({
     )),
 }))
 
+local count_module = Surf.SurfModule({
+    Surf.SurfItemConst(Surf.SurfConst(
+        "N",
+        Surf.SurfTIndex,
+        Surf.SurfInt("4")
+    )),
+    Surf.SurfItemConst(Surf.SurfConst(
+        "M",
+        Surf.SurfTIndex,
+        Surf.SurfExprAdd(Surf.SurfNameRef("N"), Surf.SurfInt("2"))
+    )),
+    Surf.SurfItemFunc(Surf.SurfFunc(
+        "use_count",
+        { Surf.SurfParam("xs", Surf.SurfTArray(Surf.SurfNameRef("M"), Surf.SurfTI32)) },
+        Surf.SurfTVoid,
+        { Surf.SurfReturnVoid }
+    )),
+})
+
+assert(pvm.one(L.lower_module(count_module)) == Elab.ElabModule({
+    Elab.ElabItemConst(Elab.ElabConst(
+        "N",
+        Elab.ElabTIndex,
+        Elab.ElabInt("4", Elab.ElabTIndex)
+    )),
+    Elab.ElabItemConst(Elab.ElabConst(
+        "M",
+        Elab.ElabTIndex,
+        Elab.ElabExprAdd(
+            Elab.ElabTIndex,
+            Elab.ElabBindingExpr(Elab.ElabGlobal("", "N", Elab.ElabTIndex)),
+            Elab.ElabInt("2", Elab.ElabTIndex)
+        )
+    )),
+    Elab.ElabItemFunc(Elab.ElabFunc(
+        "use_count",
+        { Elab.ElabParam("xs", Elab.ElabTArray(Elab.ElabBindingExpr(Elab.ElabGlobal("", "M", Elab.ElabTIndex)), Elab.ElabTI32)) },
+        Elab.ElabTVoid,
+        { Elab.ElabReturnVoid }
+    )),
+}))
+
 print("moonlift surface->elab top lowering ok")

@@ -464,14 +464,17 @@ by elaborating the count expression into the `ElabTArray(count, elem)` form.
 Current explicit limitation:
 
 - the current non-literal count subset is still intentionally small
-- richer const/name-driven array-count elaboration is still not implemented
+- count refs currently work only through explicit index-typed global const bindings / sibling const env synthesis
+- broader general const-eval forms are still not implemented here
 
 So currently:
 
 - array literals work
 - array type syntax lowers through the real frontend path
 - arithmetic array-count expressions like add/sub/mul are supported
-- broader const/name-driven count elaboration is still pending
+- array counts can reference explicit index-typed const bindings by name/path
+- sibling module consts are synthesized for count evaluation in top-level lowering
+- broader general const/name-driven const eval is still pending
 
 ---
 
@@ -686,7 +689,14 @@ Current const-data lowering supports:
 - named aggregate literal const data
 - array literal const data
 
-But it explicitly does not support many computed constant forms, including:
+In addition, the type-level array-count evaluator now supports a small explicit subset:
+
+- integer literals
+- add/sub/mul over count expressions
+- references to explicit index-typed global const bindings through `ElabConstEnv`
+- sibling const references in `ElabModule` count lowering
+
+But general value-level const evaluation still explicitly does not support many computed constant forms, including:
 
 - unary ops
 - arithmetic
