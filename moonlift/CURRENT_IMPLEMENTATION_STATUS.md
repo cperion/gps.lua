@@ -253,6 +253,7 @@ Implemented in:
 - cast / extend / reduce / promote / demote / float-int conversion command emission
 - select
 - direct / extern / indirect calls
+- direct/extern call lowering without redundant call-site redeclarations
 - block params / CFG lowering
 - explicit expr-flow lowering through `BackExprLowering`
 - explicit address/materialization-flow lowering through `BackAddrLowering`
@@ -261,6 +262,7 @@ Implemented in:
 - `over range(...)`
 - `over range(start, stop)`
 - loop exprs
+- loop-carried/index lowering through canonical slots without duplicate backend value ids
 - block exprs
 - assert -> trap lowering
 - const data object emission
@@ -364,7 +366,6 @@ The reboot now has real frontend lowering for:
 
 What is still missing at this layer is:
 
-- qualified path value resolution through `SurfPathRef`
 - authored type-definition items / layout-definition items
 - type/layout env synthesis from authored top-level declarations
 - a text parser/frontend that produces those authored top-level items
@@ -817,6 +818,20 @@ Still missing as a coherent top-level path:
 - normal top-level compile facade into JIT artifact/session objects
 
 Right now these pieces are still manual / semi-manual.
+
+---
+
+## 5.23 Current codegen-shape limitations exposed by `peek`
+
+Recent direct machine-code inspection of small benchmark kernels shows several real remaining design/codegen gaps:
+
+- dense integer `switch` currently lowers as a compare-chain CFG, not as a preserved switch form that could become a jump table
+- plain scalar `if` chooses currently lower as branch CFG, not as an explicit select/branchless choice form
+- function arguments are still eagerly spilled to stack slots at entry because the current addressability policy gives args canonical storage unconditionally
+- authored unsigned / `index` benchmarking is still awkward because type-directed integer literal elaboration is not yet strong enough
+- frontend/authored intrinsic syntax is still missing even though semantic/backend intrinsic lowering now exists
+
+So the current backend is already useful for real codegen observation, but some important machine-shape outcomes are still determined by open frontend/lowering policy decisions rather than by finished intended language semantics.
 
 ---
 

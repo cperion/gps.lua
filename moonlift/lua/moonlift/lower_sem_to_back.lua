@@ -479,7 +479,6 @@ function M.Define(T)
 
     local function emit_aliases_for_loop_bindings(cmds, bindings, param_ids)
         for i = 1, #bindings do
-            cmds[#cmds + 1] = Back.BackCmdAlias(local_value_id(bindings[i].id), param_ids[i])
             local addr = Back.BackValId("loop.slot.addr:" .. bindings[i].id)
             cmds[#cmds + 1] = Back.BackCmdStackAddr(addr, local_value_slot_id(bindings[i].id))
             cmds[#cmds + 1] = Back.BackCmdStore(one_scalar(bindings[i].ty), addr, param_ids[i])
@@ -487,24 +486,23 @@ function M.Define(T)
     end
 
     local function emit_alias_for_index_binding(cmds, binding, value_id)
-        cmds[#cmds + 1] = Back.BackCmdAlias(one_over_index_value(binding), value_id)
         local addr = Back.BackValId("loop.index.slot.addr:" .. binding.id)
         cmds[#cmds + 1] = Back.BackCmdStackAddr(addr, local_value_slot_id(binding.id))
         cmds[#cmds + 1] = Back.BackCmdStore(one_scalar(binding.ty), addr, value_id)
     end
 
-    local function loop_binding_value_args(bindings)
+    local function loop_binding_value_args(values)
         local args = {}
-        for i = 1, #bindings do
-            args[i] = local_value_id(bindings[i].id)
+        for i = 1, #values do
+            args[i] = values[i]
         end
         return args
     end
 
-    local function over_loop_current_args(index_binding, carries)
-        local args = { one_over_index_value(index_binding) }
-        for i = 1, #carries do
-            args[#args + 1] = local_value_id(carries[i].id)
+    local function over_loop_current_args(index_value, carry_values)
+        local args = { index_value }
+        for i = 1, #carry_values do
+            args[#args + 1] = carry_values[i]
         end
         return args
     end
@@ -607,13 +605,17 @@ function M.Define(T)
             local value = local_value_id(self.id)
             return pvm.once(Back.BackExprPlan({}, value, ty))
         end,
-        [Sem.SemBindLocalStoredValue] = function(self)
+        [Sem.SemBindLocalStoredValue] = function(self, path)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar immutable local '" .. self.name .. "' has no direct value form in Sem->Back; use address-based access")
             end
+            local addr = Back.BackValId(path .. ".addr")
+            local dst = Back.BackValId(path)
             local ty = one_scalar(self.ty)
-            local value = local_value_id(self.id)
-            return pvm.once(Back.BackExprPlan({}, value, ty))
+            return pvm.once(Back.BackExprPlan({
+                Back.BackCmdStackAddr(addr, local_value_slot_id(self.id)),
+                Back.BackCmdLoad(dst, ty, addr),
+            }, dst, ty))
         end,
         [Sem.SemBindArg] = function(self)
             if not one_type_is_scalar(self.ty) then
@@ -3412,18 +3414,12 @@ function M.Define(T)
     lower_call_value = pvm.phase("sem_to_back_call_value", {
         [Sem.SemCallDirect] = function(self, dst, ret_ty, path, args)
             local func_text = func_id_text(self.module_name, self.func_name)
-            local sig = one_sig_spec(self.fn_ty)
             return pvm.once(Back.BackExprPlan({
-                Back.BackCmdCreateSig(Back.BackSigId("sig:" .. func_text), sig.params, sig.results),
-                Back.BackCmdDeclareFuncLocal(Back.BackFuncId(func_text), Back.BackSigId("sig:" .. func_text)),
                 Back.BackCmdCallValueDirect(dst, ret_ty, Back.BackFuncId(func_text), Back.BackSigId("sig:" .. func_text), args),
             }, dst, ret_ty))
         end,
         [Sem.SemCallExtern] = function(self, dst, ret_ty, path, args)
-            local sig = one_sig_spec(self.fn_ty)
             return pvm.once(Back.BackExprPlan({
-                Back.BackCmdCreateSig(Back.BackSigId("sig:extern:" .. self.symbol), sig.params, sig.results),
-                Back.BackCmdDeclareFuncExtern(Back.BackExternId(self.symbol), self.symbol, Back.BackSigId("sig:extern:" .. self.symbol)),
                 Back.BackCmdCallValueExtern(dst, ret_ty, Back.BackExternId(self.symbol), Back.BackSigId("sig:extern:" .. self.symbol), args),
             }, dst, ret_ty))
         end,
@@ -4273,8 +4269,7 @@ function M.Define(T)
         local body_carry_params = {}
         local continue_carry_params = {}
         local header_jump_args = { header_index }
-        local current_args = over_loop_current_args(loop.index_binding, loop.carries)
-        local cmds = {
+                local cmds = {
             Back.BackCmdCreateStackSlot(local_value_slot_id(loop.index_binding.id), 8, 8),
             Back.BackCmdCreateBlock(header_block),
             Back.BackCmdCreateBlock(body_block),
@@ -4317,10 +4312,11 @@ function M.Define(T)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
         emit_alias_for_index_binding(cmds, loop.index_binding, body_index)
         emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params)
-        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, exit_block, {}, continue_block, current_args)
+        local body_current_args = over_loop_current_args(body_index, body_carry_params)
+        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, exit_block, {}, continue_block, body_current_args)
         copy_cmds(body_cmds, cmds)
         if body_flow == Back.BackFallsThrough then
-            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, current_args)
+            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
         end
         cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
@@ -4360,8 +4356,7 @@ function M.Define(T)
         local exit_carry_params = {}
         local header_jump_args = { header_index }
         local exit_jump_args = { header_index }
-        local current_args = over_loop_current_args(loop.index_binding, loop.carries)
-        local cmds = {
+                local cmds = {
             Back.BackCmdCreateStackSlot(local_value_slot_id(loop.index_binding.id), 8, 8),
             Back.BackCmdCreateBlock(header_block),
             Back.BackCmdCreateBlock(body_block),
@@ -4409,10 +4404,11 @@ function M.Define(T)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
         emit_alias_for_index_binding(cmds, loop.index_binding, body_index)
         emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params)
-        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, exit_block, current_args, continue_block, current_args)
+        local body_current_args = over_loop_current_args(body_index, body_carry_params)
+        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, exit_block, body_current_args, continue_block, body_current_args)
         copy_cmds(body_cmds, cmds)
         if body_flow == Back.BackFallsThrough then
-            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, current_args)
+            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
         end
         cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
@@ -4546,8 +4542,7 @@ function M.Define(T)
         local exit_carry_params = {}
         local header_jump_args = { header_index }
         local exit_jump_args = { header_index }
-        local current_args = over_loop_current_args(loop.index_binding, loop.carries)
-        local cmds = {
+                local cmds = {
             Back.BackCmdCreateStackSlot(local_value_slot_id(loop.index_binding.id), 8, 8),
             Back.BackCmdCreateBlock(header_block),
             Back.BackCmdCreateBlock(body_block),
@@ -4604,10 +4599,11 @@ function M.Define(T)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
         emit_alias_for_index_binding(cmds, loop.index_binding, body_index)
         emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params)
-        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, exit_block, current_args, continue_block, current_args)
+        local body_current_args = over_loop_current_args(body_index, body_carry_params)
+        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, exit_block, body_current_args, continue_block, body_current_args)
         copy_cmds(body_cmds, cmds)
         if body_flow == Back.BackFallsThrough then
-            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, current_args)
+            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
         end
         cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
@@ -4694,8 +4690,7 @@ function M.Define(T)
             local header_params = {}
             local body_params = {}
             local continue_params = {}
-            local current_args = loop_binding_value_args(self.vars)
-            local cmds = {
+                        local cmds = {
                 Back.BackCmdCreateBlock(header_block),
                 Back.BackCmdCreateBlock(body_block),
                 Back.BackCmdCreateBlock(continue_block),
@@ -4728,10 +4723,11 @@ function M.Define(T)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
             emit_aliases_for_loop_bindings(cmds, self.vars, body_params)
-            local body_cmds, body_flow = lower_stmt_list(self.body, path .. ".body", layout_env, exit_block, {}, continue_block, current_args)
+            local body_current_args = loop_binding_value_args(body_params)
+            local body_cmds, body_flow = lower_stmt_list(self.body, path .. ".body", layout_env, exit_block, {}, continue_block, body_current_args)
             copy_cmds(body_cmds, cmds)
             if body_flow == Back.BackFallsThrough then
-                cmds[#cmds + 1] = Back.BackCmdJump(continue_block, current_args)
+                cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
             end
             cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
@@ -4765,8 +4761,7 @@ function M.Define(T)
             local body_params = {}
             local continue_params = {}
             local exit_params = {}
-            local current_args = loop_binding_value_args(self.vars)
-            local cmds = {
+                        local cmds = {
                 Back.BackCmdCreateBlock(header_block),
                 Back.BackCmdCreateBlock(body_block),
                 Back.BackCmdCreateBlock(continue_block),
@@ -4802,10 +4797,11 @@ function M.Define(T)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
             emit_aliases_for_loop_bindings(cmds, self.vars, body_params)
-            local body_cmds, body_flow = lower_stmt_list(self.body, path .. ".body", layout_env, exit_block, current_args, continue_block, current_args)
+            local body_current_args = loop_binding_value_args(body_params)
+            local body_cmds, body_flow = lower_stmt_list(self.body, path .. ".body", layout_env, exit_block, body_current_args, continue_block, body_current_args)
             copy_cmds(body_cmds, cmds)
             if body_flow == Back.BackFallsThrough then
-                cmds[#cmds + 1] = Back.BackCmdJump(continue_block, current_args)
+                cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
             end
             cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
@@ -4841,8 +4837,7 @@ function M.Define(T)
             local body_params = {}
             local continue_params = {}
             local exit_params = {}
-            local current_args = loop_binding_value_args(self.vars)
-            local cmds = {
+                        local cmds = {
                 Back.BackCmdCreateBlock(header_block),
                 Back.BackCmdCreateBlock(body_block),
                 Back.BackCmdCreateBlock(continue_block),
@@ -4884,10 +4879,11 @@ function M.Define(T)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
             emit_aliases_for_loop_bindings(cmds, self.vars, body_params)
-            local body_cmds, body_flow = lower_stmt_list(self.body, path .. ".body", layout_env, exit_block, current_args, continue_block, current_args)
+            local body_current_args = loop_binding_value_args(body_params)
+            local body_cmds, body_flow = lower_stmt_list(self.body, path .. ".body", layout_env, exit_block, body_current_args, continue_block, body_current_args)
             copy_cmds(body_cmds, cmds)
             if body_flow == Back.BackFallsThrough then
-                cmds[#cmds + 1] = Back.BackCmdJump(continue_block, current_args)
+                cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
             end
             cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)

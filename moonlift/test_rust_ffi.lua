@@ -4,13 +4,22 @@ local ffi = require("ffi")
 local pvm = require("pvm")
 local A = require("moonlift.asdl")
 local J = require("moonlift.jit")
+local LowerBack = require("moonlift.lower_sem_to_back")
 
 local T = pvm.context()
 A.Define(T)
 
+local Sem = T.MoonliftSem
 local Back = T.MoonliftBack
 local api = J.Define(T)
+local lower = LowerBack.Define(T)
 local jit = api.jit()
+
+local empty_layout_env = Sem.SemLayoutEnv({})
+
+local function lower_sem_module(node)
+    return pvm.one(lower.lower_module(node, empty_layout_env))
+end
 
 local program = Back.BackProgram({
     Back.BackCmdCreateSig(Back.BackSigId("sig:add1"), { Back.BackI32 }, { Back.BackI32 }),
@@ -91,6 +100,108 @@ local fma_ptr = intrinsic_artifact:getpointer(Back.BackFuncId("fma1"))
 local fma1 = ffi.cast("float (*)(float, float, float)", fma_ptr)
 assert(tonumber(fma1(2, 3, 4)) == 10)
 intrinsic_artifact:free()
+
+local fib_module = lower_sem_module(Sem.SemModule({
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "fib",
+        { Sem.SemParam("n", Sem.SemTI32) },
+        Sem.SemTI32,
+        {
+            Sem.SemStmtReturnValue(
+                Sem.SemExprIf(
+                    Sem.SemExprLt(
+                        Sem.SemTBool,
+                        Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTI32)),
+                        Sem.SemExprConstInt(Sem.SemTI32, "2")
+                    ),
+                    Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTI32)),
+                    Sem.SemExprAdd(
+                        Sem.SemTI32,
+                        Sem.SemExprCall(
+                            Sem.SemCallDirect("", "fib", Sem.SemTFunc({ Sem.SemTI32 }, Sem.SemTI32)),
+                            Sem.SemTI32,
+                            {
+                                Sem.SemExprSub(
+                                    Sem.SemTI32,
+                                    Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTI32)),
+                                    Sem.SemExprConstInt(Sem.SemTI32, "1")
+                                ),
+                            }
+                        ),
+                        Sem.SemExprCall(
+                            Sem.SemCallDirect("", "fib", Sem.SemTFunc({ Sem.SemTI32 }, Sem.SemTI32)),
+                            Sem.SemTI32,
+                            {
+                                Sem.SemExprSub(
+                                    Sem.SemTI32,
+                                    Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTI32)),
+                                    Sem.SemExprConstInt(Sem.SemTI32, "2")
+                                ),
+                            }
+                        )
+                    ),
+                    Sem.SemTI32
+                )
+            ),
+        }
+    )),
+}))
+local fib_artifact = jit:compile(fib_module)
+local fib_ptr = fib_artifact:getpointer(Back.BackFuncId("fib"))
+local fib = ffi.cast("int32_t (*)(int32_t)", fib_ptr)
+assert(fib(10) == 55)
+fib_artifact:free()
+
+local sum_to_module = lower_sem_module(Sem.SemModule({
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "sum_to",
+        { Sem.SemParam("n", Sem.SemTI32) },
+        Sem.SemTI32,
+        {
+            Sem.SemStmtReturnValue(
+                Sem.SemExprLoop(
+                    Sem.SemLoopWhileExpr(
+                        {
+                            Sem.SemLoopBinding("sum.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                            Sem.SemLoopBinding("sum.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                        },
+                        Sem.SemExprLt(
+                            Sem.SemTBool,
+                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32)),
+                            Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTI32))
+                        ),
+                        {},
+                        {
+                            Sem.SemLoopNext(
+                                Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32),
+                                Sem.SemExprAdd(
+                                    Sem.SemTI32,
+                                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32)),
+                                    Sem.SemExprConstInt(Sem.SemTI32, "1")
+                                )
+                            ),
+                            Sem.SemLoopNext(
+                                Sem.SemBindLocalStoredValue("sum.acc", "acc", Sem.SemTI32),
+                                Sem.SemExprAdd(
+                                    Sem.SemTI32,
+                                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.acc", "acc", Sem.SemTI32)),
+                                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32))
+                                )
+                            ),
+                        },
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.acc", "acc", Sem.SemTI32))
+                    ),
+                    Sem.SemTI32
+                )
+            ),
+        }
+    )),
+}))
+local sum_to_artifact = jit:compile(sum_to_module)
+local sum_to_ptr = sum_to_artifact:getpointer(Back.BackFuncId("sum_to"))
+local sum_to = ffi.cast("int32_t (*)(int32_t)", sum_to_ptr)
+assert(sum_to(10) == 45)
+sum_to_artifact:free()
 
 jit:free()
 

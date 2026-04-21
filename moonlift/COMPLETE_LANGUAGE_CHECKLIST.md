@@ -145,6 +145,7 @@ Surface -> Elab -> Sem -> Back -> Artifact
 - [x] fix/complete `ref` typing (`T -> ptr(T)`) in `Surface -> Elab`
 - [x] fix/complete `deref` typing (`ptr(T) -> T`) in `Surface -> Elab`
 - [ ] define/addressability rules for all referenceable lvalues
+- [ ] improve type-directed integer literal elaboration for unsigned / `index` authored code
 - [x] finalize whether `bool and/or` are strict scalar ops or short-circuit operators
 - [x] if short-circuiting is intended, implement CFG lowering for them
 
@@ -178,6 +179,7 @@ This depends on the intended reboot language surface.
 - [ ] finalize switch-key type rules
 - [ ] support all intended scalar key kinds
 - [ ] decide whether non-scalar switch values are part of the language
+- [ ] preserve dense switch structure late enough in lowering to allow jump-table-like backend codegen when intended
 - [ ] finalize block-expression reachability/termination rules
 
 ## 3.8 Const system completion
@@ -257,6 +259,8 @@ Goal:
 - [ ] implement bounded-value domain lowering
 - [ ] implement `zip_eq` lowering
 - [x] implement intrinsic lowering
+- [x] stop redeclaring direct/extern callees from call sites during `Sem -> Back`
+- [x] make loop-carried/index lowering use backend-valid value naming without duplicate bound ids
 - [ ] complete non-scalar load lowering where intended
 - [ ] complete non-scalar call result lowering where intended
 - [ ] complete non-scalar loop expr lowering where intended
@@ -268,6 +272,7 @@ Goal:
 - [ ] implement `BackCmdFrem` or remove it from the intended surface
 - [ ] confirm which casts/conversions need direct backend support vs higher lowering
 - [ ] decide whether explicit memcpy/memset/data-copy commands should exist
+- [ ] decide whether plain scalar choose forms should lower through explicit `BackCmdSelect`/select-shaped semantics instead of branch CFG when intended
 - [ ] decide whether slice/view runtime primitives need dedicated `BackCmd` support
 
 ## 4.3 ABI completion

@@ -575,8 +575,8 @@ local loop_field_value = one_expr(
 assert(loop_field_value.value == Back.BackValId("expr.loopfield"))
 assert(loop_field_value.ty == Back.BackI32)
 assert(contains_cmd(loop_field_value, Back.BackCmdCreateBlock(Back.BackBlockId("expr.loopfield.addr.base.init.loop.continue.block"))))
-assert(contains_cmd(loop_field_value, Back.BackCmdJump(Back.BackBlockId("expr.loopfield.addr.base.init.loop.continue.block"), { Back.BackValId("local:li") })))
-assert(contains_cmd(loop_field_value, Back.BackCmdAlias(Back.BackValId("local:li"), Back.BackValId("expr.loopfield.addr.base.init.loop.exit.param.1"))))
+assert(contains_cmd(loop_field_value, Back.BackCmdJump(Back.BackBlockId("expr.loopfield.addr.base.init.loop.continue.block"), { Back.BackValId("expr.loopfield.addr.base.init.loop.body.param.1") })))
+assert(contains_cmd(loop_field_value, Back.BackCmdStore(Back.BackI32, Back.BackValId("loop.slot.addr:li"), Back.BackValId("expr.loopfield.addr.base.init.loop.exit.param.1"))))
 assert(contains_cmd(loop_field_value, Back.BackCmdLoad(Back.BackValId("expr.loopfield"), Back.BackI32, Back.BackValId("expr.loopfield.addr"))))
 
 local field_value = one_expr(
@@ -731,8 +731,6 @@ local call = one_expr(
 )
 assert(call == Back.BackExprPlan({
     Back.BackCmdConstInt(Back.BackValId("expr.call.arg.1"), Back.BackI32, "7"),
-    Back.BackCmdCreateSig(Back.BackSigId("sig:sum"), { Back.BackI32 }, { Back.BackI32 }),
-    Back.BackCmdDeclareFuncLocal(Back.BackFuncId("sum"), Back.BackSigId("sig:sum")),
     Back.BackCmdCallValueDirect(Back.BackValId("expr.call"), Back.BackI32, Back.BackFuncId("sum"), Back.BackSigId("sig:sum"), { Back.BackValId("expr.call.arg.1") }),
 }, Back.BackValId("expr.call"), Back.BackI32))
 
@@ -889,8 +887,8 @@ local loop_stmt = one_stmt(
 )
 assert(loop_stmt.flow == Back.BackFallsThrough)
 assert(contains_cmd(loop_stmt, Back.BackCmdCreateBlock(Back.BackBlockId("stmt.loop.continue.block"))))
-assert(contains_cmd(loop_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.loop.continue.block"), { Back.BackValId("local:loop.i") })))
-assert(contains_cmd(loop_stmt, Back.BackCmdAlias(Back.BackValId("local:loop.i"), Back.BackValId("stmt.loop.continue.param.1"))))
+assert(contains_cmd(loop_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.loop.continue.block"), { Back.BackValId("stmt.loop.body.param.1") })))
+assert(contains_cmd(loop_stmt, Back.BackCmdStore(Back.BackI32, Back.BackValId("loop.slot.addr:loop.i"), Back.BackValId("stmt.loop.continue.param.1"))))
 assert(contains_cmd(loop_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.loop.header.block"), { Back.BackValId("stmt.loop.next.1") })))
 
 local loop_expr = one_expr(
@@ -923,11 +921,11 @@ local loop_expr = one_expr(
     ),
     "expr.loop"
 )
-assert(loop_expr.value == Back.BackValId("local:loop2.i"))
+assert(loop_expr.value == Back.BackValId("expr.loop.result"))
 assert(loop_expr.ty == Back.BackI32)
 assert(contains_cmd(loop_expr, Back.BackCmdCreateBlock(Back.BackBlockId("expr.loop.continue.block"))))
-assert(contains_cmd(loop_expr, Back.BackCmdJump(Back.BackBlockId("expr.loop.continue.block"), { Back.BackValId("local:loop2.i") })))
-assert(contains_cmd(loop_expr, Back.BackCmdAlias(Back.BackValId("local:loop2.i"), Back.BackValId("expr.loop.exit.param.1"))))
+assert(contains_cmd(loop_expr, Back.BackCmdJump(Back.BackBlockId("expr.loop.continue.block"), { Back.BackValId("expr.loop.body.param.1") })))
+assert(contains_cmd(loop_expr, Back.BackCmdStore(Back.BackI32, Back.BackValId("loop.slot.addr:loop2.i"), Back.BackValId("expr.loop.exit.param.1"))))
 
 local over_stmt = one_stmt(
     Sem.SemStmtLoop(
@@ -954,9 +952,9 @@ local over_stmt = one_stmt(
 )
 assert(over_stmt.flow == Back.BackFallsThrough)
 assert(contains_cmd(over_stmt, Back.BackCmdCreateBlock(Back.BackBlockId("stmt.over.continue.block"))))
-assert(contains_cmd(over_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.over.continue.block"), { Back.BackValId("local:stmt.over.index"), Back.BackValId("local:over.acc") })))
-assert(contains_cmd(over_stmt, Back.BackCmdAlias(Back.BackValId("local:stmt.over.index"), Back.BackValId("stmt.over.continue.index"))))
-assert(contains_cmd(over_stmt, Back.BackCmdAlias(Back.BackValId("local:over.acc"), Back.BackValId("stmt.over.continue.carry.1"))))
+assert(contains_cmd(over_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.over.continue.block"), { Back.BackValId("stmt.over.body.index"), Back.BackValId("stmt.over.body.carry.1") })))
+assert(contains_cmd(over_stmt, Back.BackCmdStore(Back.BackIndex, Back.BackValId("loop.index.slot.addr:stmt.over.index"), Back.BackValId("stmt.over.continue.index"))))
+assert(contains_cmd(over_stmt, Back.BackCmdStore(Back.BackIndex, Back.BackValId("loop.slot.addr:over.acc"), Back.BackValId("stmt.over.continue.carry.1"))))
 
 local over_expr = one_expr(
     Sem.SemExprLoop(
@@ -983,12 +981,12 @@ local over_expr = one_expr(
     ),
     "expr.over"
 )
-assert(over_expr.value == Back.BackValId("local:overe.acc"))
+assert(over_expr.value == Back.BackValId("expr.over.result"))
 assert(over_expr.ty == Back.BackIndex)
 assert(contains_cmd(over_expr, Back.BackCmdCreateBlock(Back.BackBlockId("expr.over.continue.block"))))
-assert(contains_cmd(over_expr, Back.BackCmdJump(Back.BackBlockId("expr.over.continue.block"), { Back.BackValId("local:expr.over.index"), Back.BackValId("local:overe.acc") })))
-assert(contains_cmd(over_expr, Back.BackCmdAlias(Back.BackValId("local:expr.over.index"), Back.BackValId("expr.over.exit.index"))))
-assert(contains_cmd(over_expr, Back.BackCmdAlias(Back.BackValId("local:overe.acc"), Back.BackValId("expr.over.exit.carry.1"))))
+assert(contains_cmd(over_expr, Back.BackCmdJump(Back.BackBlockId("expr.over.continue.block"), { Back.BackValId("expr.over.body.index"), Back.BackValId("expr.over.body.carry.1") })))
+assert(contains_cmd(over_expr, Back.BackCmdStore(Back.BackIndex, Back.BackValId("loop.index.slot.addr:expr.over.index"), Back.BackValId("expr.over.exit.index"))))
+assert(contains_cmd(over_expr, Back.BackCmdStore(Back.BackIndex, Back.BackValId("loop.slot.addr:overe.acc"), Back.BackValId("expr.over.exit.carry.1"))))
 
 local ok_break, err_break = pcall(function()
     return one_stmt(Sem.SemStmtBreak, "stmt.break")
@@ -1029,8 +1027,8 @@ local continue_loop_stmt = one_stmt(
     "stmt.continue_loop"
 )
 assert(continue_loop_stmt.flow == Back.BackFallsThrough)
-assert(contains_cmd(continue_loop_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.continue_loop.continue.block"), { Back.BackValId("local:continue.i") })))
-assert(contains_cmd(continue_loop_stmt, Back.BackCmdAlias(Back.BackValId("local:continue.i"), Back.BackValId("stmt.continue_loop.continue.param.1"))))
+assert(contains_cmd(continue_loop_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.continue_loop.continue.block"), { Back.BackValId("stmt.continue_loop.body.param.1") })))
+assert(contains_cmd(continue_loop_stmt, Back.BackCmdStore(Back.BackI32, Back.BackValId("loop.slot.addr:continue.i"), Back.BackValId("stmt.continue_loop.continue.param.1"))))
 
 local continue_block_expr_loop_stmt = one_stmt(
     Sem.SemStmtLoop(
@@ -1046,7 +1044,7 @@ local continue_block_expr_loop_stmt = one_stmt(
     "stmt.continue_block_expr_loop"
 )
 assert(continue_block_expr_loop_stmt.flow == Back.BackFallsThrough)
-assert(contains_cmd(continue_block_expr_loop_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.continue_block_expr_loop.continue.block"), { Back.BackValId("local:cb.i") })))
+assert(contains_cmd(continue_block_expr_loop_stmt, Back.BackCmdJump(Back.BackBlockId("stmt.continue_block_expr_loop.continue.block"), { Back.BackValId("stmt.continue_block_expr_loop.body.param.1") })))
 
 local break_switch_expr_loop_stmt = one_stmt(
     Sem.SemStmtLoop(
