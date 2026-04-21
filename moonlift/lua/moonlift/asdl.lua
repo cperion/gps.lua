@@ -423,6 +423,16 @@ module MoonliftBack {
             | BackCmdFneg(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
             | BackCmdBnot(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
             | BackCmdBoolNot(MoonliftBack.BackValId dst, MoonliftBack.BackValId value) unique
+            | BackCmdPopcount(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdClz(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdCtz(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdBswap(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdSqrt(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdAbs(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdFloor(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdCeil(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdTruncFloat(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
+            | BackCmdRound(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId value) unique
             | BackCmdIadd(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
             | BackCmdIsub(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
             | BackCmdImul(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
@@ -441,6 +451,8 @@ module MoonliftBack {
             | BackCmdIshl(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
             | BackCmdUshr(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
             | BackCmdSshr(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
+            | BackCmdRotl(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
+            | BackCmdRotr(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
             | BackCmdIcmpEq(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
             | BackCmdIcmpNe(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
             | BackCmdSIcmpLt(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId lhs, MoonliftBack.BackValId rhs) unique
@@ -470,6 +482,7 @@ module MoonliftBack {
             | BackCmdLoad(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId addr) unique
             | BackCmdStore(MoonliftBack.BackScalar ty, MoonliftBack.BackValId addr, MoonliftBack.BackValId value) unique
             | BackCmdSelect(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId cond, MoonliftBack.BackValId then_value, MoonliftBack.BackValId else_value) unique
+            | BackCmdFma(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackValId a, MoonliftBack.BackValId b, MoonliftBack.BackValId c) unique
             | BackCmdCallValueDirect(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackFuncId func, MoonliftBack.BackSigId sig, MoonliftBack.BackValId* args) unique
             | BackCmdCallStmtDirect(MoonliftBack.BackFuncId func, MoonliftBack.BackSigId sig, MoonliftBack.BackValId* args) unique
             | BackCmdCallValueExtern(MoonliftBack.BackValId dst, MoonliftBack.BackScalar ty, MoonliftBack.BackExternId func, MoonliftBack.BackSigId sig, MoonliftBack.BackValId* args) unique

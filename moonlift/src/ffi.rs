@@ -544,6 +544,16 @@ fn unary_cmd(op: u32, dst: BackValId, ty: BackScalar, value: BackValId) -> Resul
         2 => Ok(BackCmd::Fneg(dst, ty, value)),
         3 => Ok(BackCmd::Bnot(dst, ty, value)),
         4 => Ok(BackCmd::BoolNot(dst, value)),
+        5 => Ok(BackCmd::Popcount(dst, ty, value)),
+        6 => Ok(BackCmd::Clz(dst, ty, value)),
+        7 => Ok(BackCmd::Ctz(dst, ty, value)),
+        8 => Ok(BackCmd::Bswap(dst, ty, value)),
+        9 => Ok(BackCmd::Sqrt(dst, ty, value)),
+        10 => Ok(BackCmd::Abs(dst, ty, value)),
+        11 => Ok(BackCmd::Floor(dst, ty, value)),
+        12 => Ok(BackCmd::Ceil(dst, ty, value)),
+        13 => Ok(BackCmd::TruncFloat(dst, ty, value)),
+        14 => Ok(BackCmd::Round(dst, ty, value)),
         _ => Err(MoonliftError(format!("unknown unary opcode {op}"))),
     }
 }
@@ -606,6 +616,8 @@ fn binary_cmd(op: u32, dst: BackValId, ty: BackScalar, lhs: BackValId, rhs: Back
         32 => Ok(BackCmd::FCmpLe(dst, ty, lhs, rhs)),
         33 => Ok(BackCmd::FCmpGt(dst, ty, lhs, rhs)),
         34 => Ok(BackCmd::FCmpGe(dst, ty, lhs, rhs)),
+        35 => Ok(BackCmd::Rotl(dst, ty, lhs, rhs)),
+        36 => Ok(BackCmd::Rotr(dst, ty, lhs, rhs)),
         _ => Err(MoonliftError(format!("unknown binary opcode {op}"))),
     }
 }
@@ -648,6 +660,33 @@ fn cast_cmd(op: u32, dst: BackValId, ty: BackScalar, value: BackValId) -> Result
         10 => Ok(BackCmd::FToU(dst, ty, value)),
         _ => Err(MoonliftError(format!("unknown cast opcode {op}"))),
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn moonlift_program_cmd_ternary(
+    program: *mut moonlift_program_t,
+    op: u32,
+    dst: *const c_char,
+    ty: u32,
+    a: *const c_char,
+    b: *const c_char,
+    c: *const c_char,
+) -> c_int {
+    let result: Result<_, MoonliftError> = (|| {
+        let program = require_ptr(program, "moonlift_program_t")?;
+        let dst = BackValId::from(read_cstr(dst, "dst value id")?);
+        let ty = read_scalar(ty)?;
+        let a = BackValId::from(read_cstr(a, "ternary arg a")?);
+        let b = BackValId::from(read_cstr(b, "ternary arg b")?);
+        let c = BackValId::from(read_cstr(c, "ternary arg c")?);
+        let cmd = match op {
+            1 => BackCmd::Fma(dst, ty, a, b, c),
+            _ => return Err(MoonliftError(format!("unknown ternary opcode {op}"))),
+        };
+        push_cmd(program, cmd);
+        Ok(())
+    })();
+    match result { Ok(()) => ok_int(), Err(err) => fail_int(err.0) }
 }
 
 #[unsafe(no_mangle)]

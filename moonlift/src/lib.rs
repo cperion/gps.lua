@@ -113,6 +113,16 @@ pub enum BackCmd {
     Fneg(BackValId, BackScalar, BackValId),
     Bnot(BackValId, BackScalar, BackValId),
     BoolNot(BackValId, BackValId),
+    Popcount(BackValId, BackScalar, BackValId),
+    Clz(BackValId, BackScalar, BackValId),
+    Ctz(BackValId, BackScalar, BackValId),
+    Bswap(BackValId, BackScalar, BackValId),
+    Sqrt(BackValId, BackScalar, BackValId),
+    Abs(BackValId, BackScalar, BackValId),
+    Floor(BackValId, BackScalar, BackValId),
+    Ceil(BackValId, BackScalar, BackValId),
+    TruncFloat(BackValId, BackScalar, BackValId),
+    Round(BackValId, BackScalar, BackValId),
     Iadd(BackValId, BackScalar, BackValId, BackValId),
     Isub(BackValId, BackScalar, BackValId, BackValId),
     Imul(BackValId, BackScalar, BackValId, BackValId),
@@ -131,6 +141,8 @@ pub enum BackCmd {
     Ishl(BackValId, BackScalar, BackValId, BackValId),
     Ushr(BackValId, BackScalar, BackValId, BackValId),
     Sshr(BackValId, BackScalar, BackValId, BackValId),
+    Rotl(BackValId, BackScalar, BackValId, BackValId),
+    Rotr(BackValId, BackScalar, BackValId, BackValId),
     IcmpEq(BackValId, BackScalar, BackValId, BackValId),
     IcmpNe(BackValId, BackScalar, BackValId, BackValId),
     SIcmpLt(BackValId, BackScalar, BackValId, BackValId),
@@ -160,6 +172,7 @@ pub enum BackCmd {
     Load(BackValId, BackScalar, BackValId),
     Store(BackScalar, BackValId, BackValId),
     Select(BackValId, BackScalar, BackValId, BackValId, BackValId),
+    Fma(BackValId, BackScalar, BackValId, BackValId, BackValId),
     CallValueDirect(BackValId, BackScalar, BackFuncId, BackSigId, Vec<BackValId>),
     CallStmtDirect(BackFuncId, BackSigId, Vec<BackValId>),
     CallValueExtern(BackValId, BackScalar, BackExternId, BackSigId, Vec<BackValId>),
@@ -976,6 +989,59 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let out = bool_value_from_cond(self.builder, cond);
                 self.bind_value(dst, out)
             }
+            BackCmd::Popcount(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().popcnt(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Clz(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().clz(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Ctz(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().ctz(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Bswap(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().bswap(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Sqrt(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().sqrt(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Abs(dst, ty, value) => {
+                let value = self.value(value)?;
+                let out = match ty {
+                    BackScalar::F32 | BackScalar::F64 => self.builder.ins().fabs(value),
+                    _ => self.builder.ins().iabs(value),
+                };
+                self.bind_value(dst, out)
+            }
+            BackCmd::Floor(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().floor(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Ceil(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().ceil(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::TruncFloat(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().trunc(value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Round(dst, _, value) => {
+                let value = self.value(value)?;
+                let out = self.builder.ins().nearest(value);
+                self.bind_value(dst, out)
+            }
             BackCmd::Iadd(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().iadd(l, r)),
             BackCmd::Isub(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().isub(l, r)),
             BackCmd::Imul(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().imul(l, r)),
@@ -996,6 +1062,8 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             BackCmd::Ishl(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().ishl(l, r)),
             BackCmd::Ushr(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().ushr(l, r)),
             BackCmd::Sshr(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().sshr(l, r)),
+            BackCmd::Rotl(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().rotl(l, r)),
+            BackCmd::Rotr(dst, _, lhs, rhs) => self.bind_binop(dst, lhs, rhs, |b, l, r| b.ins().rotr(l, r)),
             BackCmd::IcmpEq(dst, _, lhs, rhs) => self.bind_icmp(dst, IntCC::Equal, lhs, rhs),
             BackCmd::IcmpNe(dst, _, lhs, rhs) => self.bind_icmp(dst, IntCC::NotEqual, lhs, rhs),
             BackCmd::SIcmpLt(dst, _, lhs, rhs) => self.bind_icmp(dst, IntCC::SignedLessThan, lhs, rhs),
@@ -1081,6 +1149,13 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let then_value = self.value(then_value)?;
                 let else_value = self.value(else_value)?;
                 let out = self.builder.ins().select(cond_value, then_value, else_value);
+                self.bind_value(dst, out)
+            }
+            BackCmd::Fma(dst, _, a, b, c) => {
+                let a = self.value(a)?;
+                let b = self.value(b)?;
+                let c = self.value(c)?;
+                let out = self.builder.ins().fma(a, b, c);
                 self.bind_value(dst, out)
             }
             BackCmd::CallValueDirect(dst, _, func, sig, args) => {

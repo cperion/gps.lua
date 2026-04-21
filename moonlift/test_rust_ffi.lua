@@ -54,6 +54,44 @@ local data_ptr = data_artifact:getpointer(Back.BackFuncId("getk"))
 local getk = ffi.cast("int32_t (*)()", data_ptr)
 assert(getk() == 42)
 data_artifact:free()
+
+local intrinsic_program = Back.BackProgram({
+    Back.BackCmdCreateSig(Back.BackSigId("sig:poprot"), { Back.BackU32 }, { Back.BackU32 }),
+    Back.BackCmdDeclareFuncExport(Back.BackFuncId("poprot"), Back.BackSigId("sig:poprot")),
+    Back.BackCmdBeginFunc(Back.BackFuncId("poprot")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("entry.poprot")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("entry.poprot")),
+    Back.BackCmdBindEntryParams(Back.BackBlockId("entry.poprot"), { Back.BackValId("x") }),
+    Back.BackCmdPopcount(Back.BackValId("pc"), Back.BackU32, Back.BackValId("x")),
+    Back.BackCmdConstInt(Back.BackValId("rotamt"), Back.BackU32, "1"),
+    Back.BackCmdRotl(Back.BackValId("out"), Back.BackU32, Back.BackValId("pc"), Back.BackValId("rotamt")),
+    Back.BackCmdReturnValue(Back.BackValId("out")),
+    Back.BackCmdSealBlock(Back.BackBlockId("entry.poprot")),
+    Back.BackCmdFinishFunc(Back.BackFuncId("poprot")),
+
+    Back.BackCmdCreateSig(Back.BackSigId("sig:fma1"), { Back.BackF32, Back.BackF32, Back.BackF32 }, { Back.BackF32 }),
+    Back.BackCmdDeclareFuncExport(Back.BackFuncId("fma1"), Back.BackSigId("sig:fma1")),
+    Back.BackCmdBeginFunc(Back.BackFuncId("fma1")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("entry.fma1")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("entry.fma1")),
+    Back.BackCmdBindEntryParams(Back.BackBlockId("entry.fma1"), { Back.BackValId("a"), Back.BackValId("b"), Back.BackValId("c"), }),
+    Back.BackCmdFma(Back.BackValId("fma.out"), Back.BackF32, Back.BackValId("a"), Back.BackValId("b"), Back.BackValId("c")),
+    Back.BackCmdReturnValue(Back.BackValId("fma.out")),
+    Back.BackCmdSealBlock(Back.BackBlockId("entry.fma1")),
+    Back.BackCmdFinishFunc(Back.BackFuncId("fma1")),
+    Back.BackCmdFinalizeModule,
+})
+
+local intrinsic_artifact = jit:compile(intrinsic_program)
+local poprot_ptr = intrinsic_artifact:getpointer(Back.BackFuncId("poprot"))
+local poprot = ffi.cast("uint32_t (*)(uint32_t)", poprot_ptr)
+assert(poprot(0xF0) == 8)
+
+local fma_ptr = intrinsic_artifact:getpointer(Back.BackFuncId("fma1"))
+local fma1 = ffi.cast("float (*)(float, float, float)", fma_ptr)
+assert(tonumber(fma1(2, 3, 4)) == 10)
+intrinsic_artifact:free()
+
 jit:free()
 
 print("moonlift rust ffi ok")

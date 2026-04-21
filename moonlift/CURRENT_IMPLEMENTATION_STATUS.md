@@ -83,7 +83,7 @@ And the current implementation already contains a real middle/back-end path for 
 - complete multi-module namespace/import/qualified-path integration
 - type / layout synthesis from authored top-level code
 - full slice/view lowering model
-- intrinsic lowering
+- authored/frontend intrinsic syntax and binding production
 - fuller const evaluation
 - fuller aggregate / non-scalar ABI support
 - quote/open-code layer (`Meta`) from the design docs
@@ -528,9 +528,9 @@ So named aggregate support currently exists only in a manual-context sense.
 
 ---
 
-## 5.11 Intrinsics are not implemented end-to-end
+## 5.11 Intrinsics are implemented in `Sem -> Back` and the Rust backend, but not surfaced at the frontend
 
-The ASDL already contains a substantial `SemIntrinsic` family:
+The ASDL contains this `SemIntrinsic` family:
 
 - `SemPopcount`
 - `SemClz`
@@ -548,16 +548,42 @@ The ASDL already contains a substantial `SemIntrinsic` family:
 - `SemTrap`
 - `SemAssume`
 
-But current status is:
+Current backend status:
 
-### Missing at frontend
-There is no current Surface/Elab frontend for intrinsic syntax or intrinsic binding production.
+### Implemented in `Sem -> Back`
+`SemExprIntrinsicCall` now lowers in value position for scalar-result intrinsics and in materialization position where that is meaningful.
 
-### Missing in `Sem -> Back`
-`SemExprIntrinsicCall` is not actually lowered to `BackCmd` value code.
-It explicitly errors in address/materialization lowering, and there is no real value-lowering case for it in `sem_to_back_expr`.
+Current intrinsic lowering is scalar-only and split as follows:
 
-So intrinsic support is currently **not implemented end-to-end**.
+- integer-like scalar intrinsics:
+  - `popcount`
+  - `clz`
+  - `ctz`
+  - `rotl`
+  - `rotr`
+  - `bswap`
+- float scalar intrinsics:
+  - `fma`
+  - `sqrt`
+  - `floor`
+  - `ceil`
+  - `trunc_float`
+  - `round`
+- scalar numeric intrinsic:
+  - `abs`
+    - integer-like or float scalar
+- control intrinsics:
+  - `trap`
+  - `assume`
+    - currently stmt-position / void-form control intrinsics in `Sem -> Back`
+
+### Implemented in the Rust backend / FFI replay path
+The backend command vocabulary and Rust Cranelift host now include lowering/replay for the intrinsic-backed `BackCmd` forms needed by the currently supported `SemIntrinsic` family.
+
+### Still missing at frontend
+There is still no current Surface/Elab frontend syntax or binding path producing `SemIntrinsic` from authored source.
+
+So intrinsic support is now real in the semantic/backend layers, but it is **not yet an authored frontend feature**.
 
 ---
 
@@ -592,11 +618,17 @@ Current `Sem -> Back` explicitly lacks full support for:
 - slice/view indexing
 - slice/view mem sizing in key cases
 - slice runtime copying
-- bounded-value `over` loops
-- `zip_eq` `over` loops
+- slice-valued bounded `over` loops
+- slice-valued `zip_eq` `over` loops
 - a complete explicit low-level slice/view representation and bounds model
 
-So slices/domains exist structurally in the IR but are not fully machine-lowered yet.
+What is now implemented in this area:
+
+- array-valued `SemDomainBoundedValue` lowering in `Sem -> Back`
+- array-valued `SemDomainZipEq` lowering in `Sem -> Back`
+- compile-time equal-length enforcement for array-valued `zip_eq`
+
+So slices/domains exist structurally in the IR, array-valued bounded/zip domains now lower, but the full slice/view-backed domain model is still not machine-lowered yet.
 
 ---
 
@@ -683,6 +715,10 @@ So references exist in the IR and now work for args, stored immutable locals, lo
 
 Current const-data lowering supports:
 
+Normative subset document:
+- `moonlift/CONSTANT_EXPRESSION_SUBSET.md`
+
+
 - scalar literal constants
 - bool literals
 - nil as zero-init
@@ -732,7 +768,7 @@ General value-level const evaluation still explicitly does not support several f
 - normal calls
 - `over bounded value` / `zip_eq` constant loops
 - store statements in constant blocks
-- a fully documented final const-expression subset
+- full multi-module/future-final const-expression coverage beyond the documented current subset
 - a complete multi-module const-reference story
 
 So constant evaluation is no longer literal-only, but it is still incomplete.

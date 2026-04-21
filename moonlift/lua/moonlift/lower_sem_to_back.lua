@@ -3331,8 +3331,14 @@ function M.Define(T)
             end
             return pvm.once(lower_scalar_expr_into_addr(self, addr, path, layout_env, break_block, break_args, continue_block, continue_args, one_scalar(expr_ty)))
         end,
-        [Sem.SemExprIntrinsicCall] = function()
-            error("sem_to_back_expr_into_addr: intrinsic calls are not yet supported")
+        [Sem.SemExprIntrinsicCall] = function(self, addr, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if self.ty == Sem.SemTVoid then
+                error("sem_to_back_expr_into_addr: void intrinsic calls have no materialization form")
+            end
+            if not one_type_is_scalar(self.ty) then
+                error("sem_to_back_expr_into_addr: non-scalar intrinsic results are not supported")
+            end
+            return pvm.once(lower_scalar_expr_into_addr(self, addr, path, layout_env, break_block, break_args, continue_block, continue_args, one_scalar(self.ty)))
         end,
         [Sem.SemExprCall] = function(self, addr, path, layout_env, break_block, break_args, continue_block, continue_args)
             if not one_type_is_scalar(self.ty) then
@@ -3492,6 +3498,297 @@ function M.Define(T)
         end
         return Back.BackExprPlan(cmds, dst, Back.BackBool)
     end
+
+    local intr_ops = {}
+
+    intr_ops.expect_arg_count = function(call, expected, context)
+        if #call.args ~= expected then
+            error("sem_to_back_intrinsic: " .. context .. " expects " .. expected .. " args, got " .. #call.args)
+        end
+    end
+
+    intr_ops.require_same_arg_type = function(call, index, expected_ty, context)
+        local arg_ty = one_sem_expr_type(call.args[index])
+        if arg_ty ~= expected_ty then
+            error("sem_to_back_intrinsic: " .. context .. " arg " .. index .. " must have type '" .. tostring(expected_ty) .. "'")
+        end
+    end
+
+    intr_ops.require_intlike_type = function(ty, context)
+        if not type_is_intlike(ty) then
+            error("sem_to_back_intrinsic: " .. context .. " requires an integer-like scalar type")
+        end
+    end
+
+    intr_ops.require_float_type = function(ty, context)
+        if not type_is_float(ty) then
+            error("sem_to_back_intrinsic: " .. context .. " requires a float scalar type")
+        end
+    end
+
+    intr_ops.require_numeric_abs_type = function(ty)
+        if not type_is_intlike(ty) and not type_is_float(ty) then
+            error("sem_to_back_intrinsic: abs requires an integer-like or float scalar type")
+        end
+    end
+
+    intr_ops.collect_args = function(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+        local cmds = {}
+        local values = {}
+        for i = 1, #call.args do
+            local arg = one_expr(call.args[i], path .. ".arg." .. i, layout_env, break_block, break_args, continue_block, continue_args)
+            append_expr_cmds(cmds, arg)
+            if expr_terminates(arg) then
+                return cmds, values, true
+            end
+            values[i] = arg.value
+        end
+        return cmds, values, false
+    end
+
+    intr_ops.lower_value = pvm.phase("sem_to_back_intrinsic_value", {
+        [Sem.SemPopcount] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "popcount")
+            intr_ops.require_intlike_type(call.ty, "popcount")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "popcount")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdPopcount(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemClz] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "clz")
+            intr_ops.require_intlike_type(call.ty, "clz")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "clz")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdClz(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemCtz] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "ctz")
+            intr_ops.require_intlike_type(call.ty, "ctz")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "ctz")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdCtz(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemRotl] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 2, "rotl")
+            intr_ops.require_intlike_type(call.ty, "rotl")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "rotl")
+            intr_ops.require_same_arg_type(call, 2, call.ty, "rotl")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdRotl(dst, ty, values[1], values[2])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemRotr] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 2, "rotr")
+            intr_ops.require_intlike_type(call.ty, "rotr")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "rotr")
+            intr_ops.require_same_arg_type(call, 2, call.ty, "rotr")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdRotr(dst, ty, values[1], values[2])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemBswap] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "bswap")
+            intr_ops.require_intlike_type(call.ty, "bswap")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "bswap")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdBswap(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemFma] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 3, "fma")
+            intr_ops.require_float_type(call.ty, "fma")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "fma")
+            intr_ops.require_same_arg_type(call, 2, call.ty, "fma")
+            intr_ops.require_same_arg_type(call, 3, call.ty, "fma")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdFma(dst, ty, values[1], values[2], values[3])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemSqrt] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "sqrt")
+            intr_ops.require_float_type(call.ty, "sqrt")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "sqrt")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdSqrt(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemAbs] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "abs")
+            intr_ops.require_numeric_abs_type(call.ty)
+            intr_ops.require_same_arg_type(call, 1, call.ty, "abs")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdAbs(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemFloor] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "floor")
+            intr_ops.require_float_type(call.ty, "floor")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "floor")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdFloor(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemCeil] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "ceil")
+            intr_ops.require_float_type(call.ty, "ceil")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "ceil")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdCeil(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemTruncFloat] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "trunc_float")
+            intr_ops.require_float_type(call.ty, "trunc_float")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "trunc_float")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdTruncFloat(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemRound] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "round")
+            intr_ops.require_float_type(call.ty, "round")
+            intr_ops.require_same_arg_type(call, 1, call.ty, "round")
+            local dst = Back.BackValId(path)
+            local ty = one_scalar(call.ty)
+            local cmds, values, terminated = intr_ops.collect_args(call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            if terminated then return pvm.once(terminated_expr(cmds)) end
+            cmds[#cmds + 1] = Back.BackCmdRound(dst, ty, values[1])
+            return pvm.once(Back.BackExprPlan(cmds, dst, ty))
+        end,
+        [Sem.SemTrap] = function()
+            error("sem_to_back_expr: trap has no value form; use stmt position")
+        end,
+        [Sem.SemAssume] = function()
+            error("sem_to_back_expr: assume has no value form; use stmt position")
+        end,
+    })
+
+    intr_ops.lower_stmt = pvm.phase("sem_to_back_intrinsic_stmt", {
+        [Sem.SemTrap] = function(_, call)
+            intr_ops.expect_arg_count(call, 0, "trap")
+            if call.ty ~= Sem.SemTVoid then
+                error("sem_to_back_stmt: trap intrinsic must currently use void type")
+            end
+            return pvm.once(Back.BackStmtPlan({ Back.BackCmdTrap }, Back.BackTerminates))
+        end,
+        [Sem.SemAssume] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            intr_ops.expect_arg_count(call, 1, "assume")
+            if call.ty ~= Sem.SemTVoid then
+                error("sem_to_back_stmt: assume intrinsic must currently use void type")
+            end
+            if one_sem_expr_type(call.args[1]) ~= Sem.SemTBool then
+                error("sem_to_back_stmt: assume intrinsic currently requires a bool argument")
+            end
+            local cond = one_expr(call.args[1], path .. ".arg.1", layout_env, break_block, break_args, continue_block, continue_args)
+            if expr_terminates(cond) then
+                return pvm.once(Back.BackStmtPlan(cond.cmds, Back.BackTerminates))
+            end
+            local ok_block = Back.BackBlockId(path .. ".ok.block")
+            local fail_block = Back.BackBlockId(path .. ".fail.block")
+            local cmds = {}
+            append_expr_cmds(cmds, cond)
+            cmds[#cmds + 1] = Back.BackCmdCreateBlock(ok_block)
+            cmds[#cmds + 1] = Back.BackCmdCreateBlock(fail_block)
+            cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, ok_block, {}, fail_block, {})
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(ok_block)
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(fail_block)
+            cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(fail_block)
+            cmds[#cmds + 1] = Back.BackCmdTrap
+            cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(ok_block)
+            return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
+        end,
+        [Sem.SemPopcount] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemClz] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemCtz] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemRotl] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemRotr] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemBswap] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemFma] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemSqrt] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemAbs] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemFloor] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemCeil] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemTruncFloat] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+        [Sem.SemRound] = function(_, call, path, layout_env, break_block, break_args, continue_block, continue_args)
+            local expr = pvm.one(intr_ops.lower_value(call.op, call, path, layout_env, break_block, break_args, continue_block, continue_args))
+            return pvm.once(Back.BackStmtPlan(expr.cmds, expr_to_stmt_flow(expr)))
+        end,
+    })
 
     lower_expr = pvm.phase("sem_to_back_expr", {
         [Sem.SemExprConstInt] = function(self, path)
@@ -3777,6 +4074,9 @@ function M.Define(T)
             cmds[#cmds + 1] = Back.BackCmdLoad(dst, ty, addr.value)
             return pvm.once(Back.BackExprPlan(cmds, dst, ty))
         end,
+        [Sem.SemExprIntrinsicCall] = function(self, path, layout_env, break_block, break_args, continue_block, continue_args)
+            return pvm.once(pvm.one(intr_ops.lower_value(self.op, self, path, layout_env, break_block, break_args, continue_block, continue_args)))
+        end,
         [Sem.SemExprAgg] = function()
             error("sem_to_back_expr: aggregate exprs have no direct value form in Sem->Back; use an address/materialization context")
         end,
@@ -3898,6 +4198,66 @@ function M.Define(T)
             error("sem_to_back_over_index_value: over-loop index binding must be a local value, not extern '" .. self.symbol .. "'")
         end,
     })
+
+    const_ops.over_array_count = function(value_ty, context)
+        local cls = getmetatable(value_ty) and getmetatable(value_ty).__class or nil
+        if cls == Sem.SemTArray then
+            return value_ty.count
+        end
+        if cls == Sem.SemTSlice then
+            error(context .. ": slice bounded domains are not yet supported; slice/view layout and bounds lowering must be made explicit first")
+        end
+        error(context .. ": bounded domains currently require array-valued inputs")
+    end
+
+    const_ops.over_zip_eq_array_count = function(values, context)
+        if #values == 0 then
+            return 0
+        end
+        local expected = nil
+        for i = 1, #values do
+            local count = const_ops.over_array_count(one_sem_expr_type(values[i]), context)
+            if expected == nil then
+                expected = count
+            elseif expected ~= count then
+                error(context .. ": zip_eq currently requires equal compile-time array lengths")
+            end
+        end
+        return expected or 0
+    end
+
+    const_ops.over_prefixed_stmt_plan = function(prefix, flow, plan)
+        local cmds = {}
+        append_expr_cmds(cmds, prefix)
+        if expr_terminates(prefix) then
+            return Back.BackStmtPlan(cmds, Back.BackTerminates)
+        end
+        copy_cmds(plan.cmds, cmds)
+        return Back.BackStmtPlan(cmds, plan.flow)
+    end
+
+    const_ops.over_prefixed_expr_plan = function(prefix, plan)
+        local cmds = {}
+        append_expr_cmds(cmds, prefix)
+        if expr_terminates(prefix) then
+            return terminated_expr(cmds)
+        end
+        copy_cmds(plan.cmds, cmds)
+        return Back.BackExprPlan(cmds, plan.value, plan.ty)
+    end
+
+    const_ops.over_prefixed_addr_plan = function(prefix, plan)
+        local cmds = {}
+        append_expr_cmds(cmds, prefix)
+        if expr_terminates(prefix) then
+            return terminated_addr(cmds)
+        end
+        append_addr_cmds(cmds, plan)
+        if addr_terminates(plan) then
+            return terminated_addr(cmds)
+        end
+        return addr_writes(cmds)
+    end
 
     local function build_over_stmt_plan(loop, path, start_plan, stop_plan, layout_env)
         local index_ty = loop.index_binding.ty
@@ -4088,11 +4448,41 @@ function M.Define(T)
         [Sem.SemDomainRange2] = function(self, loop, path, layout_env)
             return pvm.once(build_over_stmt_plan(loop, path, one_expr(self.start, path .. ".start", layout_env), one_expr(self.stop, path .. ".stop", layout_env), layout_env))
         end,
-        [Sem.SemDomainBoundedValue] = function()
-            error("sem_to_back_over_stmt_domain: bounded-value over loops are not yet supported; slice/aggregate length extraction needs an explicit low-level data-layout and bounds model")
+        [Sem.SemDomainBoundedValue] = function(self, loop, path, layout_env)
+            local probe = one_addr_of_expr(self.value, path .. ".bounded", layout_env)
+            local count = const_ops.over_array_count(one_sem_expr_type(self.value), "sem_to_back_over_stmt_domain")
+            local start = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty), "0"),
+            }, Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty))
+            local stop = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty), tostring(count)),
+            }, Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty))
+            return pvm.once(const_ops.over_prefixed_stmt_plan(probe, Back.BackFallsThrough, build_over_stmt_plan(loop, path, start, stop, layout_env)))
         end,
-        [Sem.SemDomainZipEq] = function()
-            error("sem_to_back_over_stmt_domain: zip-eq over loops are not yet supported; equal-length multi-domain traversal needs an explicit low-level bounds agreement model")
+        [Sem.SemDomainZipEq] = function(self, loop, path, layout_env)
+            local cmds = {}
+            local flow = Back.BackFallsThrough
+            for i = 1, #self.values do
+                local probe = one_addr_of_expr(self.values[i], path .. ".zip." .. i, layout_env)
+                append_expr_cmds(cmds, probe)
+                if expr_terminates(probe) then
+                    flow = Back.BackTerminates
+                    break
+                end
+            end
+            if flow == Back.BackTerminates then
+                return pvm.once(Back.BackStmtPlan(cmds, flow))
+            end
+            local count = const_ops.over_zip_eq_array_count(self.values, "sem_to_back_over_stmt_domain")
+            local start = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty), "0"),
+            }, Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty))
+            local stop = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty), tostring(count)),
+            }, Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty))
+            local plan = build_over_stmt_plan(loop, path, start, stop, layout_env)
+            copy_cmds(plan.cmds, cmds)
+            return pvm.once(Back.BackStmtPlan(cmds, plan.flow))
         end,
     })
 
@@ -4106,11 +4496,36 @@ function M.Define(T)
         [Sem.SemDomainRange2] = function(self, loop, path, layout_env)
             return pvm.once(build_over_expr_plan(loop, path, one_expr(self.start, path .. ".start", layout_env), one_expr(self.stop, path .. ".stop", layout_env), layout_env))
         end,
-        [Sem.SemDomainBoundedValue] = function()
-            error("sem_to_back_over_expr_domain: bounded-value over loops are not yet supported; slice/aggregate length extraction needs an explicit low-level data-layout and bounds model")
+        [Sem.SemDomainBoundedValue] = function(self, loop, path, layout_env)
+            local probe = one_addr_of_expr(self.value, path .. ".bounded", layout_env)
+            local count = const_ops.over_array_count(one_sem_expr_type(self.value), "sem_to_back_over_expr_domain")
+            local start = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty), "0"),
+            }, Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty))
+            local stop = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty), tostring(count)),
+            }, Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty))
+            return pvm.once(const_ops.over_prefixed_expr_plan(probe, build_over_expr_plan(loop, path, start, stop, layout_env)))
         end,
-        [Sem.SemDomainZipEq] = function()
-            error("sem_to_back_over_expr_domain: zip-eq over loops are not yet supported; equal-length multi-domain traversal needs an explicit low-level bounds agreement model")
+        [Sem.SemDomainZipEq] = function(self, loop, path, layout_env)
+            local cmds = {}
+            for i = 1, #self.values do
+                local probe = one_addr_of_expr(self.values[i], path .. ".zip." .. i, layout_env)
+                append_expr_cmds(cmds, probe)
+                if expr_terminates(probe) then
+                    return pvm.once(terminated_expr(cmds))
+                end
+            end
+            local count = const_ops.over_zip_eq_array_count(self.values, "sem_to_back_over_expr_domain")
+            local start = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty), "0"),
+            }, Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty))
+            local stop = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty), tostring(count)),
+            }, Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty))
+            local plan = build_over_expr_plan(loop, path, start, stop, layout_env)
+            copy_cmds(plan.cmds, cmds)
+            return pvm.once(Back.BackExprPlan(cmds, plan.value, plan.ty))
         end,
     })
 
@@ -4234,11 +4649,39 @@ function M.Define(T)
         [Sem.SemDomainRange2] = function(self, loop, addr, path, layout_env)
             return pvm.once(build_over_expr_into_addr(loop, addr, path, one_expr(self.start, path .. ".start", layout_env), one_expr(self.stop, path .. ".stop", layout_env), layout_env))
         end,
-        [Sem.SemDomainBoundedValue] = function()
-            error("sem_to_back_over_expr_into_addr_domain: bounded-value over loops are not yet supported; slice/aggregate length extraction needs an explicit low-level data-layout and bounds model")
+        [Sem.SemDomainBoundedValue] = function(self, loop, addr, path, layout_env)
+            local probe = one_addr_of_expr(self.value, path .. ".bounded", layout_env)
+            local count = const_ops.over_array_count(one_sem_expr_type(self.value), "sem_to_back_over_expr_into_addr_domain")
+            local start = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty), "0"),
+            }, Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty))
+            local stop = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty), tostring(count)),
+            }, Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty))
+            return pvm.once(const_ops.over_prefixed_addr_plan(probe, build_over_expr_into_addr(loop, addr, path, start, stop, layout_env)))
         end,
-        [Sem.SemDomainZipEq] = function()
-            error("sem_to_back_over_expr_into_addr_domain: zip-eq over loops are not yet supported; equal-length multi-domain traversal needs an explicit low-level bounds agreement model")
+        [Sem.SemDomainZipEq] = function(self, loop, addr, path, layout_env)
+            local cmds = {}
+            for i = 1, #self.values do
+                local probe = one_addr_of_expr(self.values[i], path .. ".zip." .. i, layout_env)
+                append_expr_cmds(cmds, probe)
+                if expr_terminates(probe) then
+                    return pvm.once(terminated_addr(cmds))
+                end
+            end
+            local count = const_ops.over_zip_eq_array_count(self.values, "sem_to_back_over_expr_into_addr_domain")
+            local start = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty), "0"),
+            }, Back.BackValId(path .. ".start"), one_scalar(loop.index_binding.ty))
+            local stop = Back.BackExprPlan({
+                Back.BackCmdConstInt(Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty), tostring(count)),
+            }, Back.BackValId(path .. ".stop"), one_scalar(loop.index_binding.ty))
+            local plan = build_over_expr_into_addr(loop, addr, path, start, stop, layout_env)
+            append_addr_cmds(cmds, plan)
+            if addr_terminates(plan) then
+                return pvm.once(terminated_addr(cmds))
+            end
+            return pvm.once(addr_writes(cmds))
         end,
     })
 
@@ -4525,7 +4968,9 @@ function M.Define(T)
         [Sem.SemExprIndexAddr] = expr_stmt_delegate(),
         [Sem.SemExprFieldAddr] = expr_stmt_delegate(),
         [Sem.SemExprLoad] = expr_stmt_delegate(),
-        [Sem.SemExprIntrinsicCall] = expr_stmt_delegate(),
+        [Sem.SemExprIntrinsicCall] = function(self, path, layout_env, break_block, break_args, continue_block, continue_args)
+            return pvm.once(pvm.one(intr_ops.lower_stmt(self.op, self, path, layout_env, break_block, break_args, continue_block, continue_args)))
+        end,
         [Sem.SemExprCall] = expr_stmt_delegate(),
         [Sem.SemExprAgg] = expr_stmt_delegate(),
         [Sem.SemExprArrayLit] = expr_stmt_delegate(),

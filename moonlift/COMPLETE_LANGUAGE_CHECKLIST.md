@@ -181,7 +181,7 @@ This depends on the intended reboot language surface.
 - [ ] finalize block-expression reachability/termination rules
 
 ## 3.8 Const system completion
-- [ ] define complete constant-expression subset
+- [x] define complete constant-expression subset
 - [x] implement unary const eval
 - [x] implement arithmetic const eval
 - [x] implement comparison const eval
@@ -189,7 +189,7 @@ This depends on the intended reboot language surface.
 - [x] implement select/if const eval if intended
 - [x] implement field/index projection const eval if intended
 - [x] implement aggregate/array const eval coherently
-- [ ] define whether calls/intrinsics can appear in const eval
+- [x] define whether calls/intrinsics can appear in const eval
 - [ ] support const references between sibling consts/modules in the general const-eval system if intended
 
 ## 3.9 Intrinsics completion
@@ -201,28 +201,28 @@ This depends on the intended reboot language surface.
 - [ ] map frontend intrinsic calls into `SemIntrinsic`
 
 ### Sem -> Back
-- [ ] implement `SemExprIntrinsicCall` lowering in value position
-- [ ] implement `SemExprIntrinsicCall` lowering in materialization position where meaningful
-- [ ] define which intrinsics are scalar-only vs aggregate/vector-only
+- [x] implement `SemExprIntrinsicCall` lowering in value position
+- [x] implement `SemExprIntrinsicCall` lowering in materialization position where meaningful
+- [x] define which intrinsics are scalar-only vs aggregate/vector-only
 
 ### Backend
-- [ ] map each `SemIntrinsic` to `BackCmd` and/or direct backend lowering strategy
-- [ ] implement/populate support for:
-  - [ ] `popcount`
-  - [ ] `clz`
-  - [ ] `ctz`
-  - [ ] `rotl`
-  - [ ] `rotr`
-  - [ ] `bswap`
-  - [ ] `fma`
-  - [ ] `sqrt`
-  - [ ] `abs`
-  - [ ] `floor`
-  - [ ] `ceil`
-  - [ ] `trunc_float`
-  - [ ] `round`
-  - [ ] `trap`
-  - [ ] `assume`
+- [x] map each `SemIntrinsic` to `BackCmd` and/or direct backend lowering strategy
+- [x] implement/populate support for:
+  - [x] `popcount`
+  - [x] `clz`
+  - [x] `ctz`
+  - [x] `rotl`
+  - [x] `rotr`
+  - [x] `bswap`
+  - [x] `fma`
+  - [x] `sqrt`
+  - [x] `abs`
+  - [x] `floor`
+  - [x] `ceil`
+  - [x] `trunc_float`
+  - [x] `round`
+  - [x] `trap`
+  - [x] `assume`
 
 ## 3.10 Aggregate/value-model completion
 - [ ] finalize named aggregate representation strategy in the reboot
@@ -256,7 +256,7 @@ Goal:
 - [ ] implement full slice/view lowering model
 - [ ] implement bounded-value domain lowering
 - [ ] implement `zip_eq` lowering
-- [ ] implement intrinsic lowering
+- [x] implement intrinsic lowering
 - [ ] complete non-scalar load lowering where intended
 - [ ] complete non-scalar call result lowering where intended
 - [ ] complete non-scalar loop expr lowering where intended

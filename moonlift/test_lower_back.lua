@@ -134,6 +134,142 @@ assert(bool_or == Back.BackExprPlan({
     Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.or.join.block")),
 }, Back.BackValId("expr.or"), Back.BackBool))
 
+local popcount_expr = one_expr(
+    Sem.SemExprIntrinsicCall(
+        Sem.SemPopcount,
+        Sem.SemTU32,
+        { Sem.SemExprConstInt(Sem.SemTU32, "240") }
+    ),
+    "expr.popcount"
+)
+assert(popcount_expr == Back.BackExprPlan({
+    Back.BackCmdConstInt(Back.BackValId("expr.popcount.arg.1"), Back.BackU32, "240"),
+    Back.BackCmdPopcount(Back.BackValId("expr.popcount"), Back.BackU32, Back.BackValId("expr.popcount.arg.1")),
+}, Back.BackValId("expr.popcount"), Back.BackU32))
+
+local rotl_expr = one_expr(
+    Sem.SemExprIntrinsicCall(
+        Sem.SemRotl,
+        Sem.SemTU32,
+        {
+            Sem.SemExprConstInt(Sem.SemTU32, "1"),
+            Sem.SemExprConstInt(Sem.SemTU32, "4"),
+        }
+    ),
+    "expr.rotl"
+)
+assert(rotl_expr == Back.BackExprPlan({
+    Back.BackCmdConstInt(Back.BackValId("expr.rotl.arg.1"), Back.BackU32, "1"),
+    Back.BackCmdConstInt(Back.BackValId("expr.rotl.arg.2"), Back.BackU32, "4"),
+    Back.BackCmdRotl(Back.BackValId("expr.rotl"), Back.BackU32, Back.BackValId("expr.rotl.arg.1"), Back.BackValId("expr.rotl.arg.2")),
+}, Back.BackValId("expr.rotl"), Back.BackU32))
+
+local fma_expr = one_expr(
+    Sem.SemExprIntrinsicCall(
+        Sem.SemFma,
+        Sem.SemTF32,
+        {
+            Sem.SemExprConstFloat(Sem.SemTF32, "2"),
+            Sem.SemExprConstFloat(Sem.SemTF32, "3"),
+            Sem.SemExprConstFloat(Sem.SemTF32, "4"),
+        }
+    ),
+    "expr.fma"
+)
+assert(fma_expr == Back.BackExprPlan({
+    Back.BackCmdConstFloat(Back.BackValId("expr.fma.arg.1"), Back.BackF32, "2"),
+    Back.BackCmdConstFloat(Back.BackValId("expr.fma.arg.2"), Back.BackF32, "3"),
+    Back.BackCmdConstFloat(Back.BackValId("expr.fma.arg.3"), Back.BackF32, "4"),
+    Back.BackCmdFma(Back.BackValId("expr.fma"), Back.BackF32, Back.BackValId("expr.fma.arg.1"), Back.BackValId("expr.fma.arg.2"), Back.BackValId("expr.fma.arg.3")),
+}, Back.BackValId("expr.fma"), Back.BackF32))
+
+local bounded_over_expr = one_expr(
+    Sem.SemExprLoop(
+        Sem.SemLoopOverExpr(
+            Sem.SemBindLocalStoredValue("bounded.i", "i", Sem.SemTIndex),
+            Sem.SemDomainBoundedValue(
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("bounded.arr", "arr", Sem.SemTArray(Sem.SemTI32, 4)))
+            ),
+            {
+                Sem.SemLoopBinding("bounded.acc", "acc", Sem.SemTIndex, Sem.SemExprConstInt(Sem.SemTIndex, "0")),
+            },
+            {},
+            {
+                Sem.SemLoopNext(
+                    Sem.SemBindLocalStoredValue("bounded.acc", "acc", Sem.SemTIndex),
+                    Sem.SemExprAdd(
+                        Sem.SemTIndex,
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("bounded.acc", "acc", Sem.SemTIndex)),
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("bounded.i", "i", Sem.SemTIndex))
+                    )
+                ),
+            },
+            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("bounded.acc", "acc", Sem.SemTIndex))
+        ),
+        Sem.SemTIndex
+    ),
+    "expr.bound"
+)
+assert(contains_cmd(bounded_over_expr, Back.BackCmdStackAddr(Back.BackValId("expr.bound.bounded"), Back.BackStackSlotId("slot:local:bounded.arr"))))
+assert(contains_cmd(bounded_over_expr, Back.BackCmdConstInt(Back.BackValId("expr.bound.stop"), Back.BackIndex, "4")))
+
+local zip_eq_over_expr = one_expr(
+    Sem.SemExprLoop(
+        Sem.SemLoopOverExpr(
+            Sem.SemBindLocalStoredValue("zip.i", "i", Sem.SemTIndex),
+            Sem.SemDomainZipEq({
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("zip.a", "a", Sem.SemTArray(Sem.SemTI32, 3))),
+                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("zip.b", "b", Sem.SemTArray(Sem.SemTI32, 3))),
+            }),
+            {
+                Sem.SemLoopBinding("zip.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+            },
+            {},
+            {
+                Sem.SemLoopNext(
+                    Sem.SemBindLocalStoredValue("zip.acc", "acc", Sem.SemTI32),
+                    Sem.SemExprAdd(
+                        Sem.SemTI32,
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("zip.acc", "acc", Sem.SemTI32)),
+                        Sem.SemExprConstInt(Sem.SemTI32, "1")
+                    )
+                ),
+            },
+            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("zip.acc", "acc", Sem.SemTI32))
+        ),
+        Sem.SemTI32
+    ),
+    "expr.zip"
+)
+assert(contains_cmd(zip_eq_over_expr, Back.BackCmdStackAddr(Back.BackValId("expr.zip.zip.1"), Back.BackStackSlotId("slot:local:zip.a"))))
+assert(contains_cmd(zip_eq_over_expr, Back.BackCmdStackAddr(Back.BackValId("expr.zip.zip.2"), Back.BackStackSlotId("slot:local:zip.b"))))
+assert(contains_cmd(zip_eq_over_expr, Back.BackCmdConstInt(Back.BackValId("expr.zip.stop"), Back.BackIndex, "3")))
+
+local assume_stmt = one_stmt(
+    Sem.SemStmtExpr(Sem.SemExprIntrinsicCall(
+        Sem.SemAssume,
+        Sem.SemTVoid,
+        { Sem.SemExprBinding(Sem.SemBindArg(0, "ok", Sem.SemTBool)) }
+    )),
+    "stmt.assume"
+)
+assert(assume_stmt == Back.BackStmtPlan({
+    Back.BackCmdCreateBlock(Back.BackBlockId("stmt.assume.expr.ok.block")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("stmt.assume.expr.fail.block")),
+    Back.BackCmdBrIf(Back.BackValId("arg:0:ok"), Back.BackBlockId("stmt.assume.expr.ok.block"), {}, Back.BackBlockId("stmt.assume.expr.fail.block"), {}),
+    Back.BackCmdSealBlock(Back.BackBlockId("stmt.assume.expr.ok.block")),
+    Back.BackCmdSealBlock(Back.BackBlockId("stmt.assume.expr.fail.block")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("stmt.assume.expr.fail.block")),
+    Back.BackCmdTrap,
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("stmt.assume.expr.ok.block")),
+}, Back.BackFallsThrough))
+
+local trap_stmt = one_stmt(
+    Sem.SemStmtExpr(Sem.SemExprIntrinsicCall(Sem.SemTrap, Sem.SemTVoid, {})),
+    "stmt.trap"
+)
+assert(trap_stmt == Back.BackStmtPlan({ Back.BackCmdTrap }, Back.BackTerminates))
+
 local ref_cell = one_expr(
     Sem.SemExprRef(
         Sem.SemTPtrTo(Sem.SemTI32),

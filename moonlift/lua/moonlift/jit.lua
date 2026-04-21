@@ -46,6 +46,7 @@ int moonlift_program_cmd_const_bool(moonlift_program_t*, const char* dst, int va
 int moonlift_program_cmd_const_null(moonlift_program_t*, const char* dst);
 int moonlift_program_cmd_unary(moonlift_program_t*, uint32_t op, const char* dst, uint32_t ty, const char* value);
 int moonlift_program_cmd_binary(moonlift_program_t*, uint32_t op, const char* dst, uint32_t ty, const char* lhs, const char* rhs);
+int moonlift_program_cmd_ternary(moonlift_program_t*, uint32_t op, const char* dst, uint32_t ty, const char* a, const char* b, const char* c);
 int moonlift_program_cmd_cast(moonlift_program_t*, uint32_t op, const char* dst, uint32_t ty, const char* value);
 int moonlift_program_cmd_load(moonlift_program_t*, const char* dst, uint32_t ty, const char* addr);
 int moonlift_program_cmd_store(moonlift_program_t*, uint32_t ty, const char* addr, const char* value);
@@ -84,6 +85,16 @@ local UNARY = {
     FNEG = 2,
     BNOT = 3,
     BOOL_NOT = 4,
+    POPCOUNT = 5,
+    CLZ = 6,
+    CTZ = 7,
+    BSWAP = 8,
+    SQRT = 9,
+    ABS = 10,
+    FLOOR = 11,
+    CEIL = 12,
+    TRUNC_FLOAT = 13,
+    ROUND = 14,
 }
 
 local BINARY = {
@@ -121,6 +132,12 @@ local BINARY = {
     FCMPLE = 32,
     FCMPGT = 33,
     FCMPGE = 34,
+    ROTL = 35,
+    ROTR = 36,
+}
+
+local TERNARY = {
+    FMA = 1,
 }
 
 local CAST = {
@@ -219,6 +236,56 @@ local function u32_array(values)
     return arr
 end
 
+local function shell_quote(text)
+    return "'" .. tostring(text):gsub("'", [['"'"']]) .. "'"
+end
+
+local function run_command_capture(command)
+    local pipe, err = io.popen(command .. " 2>&1", "r")
+    if pipe == nil then
+        return nil, err or ("could not start command: " .. tostring(command))
+    end
+    local out = pipe:read("*a")
+    local ok, why, code = pipe:close()
+    if ok == nil or ok == false then
+        local suffix = why ~= nil and code ~= nil and (" (" .. tostring(why) .. " " .. tostring(code) .. ")") or ""
+        return nil, (out ~= "" and out or ("command failed: " .. tostring(command))) .. suffix
+    end
+    return out
+end
+
+local function host_objdump_machine(explicit_machine)
+    if explicit_machine ~= nil then
+        return explicit_machine
+    end
+    local arch, err = run_command_capture("uname -m")
+    if arch == nil then
+        error("moonlift.jit: could not detect host architecture for objdump: " .. tostring(err))
+    end
+    arch = arch:gsub("%s+$", "")
+    if arch == "x86_64" or arch == "amd64" then
+        return "i386:x86-64"
+    end
+    if arch == "aarch64" or arch == "arm64" then
+        return "aarch64"
+    end
+    error("moonlift.jit: unsupported host architecture for objdump utility: " .. tostring(arch))
+end
+
+local function format_hex_bytes(bytes, cols)
+    cols = cols or 16
+    local lines = {}
+    for i = 1, #bytes, cols do
+        local chunk = {}
+        local last = math.min(i + cols - 1, #bytes)
+        for j = i, last do
+            chunk[#chunk + 1] = string.format("%02x", bytes:byte(j))
+        end
+        lines[#lines + 1] = string.format("%04x: %s", i - 1, table.concat(chunk, " "))
+    end
+    return table.concat(lines, "\n")
+end
+
 function M.Define(T, opts)
     local Back = T.MoonliftBack
     local lib = load_library(opts and opts.libpath or nil)
@@ -292,6 +359,21 @@ function M.Define(T, opts)
                 one_scalar_code(self.ty),
                 cstring(id_text(self.value))
             ), "moonlift ffi cast")
+            return pvm.once(true)
+        end
+    end
+
+    local function handler_ternary(op)
+        return function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_ternary(
+                program,
+                op,
+                cstring(id_text(self.dst)),
+                one_scalar_code(self.ty),
+                cstring(id_text(self.a)),
+                cstring(id_text(self.b)),
+                cstring(id_text(self.c))
+            ), "moonlift ffi ternary")
             return pvm.once(true)
         end
     end
@@ -414,6 +496,46 @@ function M.Define(T, opts)
             check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.BOOL_NOT, cstring(id_text(self.dst)), SCALAR.BOOL, cstring(id_text(self.value))), "moonlift ffi bool_not")
             return pvm.once(true)
         end,
+        [Back.BackCmdPopcount] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.POPCOUNT, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi popcount")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdClz] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.CLZ, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi clz")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdCtz] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.CTZ, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi ctz")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdBswap] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.BSWAP, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi bswap")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdSqrt] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.SQRT, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi sqrt")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdAbs] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.ABS, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi abs")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdFloor] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.FLOOR, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi floor")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdCeil] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.CEIL, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi ceil")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdTruncFloat] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.TRUNC_FLOAT, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi trunc_float")
+            return pvm.once(true)
+        end,
+        [Back.BackCmdRound] = function(self, program)
+            check_ok(lib, lib.moonlift_program_cmd_unary(program, UNARY.ROUND, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.value))), "moonlift ffi round")
+            return pvm.once(true)
+        end,
         [Back.BackCmdLoad] = function(self, program)
             check_ok(lib, lib.moonlift_program_cmd_load(program, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.addr))), "moonlift ffi load")
             return pvm.once(true)
@@ -426,6 +548,7 @@ function M.Define(T, opts)
             check_ok(lib, lib.moonlift_program_cmd_select(program, cstring(id_text(self.dst)), one_scalar_code(self.ty), cstring(id_text(self.cond)), cstring(id_text(self.then_value)), cstring(id_text(self.else_value))), "moonlift ffi select")
             return pvm.once(true)
         end,
+        [Back.BackCmdFma] = handler_ternary(TERNARY.FMA),
         [Back.BackCmdCallValueDirect] = function(self, program)
             local args = id_texts(self.args)
             local arr, keep = cstring_array(args)
@@ -517,6 +640,8 @@ function M.Define(T, opts)
         [Back.BackCmdIshl] = BINARY.ISHL,
         [Back.BackCmdUshr] = BINARY.USHR,
         [Back.BackCmdSshr] = BINARY.SSHR,
+        [Back.BackCmdRotl] = BINARY.ROTL,
+        [Back.BackCmdRotr] = BINARY.ROTR,
         [Back.BackCmdIcmpEq] = BINARY.ICMPEQ,
         [Back.BackCmdIcmpNe] = BINARY.ICMPNE,
         [Back.BackCmdSIcmpLt] = BINARY.SICMPLT,
@@ -566,6 +691,55 @@ function M.Define(T, opts)
         return check_ptr(lib, lib.moonlift_artifact_getpointer(self._raw, cstring(text)), "moonlift ffi artifact:getpointer")
     end
 
+    function Artifact:getbytes(func, size)
+        local n = tonumber(size or 128)
+        if n == nil or n < 1 then
+            error("moonlift ffi artifact:getbytes expects a positive byte count")
+        end
+        local ptr = self:getpointer(func)
+        return ffi.string(ffi.cast("const char*", ptr), n)
+    end
+
+    function Artifact:hexbytes(func, size, cols)
+        return format_hex_bytes(self:getbytes(func, size), cols)
+    end
+
+    function Artifact:writebytes(func, path, size)
+        local out = assert(io.open(path, "wb"))
+        out:write(self:getbytes(func, size))
+        out:close()
+        return path
+    end
+
+    function Artifact:disasm(func, opts)
+        opts = opts or {}
+        local bytes = tonumber(opts.bytes or 128)
+        if bytes == nil or bytes < 1 then
+            error("moonlift ffi artifact:disasm expects opts.bytes >= 1")
+        end
+        local path = opts.path or (os.tmpname() .. ".bin")
+        self:writebytes(func, path, bytes)
+        local machine = host_objdump_machine(opts.machine)
+        local disasm_flags = opts.flags or ""
+        local arch_flags = machine == "i386:x86-64" and "-Mintel " or ""
+        local command = string.format(
+            "%s -D %s-b binary -m %s %s %s",
+            opts.objdump or "objdump",
+            arch_flags,
+            shell_quote(machine),
+            disasm_flags,
+            shell_quote(path)
+        )
+        local out, err = run_command_capture(command)
+        if not opts.keep then
+            os.remove(path)
+        end
+        if out == nil then
+            error("moonlift ffi artifact:disasm failed: " .. tostring(err))
+        end
+        return out, path
+    end
+
     function Artifact:free()
         if self._raw ~= nil and self._raw ~= ffi.NULL then
             lib.moonlift_artifact_free(self._raw)
@@ -594,6 +768,12 @@ function M.Define(T, opts)
         local raw_artifact = check_ptr(lib, lib.moonlift_jit_compile(self._raw, raw_program), "moonlift ffi jit:compile")
         lib.moonlift_program_free(raw_program)
         return setmetatable({ _raw = raw_artifact }, Artifact)
+    end
+
+    function Jit:peek(program, func, opts)
+        local artifact = self:compile(program)
+        local disasm, path = artifact:disasm(func, opts)
+        return artifact, disasm, path
     end
 
     function Jit:free()
