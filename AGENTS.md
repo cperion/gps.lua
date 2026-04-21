@@ -991,6 +991,18 @@ AppMode = Editing(EditState state) unique
 Phase handlers dispatch on the variant. Each variant carries its own state.
 Impossible to be in "editing" mode with preview state.
 
+hard rule
+
+ From now on:
+
+- no helper function that dispatches on an op enum/string if that op affects lowering shape
+- no “kind” checks in lowering logic when variants should exist
+- if pvm should dispatch, the ASDL must make it dispatchable
+
+NO SWITCH OR IF ELSE CHAIN DISPATCH ==> PROPER ASDL SUM TYPES + PROPER PHASES
+If you are tempted and see in the codebase switch dispatch, go back to the asdl to make that choice explicit there and write a proper pvm phase with pvm dispatch.
+This is very important to keep the code clarity and performance high.
+
 ---
 
 ## The Diagnostic Questions
