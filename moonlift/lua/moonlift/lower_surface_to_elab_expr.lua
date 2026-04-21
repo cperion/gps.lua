@@ -15,9 +15,10 @@ function M.Define(T)
     local call_sig
     local index_elem_type
     local field_type
+    local path_binding_matches
 
-    local function one_type(node)
-        return pvm.one(type_lower(node))
+    local function one_type(node, env)
+        return pvm.one(type_lower(node, env))
     end
 
     local function one_expr(node, env, expected_ty)
@@ -34,6 +35,42 @@ function M.Define(T)
         for i = #values, 1, -1 do
             local entry = values[i]
             if entry.name == name then
+                return entry.binding
+            end
+        end
+        return nil
+    end
+
+    local function collect_name_parts(path)
+        local parts = {}
+        local arr = path.parts
+        for i = 1, #arr do
+            parts[i] = arr[i].text
+        end
+        return parts
+    end
+
+    local function split_value_path(path)
+        local parts = collect_name_parts(path)
+        if #parts == 0 then
+            error("surface_to_elab_expr: empty value path")
+        end
+        local full_text = table.concat(parts, ".")
+        if #parts == 1 then
+            return full_text, "", parts[1]
+        end
+        local item_name = parts[#parts]
+        parts[#parts] = nil
+        return full_text, table.concat(parts, "."), item_name
+    end
+
+    local function find_path_binding(env, path)
+        local values = env and env.values or nil
+        if values == nil then return nil end
+        local full_text, module_name, item_name = split_value_path(path)
+        for i = #values, 1, -1 do
+            local entry = values[i]
+            if pvm.one(path_binding_matches(entry.binding, entry.name, full_text, module_name, item_name)) then
                 return entry.binding
             end
         end
@@ -142,11 +179,32 @@ function M.Define(T)
 
     local function cast_handler(ctor)
         return function(self, env)
-            local ty = one_type(self.ty)
+            local ty = one_type(self.ty, env)
             local value = one_expr(self.value, env, nil)
             return pvm.once(ctor(ty, value))
         end
     end
+
+    path_binding_matches = pvm.phase("surface_to_elab_path_binding_matches", {
+        [Elab.ElabLocalValue] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabLocalCell] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabArg] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabExtern] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabGlobal] = function(self, entry_name, full_text, module_name, item_name)
+            if entry_name == full_text then
+                return pvm.once(true)
+            end
+            return pvm.once(self.module_name == module_name and self.item_name == item_name)
+        end,
+    })
 
     call_sig = pvm.phase("surface_to_elab_call_sig", {
         [Elab.ElabTFunc] = function(self)
@@ -297,8 +355,13 @@ function M.Define(T)
             end
             return pvm.once(Elab.ElabBindingExpr(binding))
         end,
-        [Surf.SurfPathRef] = function()
-            error("surface_to_elab_expr: qualified path refs are not yet supported; use SurfNameRef for local bindings")
+        [Surf.SurfPathRef] = function(self, env)
+            local binding = find_path_binding(env, self.path)
+            if binding == nil then
+                local full_text = split_value_path(self.path)
+                error("surface_to_elab_expr: unknown qualified binding '" .. full_text .. "'")
+            end
+            return pvm.once(Elab.ElabBindingExpr(binding))
         end,
         [Surf.SurfExprNeg] = unary_same_type(Elab.ElabExprNeg),
         [Surf.SurfExprNot] = unary_same_type(Elab.ElabExprNot),
@@ -354,7 +417,7 @@ function M.Define(T)
             return pvm.once(Elab.ElabIndex(base, index, elem_ty))
         end,
         [Surf.SurfAgg] = function(self, env)
-            local ty = one_type(self.ty)
+            local ty = one_type(self.ty, env)
             local fields = {}
             for i = 1, #self.fields do
                 local field_init = self.fields[i]
@@ -363,7 +426,7 @@ function M.Define(T)
             return pvm.once(Elab.ElabAgg(ty, fields))
         end,
         [Surf.SurfArrayLit] = function(self, env)
-            local elem_ty = one_type(self.elem_ty)
+            local elem_ty = one_type(self.elem_ty, env)
             local elems = {}
             for i = 1, #self.elems do
                 elems[i] = one_expr(self.elems[i], env, elem_ty)

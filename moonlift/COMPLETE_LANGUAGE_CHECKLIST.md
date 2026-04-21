@@ -121,9 +121,9 @@ Surface -> Elab -> Sem -> Back -> Artifact
 - [x] support sibling extern references in module scope
 
 ### Type environments
-- [ ] actually wire `ElabEnv.types` into frontend type resolution
-- [ ] support named type lookup through the real env path
-- [ ] support module-qualified type lookup
+- [x] actually wire `ElabEnv.types` into frontend type resolution
+- [x] support named type lookup through the real env path
+- [x] support module-qualified type lookup
 
 ### Layout environments
 - [ ] define the current real source of layout information in the reboot
@@ -132,11 +132,11 @@ Surface -> Elab -> Sem -> Back -> Artifact
 - [ ] make field access and aggregate construction work without manual test-only env injection
 
 ## 3.3 Qualified name/path resolution
-- [ ] implement `SurfPathRef` value resolution
-- [ ] support module-qualified value references
-- [ ] support module-qualified function references
-- [ ] support module-qualified const references
-- [ ] support module-qualified type references
+- [x] implement `SurfPathRef` value resolution
+- [x] support module-qualified value references
+- [x] support module-qualified function references
+- [x] support module-qualified const references
+- [x] support module-qualified type references
 - [ ] define shadowing and lookup rules clearly
 
 ## 3.4 Type-system completion in current language shape

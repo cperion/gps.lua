@@ -27,8 +27,8 @@ function M.Define(T)
     local lower_item
     local lower_module
 
-    local function one_type(node)
-        return pvm.one(lower_type(node))
+    local function one_type(node, env)
+        return pvm.one(lower_type(node, env))
     end
 
     local function one_expr(node, env, expected_ty)
@@ -39,24 +39,24 @@ function M.Define(T)
         return pvm.one(lower_stmt(node, env, path))
     end
 
-    local function one_param(node)
-        return pvm.one(lower_param(node))
+    local function one_param(node, env)
+        return pvm.one(lower_param(node, env))
     end
 
-    local function one_param_entry(node, index)
-        return pvm.one(lower_param_entry(node, index))
+    local function one_param_entry(node, env, index)
+        return pvm.one(lower_param_entry(node, env, index))
     end
 
-    local function one_item_value_entry(node)
-        return pvm.one(lower_item_value_entry(node))
+    local function one_item_value_entry(node, env)
+        return pvm.one(lower_item_value_entry(node, env))
     end
 
     local function one_func(node, env)
         return pvm.one(lower_func(node, env))
     end
 
-    local function one_extern_func(node)
-        return pvm.one(lower_extern_func(node))
+    local function one_extern_func(node, env)
+        return pvm.one(lower_extern_func(node, env))
     end
 
     local function one_const(node, env)
@@ -88,37 +88,37 @@ function M.Define(T)
     end
 
     lower_param = pvm.phase("surface_to_elab_param", {
-        [Surf.SurfParam] = function(self)
-            return pvm.once(Elab.ElabParam(self.name, one_type(self.ty)))
+        [Surf.SurfParam] = function(self, env)
+            return pvm.once(Elab.ElabParam(self.name, one_type(self.ty, env)))
         end,
     })
 
     lower_param_entry = pvm.phase("surface_to_elab_param_entry", {
-        [Surf.SurfParam] = function(self, index)
-            local ty = one_type(self.ty)
+        [Surf.SurfParam] = function(self, env, index)
+            local ty = one_type(self.ty, env)
             return pvm.once(Elab.ElabValueEntry(self.name, Elab.ElabArg(index, self.name, ty)))
         end,
     })
 
     lower_item_value_entry = pvm.phase("surface_to_elab_item_value_entry", {
-        [Surf.SurfItemFunc] = function(self)
+        [Surf.SurfItemFunc] = function(self, env)
             local params = {}
             for i = 1, #self.func.params do
-                params[i] = one_type(self.func.params[i].ty)
+                params[i] = one_type(self.func.params[i].ty, env)
             end
-            local fn_ty = Elab.ElabTFunc(params, one_type(self.func.result))
+            local fn_ty = Elab.ElabTFunc(params, one_type(self.func.result, env))
             return pvm.once(Elab.ElabValueEntry(self.func.name, Elab.ElabGlobal("", self.func.name, fn_ty)))
         end,
-        [Surf.SurfItemExtern] = function(self)
+        [Surf.SurfItemExtern] = function(self, env)
             local params = {}
             for i = 1, #self.func.params do
-                params[i] = one_type(self.func.params[i].ty)
+                params[i] = one_type(self.func.params[i].ty, env)
             end
-            local fn_ty = Elab.ElabTFunc(params, one_type(self.func.result))
+            local fn_ty = Elab.ElabTFunc(params, one_type(self.func.result, env))
             return pvm.once(Elab.ElabValueEntry(self.func.name, Elab.ElabExtern(self.func.symbol, fn_ty)))
         end,
-        [Surf.SurfItemConst] = function(self)
-            return pvm.once(Elab.ElabValueEntry(self.c.name, Elab.ElabGlobal("", self.c.name, one_type(self.c.ty))))
+        [Surf.SurfItemConst] = function(self, env)
+            return pvm.once(Elab.ElabValueEntry(self.c.name, Elab.ElabGlobal("", self.c.name, one_type(self.c.ty, env))))
         end,
     })
 
@@ -128,8 +128,8 @@ function M.Define(T)
             local params = {}
             local param_entries = {}
             for i = 1, #self.params do
-                params[i] = one_param(self.params[i])
-                param_entries[i] = one_param_entry(self.params[i], i - 1)
+                params[i] = one_param(self.params[i], module_env)
+                param_entries[i] = one_param_entry(self.params[i], module_env, i - 1)
             end
             local body_env = extend_env_values(module_env, param_entries)
             local body = {}
@@ -140,23 +140,23 @@ function M.Define(T)
                 local effect = pvm.one(api.stmt_env_effect(stmt))
                 current_env = pvm.one(api.apply_stmt_env_effect(effect, current_env))
             end
-            return pvm.once(Elab.ElabFunc(self.name, params, one_type(self.result), body))
+            return pvm.once(Elab.ElabFunc(self.name, params, one_type(self.result, module_env), body))
         end,
     })
 
     lower_extern_func = pvm.phase("surface_to_elab_extern_func", {
-        [Surf.SurfExternFunc] = function(self)
+        [Surf.SurfExternFunc] = function(self, env)
             local params = {}
             for i = 1, #self.params do
-                params[i] = one_param(self.params[i])
+                params[i] = one_param(self.params[i], ensure_env(env))
             end
-            return pvm.once(Elab.ElabExternFunc(self.name, self.symbol, params, one_type(self.result)))
+            return pvm.once(Elab.ElabExternFunc(self.name, self.symbol, params, one_type(self.result, ensure_env(env))))
         end,
     })
 
     lower_const = pvm.phase("surface_to_elab_const", {
         [Surf.SurfConst] = function(self, env)
-            local ty = one_type(self.ty)
+            local ty = one_type(self.ty, ensure_env(env))
             return pvm.once(Elab.ElabConst(self.name, ty, one_expr(self.value, ensure_env(env), ty)))
         end,
     })
@@ -165,8 +165,8 @@ function M.Define(T)
         [Surf.SurfItemFunc] = function(self, env)
             return pvm.once(Elab.ElabItemFunc(one_func(self.func, env)))
         end,
-        [Surf.SurfItemExtern] = function(self)
-            return pvm.once(Elab.ElabItemExtern(one_extern_func(self.func)))
+        [Surf.SurfItemExtern] = function(self, env)
+            return pvm.once(Elab.ElabItemExtern(one_extern_func(self.func, env)))
         end,
         [Surf.SurfItemConst] = function(self, env)
             return pvm.once(Elab.ElabItemConst(one_const(self.c, env)))
@@ -178,7 +178,7 @@ function M.Define(T)
             local module_env = ensure_env(env)
             local item_entries = {}
             for i = 1, #self.items do
-                item_entries[i] = one_item_value_entry(self.items[i])
+                item_entries[i] = one_item_value_entry(self.items[i], module_env)
             end
             local lowered_env = extend_env_values(module_env, item_entries)
             local items = {}

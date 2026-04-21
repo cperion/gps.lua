@@ -72,6 +72,7 @@ And the current implementation already contains a real middle/back-end path for 
 - top-level `Elab -> Sem` lowering for params/funcs/externs/consts/items/modules
 - function-arg env synthesis from params
 - sibling-item value env synthesis for funcs/consts/externs
+- env-based named-type resolution through `ElabEnv.types`
 - semantic layout resolution pass
 - large `Sem -> Back` lowering
 - `BackCmd` FFI replay
@@ -79,7 +80,7 @@ And the current implementation already contains a real middle/back-end path for 
 
 ### Still missing to make the language fully working as an authored language
 - parser / text frontend in the rebooted codebase
-- qualified path/module reference lowering
+- complete multi-module namespace/import/qualified-path integration
 - type / layout synthesis from authored top-level code
 - full slice/view lowering model
 - intrinsic lowering
@@ -408,30 +409,35 @@ Current authored `Surface -> Elab` now automatically builds real value environme
 - function argument env construction
 - module/global value env construction for sibling items
 - sibling function/const/extern name resolution
+- env-based qualified value path resolution through `SurfPathRef`
 
 Still missing authored infrastructure includes:
 
 - type env construction
 - layout env construction from authored top-level declarations
-- qualified/module path resolution through `SurfPathRef`
 - a complete multi-module namespace/import story
+- clearer shadowing/lookup rules for competing qualified vs local names
 
 ---
 
-## 5.5 Qualified path references are not implemented
+## 5.5 Qualified path references are now partially implemented
 
-`SurfPathRef` exists in the ASDL, but current lowering explicitly errors on it.
+`SurfPathRef` now lowers through the real frontend for value references.
+It can resolve:
 
-So missing:
-- qualified path value references
-- namespace/module-qualified refs
-- proper global item path resolution
+- env-provided qualified value references
+- module-qualified global function refs through `ElabGlobal(module_name, item_name, ...)`
+- module-qualified global const refs through `ElabGlobal(module_name, item_name, ...)`
 
-This blocks real module authoring.
+Still missing:
+- a complete multi-module authored module/import system that synthesizes those env entries automatically
+- explicit shadowing/precedence rules for qualified vs local lookup
+
+So qualified value refs are no longer a total blocker, but real authored module systems are still incomplete.
 
 ---
 
-## 5.6 `ElabEnv.types` is effectively unused in the current frontend
+## 5.6 `ElabEnv.types` is now wired into named-type resolution, but type env synthesis is still missing
 
 `ElabEnv` contains:
 
@@ -439,14 +445,11 @@ This blocks real module authoring.
 - `types`
 - `layouts`
 
-But the current frontend mostly uses:
+The current frontend now uses `types` for real `SurfTNamed` lowering.
+Named type paths must resolve through explicit `ElabEnv.types` entries, with no lexical fallback.
+This includes module-qualified type lookup when the env carries entries like `"Foo.Bar"`.
 
-- `values`
-- `layouts`
-
-The `types` side is not meaningfully wired into real type-name resolution yet.
-
-So type namespaces/imports are still incomplete.
+What is still missing is authored infrastructure for automatically constructing those type envs from source modules/imports.
 
 ---
 
@@ -772,7 +775,7 @@ This distinction still matters.
 ### Still missing today
 - authored type-definition items
 - authored layout-definition items
-- qualified/module path references
+- automatic multi-module import/qualified-path env synthesis
 - a visibility/export distinction for authored functions
 
 ---
@@ -848,7 +851,7 @@ That is a real compiler middle and backend.
 The biggest missing authored-language area is now:
 
 - parser/text frontend
-- qualified module/path resolution
+- multi-module namespace/import integration
 - authored type/layout declarations and synthesis
 
 Without those, the language still does not yet exist as a complete authored system, even though the closed value-item lowering path is now real.
@@ -879,14 +882,14 @@ And the richer future host/parser integration strategy described in:
 
 If compressed to one sentence:
 
-> Moonlift already has a real local frontend core, real top-level value-item lowering through `Surface -> Elab -> Sem`, a layout-resolution pass, and a substantial backend, but it still lacks a complete authored language front door: **parser/text input, qualified paths, authored type/layout synthesis, slices/views, intrinsics, const eval, and fuller non-scalar ABI/value support**.
+> Moonlift already has a real local frontend core, real top-level value-item lowering through `Surface -> Elab -> Sem`, basic env-based qualified value refs, a layout-resolution pass, and a substantial backend, but it still lacks a complete authored language front door: **parser/text input, multi-module namespace/import integration, authored type/layout synthesis, slices/views, intrinsics, const eval, and fuller non-scalar ABI/value support**.
 
 And if compressed even further:
 
 - **expr/stmt/loop core:** real
 - **top-level value-item frontend:** real
 - **scalar backend:** real
-- **authored type/layout + qualified-path frontend:** still incomplete
+- **authored type/layout + multi-module namespace frontend:** still incomplete
 - **slice/intrinsic/parser/meta path:** not done
 
 ---

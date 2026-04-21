@@ -18,7 +18,11 @@ local env = Elab.ElabEnv({
     Elab.ElabValueEntry("sum", Elab.ElabGlobal("", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
     Elab.ElabValueEntry("ptr", Elab.ElabLocalValue("env.ptr", "ptr", Elab.ElabTPtr(Elab.ElabTF32))),
     Elab.ElabValueEntry("pair", Elab.ElabLocalValue("env.pair", "pair", Elab.ElabTNamed("Demo", "Pair"))),
-}, {}, {
+    Elab.ElabValueEntry("Demo.sum", Elab.ElabGlobal("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
+    Elab.ElabValueEntry("Demo.K", Elab.ElabGlobal("Demo", "K", Elab.ElabTI32)),
+}, {
+    Elab.ElabTypeEntry("Demo.Pair", Elab.ElabTNamed("Demo", "Pair")),
+}, {
     Elab.ElabLayoutNamed("Demo", "Pair", {
         Elab.ElabFieldType("left", Elab.ElabTI32),
         Elab.ElabFieldType("right", Elab.ElabTI32),
@@ -78,6 +82,31 @@ assert(call == Elab.ElabCall(
     Elab.ElabBindingExpr(Elab.ElabGlobal("", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
     Elab.ElabTI32,
     { Elab.ElabInt("7", Elab.ElabTI32) }
+))
+
+local qualified_sum_ref = one(Surf.SurfPathRef(Surf.SurfPath({ Surf.SurfName("Demo"), Surf.SurfName("sum") })))
+assert(qualified_sum_ref == Elab.ElabBindingExpr(
+    Elab.ElabGlobal("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))
+))
+
+local qualified_call = one(Surf.SurfCall(
+    Surf.SurfPathRef(Surf.SurfPath({ Surf.SurfName("Demo"), Surf.SurfName("sum") })),
+    { Surf.SurfInt("8") }
+))
+assert(qualified_call == Elab.ElabCall(
+    Elab.ElabBindingExpr(Elab.ElabGlobal("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
+    Elab.ElabTI32,
+    { Elab.ElabInt("8", Elab.ElabTI32) }
+))
+
+local qualified_const = one(Surf.SurfExprAdd(
+    Surf.SurfPathRef(Surf.SurfPath({ Surf.SurfName("Demo"), Surf.SurfName("K") })),
+    Surf.SurfInt("1")
+))
+assert(qualified_const == Elab.ElabExprAdd(
+    Elab.ElabTI32,
+    Elab.ElabBindingExpr(Elab.ElabGlobal("Demo", "K", Elab.ElabTI32)),
+    Elab.ElabInt("1", Elab.ElabTI32)
 ))
 
 local index = one(Surf.SurfIndex(Surf.SurfNameRef("ptr"), Surf.SurfInt("1")))

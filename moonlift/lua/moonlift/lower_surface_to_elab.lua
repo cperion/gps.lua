@@ -19,16 +19,28 @@ function M.Define(T)
 
     local lower_type
 
-    local function one_type(node)
-        return pvm.one(lower_type(node))
+    local function one_type(node, env)
+        return pvm.one(lower_type(node, env))
     end
 
-    local function lower_type_list(nodes)
+    local function lower_type_list(nodes, env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_type(nodes[i])
+            out[i] = one_type(nodes[i], env)
         end
         return out
+    end
+
+    local function find_type_entry(env, full_text)
+        local types = env and env.types or nil
+        if types == nil then return nil end
+        for i = #types, 1, -1 do
+            local entry = types[i]
+            if entry.name == full_text then
+                return entry.ty
+            end
+        end
+        return nil
     end
 
     lower_type = pvm.phase("surface_to_elab_type", {
@@ -71,29 +83,29 @@ function M.Define(T)
         [Surf.SurfTIndex] = function()
             return pvm.once(Elab.ElabTIndex)
         end,
-        [Surf.SurfTPtr] = function(self)
-            return pvm.once(Elab.ElabTPtr(one_type(self.elem)))
+        [Surf.SurfTPtr] = function(self, env)
+            return pvm.once(Elab.ElabTPtr(one_type(self.elem, env)))
         end,
-        [Surf.SurfTSlice] = function(self)
-            return pvm.once(Elab.ElabTSlice(one_type(self.elem)))
+        [Surf.SurfTSlice] = function(self, env)
+            return pvm.once(Elab.ElabTSlice(one_type(self.elem, env)))
         end,
         [Surf.SurfTArray] = function(self)
             error("surface_to_elab_type: SurfTArray needs expression elaboration for count")
         end,
-        [Surf.SurfTFunc] = function(self)
-            return pvm.once(Elab.ElabTFunc(lower_type_list(self.params), one_type(self.result)))
+        [Surf.SurfTFunc] = function(self, env)
+            return pvm.once(Elab.ElabTFunc(lower_type_list(self.params, env), one_type(self.result, env)))
         end,
-        [Surf.SurfTNamed] = function(self)
+        [Surf.SurfTNamed] = function(self, env)
             local parts = collect_name_parts(self.path)
             if #parts == 0 then
                 error("surface_to_elab_type: empty named type path")
-            elseif #parts == 1 then
-                return pvm.once(Elab.ElabTNamed("", parts[1]))
-            else
-                local type_name = parts[#parts]
-                parts[#parts] = nil
-                return pvm.once(Elab.ElabTNamed(table.concat(parts, "."), type_name))
             end
+            local full_text = table.concat(parts, ".")
+            local ty = find_type_entry(env, full_text)
+            if ty == nil then
+                error("surface_to_elab_type: unknown named type '" .. full_text .. "'; provide it through ElabEnv.types")
+            end
+            return pvm.once(ty)
         end,
     })
 

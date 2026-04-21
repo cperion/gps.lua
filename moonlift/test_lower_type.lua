@@ -11,20 +11,25 @@ local L = Lower.Define(T)
 local Surf = T.MoonliftSurface
 local Elab = T.MoonliftElab
 
-local i32 = pvm.one(L.lower_type(Surf.SurfTI32))
+local env = Elab.ElabEnv({}, {
+    Elab.ElabTypeEntry("Foo.Bar", Elab.ElabTNamed("Foo", "Bar")),
+}, {})
+
+local i32 = pvm.one(L.lower_type(Surf.SurfTI32, env))
 assert(i32 == Elab.ElabTI32)
 
-local p_i32 = pvm.one(L.lower_type(Surf.SurfTPtr(Surf.SurfTI32)))
+local p_i32 = pvm.one(L.lower_type(Surf.SurfTPtr(Surf.SurfTI32), env))
 assert(p_i32 == Elab.ElabTPtr(Elab.ElabTI32))
 
-local s_f32 = pvm.one(L.lower_type(Surf.SurfTSlice(Surf.SurfTF32)))
+local s_f32 = pvm.one(L.lower_type(Surf.SurfTSlice(Surf.SurfTF32), env))
 assert(s_f32 == Elab.ElabTSlice(Elab.ElabTF32))
 
 local fn_ty = pvm.one(L.lower_type(
     Surf.SurfTFunc(
         { Surf.SurfTI32, Surf.SurfTPtr(Surf.SurfTU8) },
         Surf.SurfTVoid
-    )
+    ),
+    env
 ))
 assert(fn_ty == Elab.ElabTFunc(
     { Elab.ElabTI32, Elab.ElabTPtr(Elab.ElabTU8) },
@@ -34,7 +39,8 @@ assert(fn_ty == Elab.ElabTFunc(
 local named = pvm.one(L.lower_type(
     Surf.SurfTNamed(
         Surf.SurfPath({ Surf.SurfName("Foo"), Surf.SurfName("Bar") })
-    )
+    ),
+    env
 ))
 assert(named == Elab.ElabTNamed("Foo", "Bar"))
 

@@ -26,8 +26,8 @@ function M.Define(T)
     local apply_stmt_env_effect
     local set_target_binding
 
-    local function one_type(node)
-        return pvm.one(lower_type(node))
+    local function one_type(node, env)
+        return pvm.one(lower_type(node, env))
     end
 
     local function one_expr(node, env, expected_ty)
@@ -178,7 +178,7 @@ function M.Define(T)
 
     lower_loop_binding = pvm.phase("surface_to_elab_loop_binding", {
         [Surf.SurfLoopVarInit] = function(self, env, id)
-            local ty = one_type(self.ty)
+            local ty = one_type(self.ty, env)
             local init = one_expr(self.init, env, ty)
             return pvm.once(Elab.ElabLoopBinding(id, self.name, ty, init))
         end,
@@ -388,12 +388,12 @@ function M.Define(T)
             return pvm.once(Elab.ElabExprStmt(one_expr(self.expr, env, nil)))
         end,
         [Surf.SurfLet] = function(self, env, path)
-            local ty = one_type(self.ty)
+            local ty = one_type(self.ty, env)
             local id = path_or_implicit("let." .. self.name, self, path)
             return pvm.once(Elab.ElabLet(id, self.name, ty, one_expr(self.init, env, ty)))
         end,
         [Surf.SurfVar] = function(self, env, path)
-            local ty = one_type(self.ty)
+            local ty = one_type(self.ty, env)
             local id = path_or_implicit("var." .. self.name, self, path)
             return pvm.once(Elab.ElabVar(id, self.name, ty, one_expr(self.init, env, ty)))
         end,
@@ -413,7 +413,7 @@ function M.Define(T)
             return pvm.once(Elab.ElabSet(binding, one_expr(self.value, env, binding.ty)))
         end,
         [Surf.SurfStore] = function(self, env)
-            local ty = one_type(self.ty)
+            local ty = one_type(self.ty, env)
             return pvm.once(Elab.ElabStore(
                 ty,
                 one_expr(self.addr, env, Elab.ElabTPtr(ty)),
