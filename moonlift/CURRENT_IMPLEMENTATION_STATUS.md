@@ -697,6 +697,16 @@ Current const-data lowering supports:
   - bitwise binary ops and shifts
   - scalar casts / trunc / zext / sext / bitcast / saturating cast
   - pure `if` / `select`
+- constant `block` / `switch` expressions through explicit `SemConstLocalEnv`
+  and `SemConstStmtResult`
+- constant statement execution for the currently supported subset:
+  - `let`
+  - `var`
+  - `set`
+  - expr stmt
+  - `if`
+  - `switch`
+  - `assert`
 - aggregate field projection from constant aggregates
 - array index projection from constant arrays
 - recursive aggregate/array constant materialization through the evaluator
@@ -713,7 +723,8 @@ General value-level const evaluation still explicitly does not support several f
 - address-taking / dereference / loads
 - intrinsic calls
 - normal calls
-- block / switch / loop constant expressions
+- loop constant expressions
+- store statements in constant blocks
 - a fully documented final const-expression subset
 - a complete multi-module const-reference story
 

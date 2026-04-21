@@ -1340,6 +1340,124 @@ assert(contains_cmd(cast_const_module, Back.BackCmdDataInitFloat(Back.BackDataId
 assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SATU8"), 0, Back.BackU8, "255")))
 assert(contains_cmd(cast_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SATI8"), 0, Back.BackI8, "-128")))
 
+local block_switch_const_module = one_module(Sem.SemModule({
+    Sem.SemItemConst(Sem.SemConst(
+        "BLOCKLET",
+        Sem.SemTI32,
+        Sem.SemExprBlock({
+            Sem.SemStmtLet("blocklet.x", "x", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "40")),
+            Sem.SemStmtLet(
+                "blocklet.y",
+                "y",
+                Sem.SemTI32,
+                Sem.SemExprAdd(
+                    Sem.SemTI32,
+                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("blocklet.x", "x", Sem.SemTI32)),
+                    Sem.SemExprConstInt(Sem.SemTI32, "2")
+                )
+            ),
+        }, Sem.SemExprBinding(Sem.SemBindLocalStoredValue("blocklet.y", "y", Sem.SemTI32)), Sem.SemTI32)
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "BLOCKVAR",
+        Sem.SemTI32,
+        Sem.SemExprBlock({
+            Sem.SemStmtVar("blockvar.v", "v", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "1")),
+            Sem.SemStmtSet(
+                Sem.SemBindLocalCell("blockvar.v", "v", Sem.SemTI32),
+                Sem.SemExprAdd(
+                    Sem.SemTI32,
+                    Sem.SemExprBinding(Sem.SemBindLocalCell("blockvar.v", "v", Sem.SemTI32)),
+                    Sem.SemExprConstInt(Sem.SemTI32, "41")
+                )
+            ),
+        }, Sem.SemExprBinding(Sem.SemBindLocalCell("blockvar.v", "v", Sem.SemTI32)), Sem.SemTI32)
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "SWITCHEXPR",
+        Sem.SemTI32,
+        Sem.SemExprSwitch(
+            Sem.SemExprConstInt(Sem.SemTI32, "2"),
+            {
+                Sem.SemSwitchExprArm(
+                    Sem.SemExprConstInt(Sem.SemTI32, "1"),
+                    {},
+                    Sem.SemExprConstInt(Sem.SemTI32, "7")
+                ),
+                Sem.SemSwitchExprArm(
+                    Sem.SemExprConstInt(Sem.SemTI32, "2"),
+                    {
+                        Sem.SemStmtLet("switchexpr.k", "k", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "40")),
+                    },
+                    Sem.SemExprAdd(
+                        Sem.SemTI32,
+                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("switchexpr.k", "k", Sem.SemTI32)),
+                        Sem.SemExprConstInt(Sem.SemTI32, "2")
+                    )
+                ),
+            },
+            Sem.SemExprConstInt(Sem.SemTI32, "0"),
+            Sem.SemTI32
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "SWITCHSTMT",
+        Sem.SemTI32,
+        Sem.SemExprBlock({
+            Sem.SemStmtVar("switchstmt.s", "s", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+            Sem.SemStmtSwitch(
+                Sem.SemExprConstInt(Sem.SemTI32, "2"),
+                {
+                    Sem.SemSwitchStmtArm(
+                        Sem.SemExprConstInt(Sem.SemTI32, "1"),
+                        {
+                            Sem.SemStmtSet(Sem.SemBindLocalCell("switchstmt.s", "s", Sem.SemTI32), Sem.SemExprConstInt(Sem.SemTI32, "7")),
+                        }
+                    ),
+                    Sem.SemSwitchStmtArm(
+                        Sem.SemExprConstInt(Sem.SemTI32, "2"),
+                        {
+                            Sem.SemStmtSet(Sem.SemBindLocalCell("switchstmt.s", "s", Sem.SemTI32), Sem.SemExprConstInt(Sem.SemTI32, "42")),
+                        }
+                    ),
+                },
+                {
+                    Sem.SemStmtSet(Sem.SemBindLocalCell("switchstmt.s", "s", Sem.SemTI32), Sem.SemExprConstInt(Sem.SemTI32, "9")),
+                }
+            ),
+        }, Sem.SemExprBinding(Sem.SemBindLocalCell("switchstmt.s", "s", Sem.SemTI32)), Sem.SemTI32)
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "BLOCKIF",
+        Sem.SemTI32,
+        Sem.SemExprBlock({
+            Sem.SemStmtVar("blockif.v", "v", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+            Sem.SemStmtIf(
+                Sem.SemExprConstBool(true),
+                {
+                    Sem.SemStmtSet(Sem.SemBindLocalCell("blockif.v", "v", Sem.SemTI32), Sem.SemExprConstInt(Sem.SemTI32, "42")),
+                },
+                {
+                    Sem.SemStmtSet(Sem.SemBindLocalCell("blockif.v", "v", Sem.SemTI32), Sem.SemExprConstInt(Sem.SemTI32, "7")),
+                }
+            ),
+        }, Sem.SemExprBinding(Sem.SemBindLocalCell("blockif.v", "v", Sem.SemTI32)), Sem.SemTI32)
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "ASSERTOK",
+        Sem.SemTI32,
+        Sem.SemExprBlock({
+            Sem.SemStmtAssert(Sem.SemExprConstBool(true)),
+        }, Sem.SemExprConstInt(Sem.SemTI32, "42"), Sem.SemTI32)
+    )),
+}))
+assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:BLOCKLET"), 0, Back.BackI32, "42")))
+assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:BLOCKVAR"), 0, Back.BackI32, "42")))
+assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SWITCHEXPR"), 0, Back.BackI32, "42")))
+assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:SWITCHSTMT"), 0, Back.BackI32, "42")))
+assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:BLOCKIF"), 0, Back.BackI32, "42")))
+assert(contains_cmd(block_switch_const_module, Back.BackCmdDataInitInt(Back.BackDataId("data:const:ASSERTOK"), 0, Back.BackI32, "42")))
+
 local cycle_ok, cycle_err = pcall(function()
     return one_module(Sem.SemModule({
         Sem.SemItemConst(Sem.SemConst(

@@ -286,6 +286,13 @@ module MoonliftSem {
                   | SemConstArray(MoonliftSem.SemType elem_ty, MoonliftSem.SemConstValue* elems) unique
     SemConstEntry = (string module_name, string item_name, MoonliftSem.SemType ty, MoonliftSem.SemExpr value) unique
     SemConstEnv = (MoonliftSem.SemConstEntry* entries) unique
+    SemConstLocalEntry = (MoonliftSem.SemBinding binding, MoonliftSem.SemConstValue value) unique
+    SemConstLocalEnv = (MoonliftSem.SemConstLocalEntry* entries) unique
+    SemConstStmtResult = SemConstStmtFallsThrough(MoonliftSem.SemConstLocalEnv local_env) unique
+                       | SemConstStmtReturnVoid
+                       | SemConstStmtReturnValue(MoonliftSem.SemConstValue value) unique
+                       | SemConstStmtBreak
+                       | SemConstStmtContinue
 
     SemFieldInit = (string name, MoonliftSem.SemExpr value) unique
     SemSwitchStmtArm = (MoonliftSem.SemExpr key, MoonliftSem.SemStmt* body) unique
