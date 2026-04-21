@@ -277,6 +277,15 @@ module MoonliftSem {
     SemFieldLayout = (string field_name, number offset, MoonliftSem.SemType ty) unique
     SemTypeLayout = SemLayoutNamed(string module_name, string type_name, MoonliftSem.SemFieldLayout* fields, number size, number align) unique
     SemLayoutEnv = (MoonliftSem.SemTypeLayout* layouts) unique
+    SemConstFieldValue = (string name, MoonliftSem.SemConstValue value) unique
+    SemConstValue = SemConstInt(MoonliftSem.SemType ty, string raw) unique
+                  | SemConstFloat(MoonliftSem.SemType ty, string raw) unique
+                  | SemConstBool(boolean value) unique
+                  | SemConstNil(MoonliftSem.SemType ty) unique
+                  | SemConstAgg(MoonliftSem.SemType ty, MoonliftSem.SemConstFieldValue* fields) unique
+                  | SemConstArray(MoonliftSem.SemType elem_ty, MoonliftSem.SemConstValue* elems) unique
+    SemConstEntry = (string module_name, string item_name, MoonliftSem.SemType ty, MoonliftSem.SemExpr value) unique
+    SemConstEnv = (MoonliftSem.SemConstEntry* entries) unique
 
     SemFieldInit = (string name, MoonliftSem.SemExpr value) unique
     SemSwitchStmtArm = (MoonliftSem.SemExpr key, MoonliftSem.SemStmt* body) unique

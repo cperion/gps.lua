@@ -1,6 +1,12 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local pvm = require("pvm")
+local ffi = require("ffi")
+ffi.cdef[[
+int snprintf(char *str, size_t size, const char *format, ...);
+long long strtoll(const char *nptr, char **endptr, int base);
+unsigned long long strtoull(const char *nptr, char **endptr, int base);
+]]
 
 local M = {}
 
@@ -62,7 +68,10 @@ function M.Define(T)
     local lower_index_base_addr
     local lower_index_addr_from_base_type
     local lower_const_agg_init_from_type
+    local lower_const_agg_value_init_from_type
+    local lower_const_value_data_init
     local lower_const_data_init
+    local sem_const_eval
     local lower_agg_expr_into_addr_from_type
     local lower_copy_type_addr
     local lower_expr_into_addr
@@ -170,8 +179,16 @@ function M.Define(T)
         return pvm.one(lower_index_addr_from_base_type(node, base_expr, index_expr, elem_ty, path, layout_env, break_block, break_args, continue_block, continue_args))
     end
 
-    local function one_const_data_init(node, data_id, offset, layout_env)
-        return pvm.one(lower_const_data_init(node, data_id, offset, layout_env))
+    local function one_const_value_data_init(node, data_id, offset, layout_env)
+        return pvm.one(lower_const_value_data_init(node, data_id, offset, layout_env))
+    end
+
+    local function one_const_data_init(node, data_id, offset, layout_env, const_env, visiting)
+        return pvm.one(lower_const_data_init(node, data_id, offset, layout_env, const_env, visiting))
+    end
+
+    local function one_const_eval(node, const_env, visiting)
+        return pvm.one(sem_const_eval(node, const_env, visiting))
     end
 
     local function one_copy_type_addr(node, src_addr, dst_addr, path, layout_env)
@@ -186,12 +203,12 @@ function M.Define(T)
         return pvm.one(lower_func(node, layout_env))
     end
 
-    local function one_item(node, layout_env)
-        return pvm.one(lower_item(node, layout_env))
+    local function one_item(node, layout_env, const_env)
+        return pvm.one(lower_item(node, layout_env, const_env))
     end
 
-    local function one_module(node, layout_env)
-        return pvm.one(lower_module(node, layout_env))
+    local function one_module(node, layout_env, const_env)
+        return pvm.one(lower_module(node, layout_env, const_env))
     end
 
     local function one_sem_expr_type(node)
@@ -1299,6 +1316,481 @@ function M.Define(T)
         end,
     })
 
+    local const_format_buf = ffi.new("char[96]")
+    local INT_CTYPE = {
+        [Sem.SemTI8] = "int8_t",
+        [Sem.SemTI16] = "int16_t",
+        [Sem.SemTI32] = "int32_t",
+        [Sem.SemTI64] = "int64_t",
+        [Sem.SemTU8] = "uint8_t",
+        [Sem.SemTU16] = "uint16_t",
+        [Sem.SemTU32] = "uint32_t",
+        [Sem.SemTU64] = "uint64_t",
+        [Sem.SemTIndex] = "uint64_t",
+    }
+
+    local function ensure_const_env(const_env)
+        if const_env ~= nil then
+            return const_env
+        end
+        return Sem.SemConstEnv({})
+    end
+
+    local function const_entry_key(module_name, item_name)
+        if module_name == nil or module_name == "" then
+            return item_name
+        end
+        return module_name .. "." .. item_name
+    end
+
+    local function const_binding_key(binding)
+        return const_entry_key(binding.module_name, binding.item_name)
+    end
+
+    local function with_const_visiting(visiting, key)
+        local out = {}
+        if visiting ~= nil then
+            for k, v in pairs(visiting) do
+                out[k] = v
+            end
+        end
+        out[key] = true
+        return out
+    end
+
+    local function find_const_entry(const_env, module_name, item_name)
+        local env = ensure_const_env(const_env)
+        for i = #env.entries, 1, -1 do
+            local entry = env.entries[i]
+            if entry.module_name == module_name and entry.item_name == item_name then
+                return entry
+            end
+        end
+        return nil
+    end
+
+    local function int_ctype(ty)
+        return INT_CTYPE[ty]
+    end
+
+    local function type_is_intlike(ty)
+        return int_ctype(ty) ~= nil
+    end
+
+    local function type_is_float(ty)
+        return ty == Sem.SemTF32 or ty == Sem.SemTF64
+    end
+
+    local function type_is_signed_int(ty)
+        return ty == Sem.SemTI8 or ty == Sem.SemTI16 or ty == Sem.SemTI32 or ty == Sem.SemTI64
+    end
+
+    local function format_signed_i64(value)
+        ffi.C.snprintf(const_format_buf, 96, "%lld", ffi.cast("long long", value))
+        return ffi.string(const_format_buf)
+    end
+
+    local function format_unsigned_u64(value)
+        ffi.C.snprintf(const_format_buf, 96, "%llu", ffi.cast("unsigned long long", value))
+        return ffi.string(const_format_buf)
+    end
+
+    local function parse_int_raw(ty, raw)
+        local ctype = int_ctype(ty)
+        if ctype == nil then
+            error("sem_const_eval: expected an integer-like type")
+        end
+        if type_is_signed_int(ty) then
+            return ffi.cast(ctype, ffi.C.strtoll(raw, nil, 10))
+        end
+        return ffi.cast(ctype, ffi.C.strtoull(raw, nil, 10))
+    end
+
+    local function normalize_int(ty, value)
+        return ffi.cast(int_ctype(ty), value)
+    end
+
+    local function int_raw(ty, value)
+        local norm = normalize_int(ty, value)
+        if type_is_signed_int(ty) then
+            return format_signed_i64(ffi.cast("int64_t", norm))
+        end
+        return format_unsigned_u64(ffi.cast("uint64_t", norm))
+    end
+
+    local function float_raw(ty, value)
+        if ty == Sem.SemTF32 then
+            return string.format("%.9g", tonumber(ffi.new("float", value)))
+        end
+        return string.format("%.17g", tonumber(value))
+    end
+
+    local function const_int_value(ty, value)
+        return Sem.SemConstInt(ty, int_raw(ty, value))
+    end
+
+    local function const_float_value(ty, value)
+        return Sem.SemConstFloat(ty, float_raw(ty, value))
+    end
+
+    local function const_value_ty(value)
+        if value.ty ~= nil then
+            return value.ty
+        end
+        if value.elem_ty ~= nil then
+            return Sem.SemTArray(value.elem_ty, #value.elems)
+        end
+        return Sem.SemTBool
+    end
+
+    local function find_const_field_value(fields, field_name)
+        for i = 1, #fields do
+            if fields[i].name == field_name then
+                return fields[i].value
+            end
+        end
+        return nil
+    end
+
+    local function expect_const_bool(value, context)
+        if value.value == nil or value.ty ~= nil or value.elem_ty ~= nil then
+            error("sem_const_eval: " .. context .. " requires a bool constant")
+        end
+        return value.value
+    end
+
+    local function expect_const_intlike(value, context)
+        local ty = const_value_ty(value)
+        if value.raw == nil or not type_is_intlike(ty) then
+            error("sem_const_eval: " .. context .. " requires an integer-like constant")
+        end
+        return ty, parse_int_raw(ty, value.raw)
+    end
+
+    local function expect_const_numeric_pair(lhs, rhs, context)
+        local lhs_ty = const_value_ty(lhs)
+        local rhs_ty = const_value_ty(rhs)
+        if lhs_ty ~= rhs_ty then
+            error("sem_const_eval: " .. context .. " requires matching operand constant types")
+        end
+        if lhs.raw == nil then
+            error("sem_const_eval: " .. context .. " requires scalar numeric constants")
+        end
+        if type_is_intlike(lhs_ty) then
+            return lhs_ty, "int", parse_int_raw(lhs_ty, lhs.raw), parse_int_raw(rhs_ty, rhs.raw)
+        end
+        if type_is_float(lhs_ty) then
+            return lhs_ty, "float", tonumber(lhs.raw), tonumber(rhs.raw)
+        end
+        error("sem_const_eval: " .. context .. " requires scalar numeric constants")
+    end
+
+    sem_const_eval = pvm.phase("sem_const_eval", {
+        [Sem.SemExprConstInt] = function(self)
+            return pvm.once(Sem.SemConstInt(self.ty, self.raw))
+        end,
+        [Sem.SemExprConstFloat] = function(self)
+            return pvm.once(Sem.SemConstFloat(self.ty, self.raw))
+        end,
+        [Sem.SemExprConstBool] = function(self)
+            return pvm.once(Sem.SemConstBool(self.value))
+        end,
+        [Sem.SemExprNil] = function(self)
+            return pvm.once(Sem.SemConstNil(self.ty))
+        end,
+        [Sem.SemExprBinding] = function(self, const_env, visiting)
+            local binding = self.binding
+            if binding.module_name == nil or binding.item_name == nil then
+                error("sem_const_eval: constant data cannot capture runtime bindings")
+            end
+            local key = const_binding_key(binding)
+            if visiting ~= nil and visiting[key] then
+                error("sem_const_eval: cyclic const dependency at '" .. key .. "'")
+            end
+            local entry = find_const_entry(const_env, binding.module_name, binding.item_name)
+            if entry == nil then
+                error("sem_const_eval: unknown const binding '" .. key .. "'")
+            end
+            if entry.ty ~= binding.ty then
+                error("sem_const_eval: const binding '" .. key .. "' has type drift during const evaluation")
+            end
+            return pvm.once(one_const_eval(entry.value, const_env, with_const_visiting(visiting, key)))
+        end,
+        [Sem.SemExprNeg] = function(self, const_env, visiting)
+            local value = one_const_eval(self.value, const_env, visiting)
+            local ty = const_value_ty(value)
+            if ty ~= self.ty then
+                error("sem_const_eval: neg constant type mismatch")
+            end
+            if type_is_intlike(ty) then
+                return pvm.once(const_int_value(ty, -parse_int_raw(ty, value.raw)))
+            end
+            if type_is_float(ty) then
+                return pvm.once(const_float_value(ty, -tonumber(value.raw)))
+            end
+            error("sem_const_eval: neg requires an integer-like or float constant")
+        end,
+        [Sem.SemExprNot] = function(self, const_env, visiting)
+            local value = one_const_eval(self.value, const_env, visiting)
+            return pvm.once(Sem.SemConstBool(not expect_const_bool(value, "logical not")))
+        end,
+        [Sem.SemExprBNot] = function(self, const_env, visiting)
+            local value = one_const_eval(self.value, const_env, visiting)
+            local ty, parsed = expect_const_intlike(value, "bit-not")
+            if ty ~= self.ty then
+                error("sem_const_eval: bit-not constant type mismatch")
+            end
+            return pvm.once(const_int_value(ty, -parsed - 1))
+        end,
+        [Sem.SemExprAdd] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "add")
+            if ty ~= self.ty then error("sem_const_eval: add constant type mismatch") end
+            if kind == "int" then return pvm.once(const_int_value(ty, l + r)) end
+            return pvm.once(const_float_value(ty, l + r))
+        end,
+        [Sem.SemExprSub] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "sub")
+            if ty ~= self.ty then error("sem_const_eval: sub constant type mismatch") end
+            if kind == "int" then return pvm.once(const_int_value(ty, l - r)) end
+            return pvm.once(const_float_value(ty, l - r))
+        end,
+        [Sem.SemExprMul] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "mul")
+            if ty ~= self.ty then error("sem_const_eval: mul constant type mismatch") end
+            if kind == "int" then return pvm.once(const_int_value(ty, l * r)) end
+            return pvm.once(const_float_value(ty, l * r))
+        end,
+        [Sem.SemExprDiv] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "div")
+            if ty ~= self.ty then error("sem_const_eval: div constant type mismatch") end
+            if kind == "int" then
+                if r == 0 then error("sem_const_eval: division by zero in integer constant") end
+                return pvm.once(const_int_value(ty, l / r))
+            end
+            if r == 0 then error("sem_const_eval: division by zero in float constant") end
+            return pvm.once(const_float_value(ty, l / r))
+        end,
+        [Sem.SemExprRem] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "rem")
+            if ty ~= self.ty then error("sem_const_eval: rem constant type mismatch") end
+            if kind == "int" then
+                if r == 0 then error("sem_const_eval: remainder by zero in integer constant") end
+                return pvm.once(const_int_value(ty, l % r))
+            end
+            if r == 0 then error("sem_const_eval: remainder by zero in float constant") end
+            return pvm.once(const_float_value(ty, l % r))
+        end,
+        [Sem.SemExprEq] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local lhs_ty = const_value_ty(lhs)
+            local rhs_ty = const_value_ty(rhs)
+            if lhs_ty ~= rhs_ty then error("sem_const_eval: eq requires matching operand constant types") end
+            if lhs_ty == Sem.SemTBool then
+                return pvm.once(Sem.SemConstBool(expect_const_bool(lhs, "eq") == expect_const_bool(rhs, "eq")))
+            end
+            if type_is_intlike(lhs_ty) then
+                return pvm.once(Sem.SemConstBool(parse_int_raw(lhs_ty, lhs.raw) == parse_int_raw(rhs_ty, rhs.raw)))
+            end
+            if type_is_float(lhs_ty) then
+                return pvm.once(Sem.SemConstBool(tonumber(lhs.raw) == tonumber(rhs.raw)))
+            end
+            error("sem_const_eval: eq requires bool/int/float constants")
+        end,
+        [Sem.SemExprNe] = function(self, const_env, visiting)
+            local eqv = pvm.one(sem_const_eval(Sem.SemExprEq(Sem.SemTBool, self.lhs, self.rhs), const_env, visiting))
+            return pvm.once(Sem.SemConstBool(not eqv.value))
+        end,
+        [Sem.SemExprLt] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "lt")
+            if kind == "int" then return pvm.once(Sem.SemConstBool(l < r)) end
+            return pvm.once(Sem.SemConstBool(l < r))
+        end,
+        [Sem.SemExprLe] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "le")
+            if kind == "int" then return pvm.once(Sem.SemConstBool(l <= r)) end
+            return pvm.once(Sem.SemConstBool(l <= r))
+        end,
+        [Sem.SemExprGt] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "gt")
+            if kind == "int" then return pvm.once(Sem.SemConstBool(l > r)) end
+            return pvm.once(Sem.SemConstBool(l > r))
+        end,
+        [Sem.SemExprGe] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            local rhs = one_const_eval(self.rhs, const_env, visiting)
+            local ty, kind, l, r = expect_const_numeric_pair(lhs, rhs, "ge")
+            if kind == "int" then return pvm.once(Sem.SemConstBool(l >= r)) end
+            return pvm.once(Sem.SemConstBool(l >= r))
+        end,
+        [Sem.SemExprAnd] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            return pvm.once(Sem.SemConstBool(expect_const_bool(lhs, "logical and lhs") and expect_const_bool(one_const_eval(self.rhs, const_env, visiting), "logical and rhs")))
+        end,
+        [Sem.SemExprOr] = function(self, const_env, visiting)
+            local lhs = one_const_eval(self.lhs, const_env, visiting)
+            return pvm.once(Sem.SemConstBool(expect_const_bool(lhs, "logical or lhs") or expect_const_bool(one_const_eval(self.rhs, const_env, visiting), "logical or rhs")))
+        end,
+        [Sem.SemExprBitAnd] = function() error("sem_const_eval: bitand constants are not yet supported") end,
+        [Sem.SemExprBitOr] = function() error("sem_const_eval: bitor constants are not yet supported") end,
+        [Sem.SemExprBitXor] = function() error("sem_const_eval: bitxor constants are not yet supported") end,
+        [Sem.SemExprShl] = function() error("sem_const_eval: shl constants are not yet supported") end,
+        [Sem.SemExprLShr] = function() error("sem_const_eval: lshr constants are not yet supported") end,
+        [Sem.SemExprAShr] = function() error("sem_const_eval: ashr constants are not yet supported") end,
+        [Sem.SemExprCastTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
+        [Sem.SemExprTruncTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
+        [Sem.SemExprZExtTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
+        [Sem.SemExprSExtTo] = function() error("sem_const_eval: cast constants are not yet supported") end,
+        [Sem.SemExprBitcastTo] = function() error("sem_const_eval: bitcast constants are not yet supported") end,
+        [Sem.SemExprSatCastTo] = function() error("sem_const_eval: saturating cast constants are not yet supported") end,
+        [Sem.SemExprSelect] = function(self, const_env, visiting)
+            local cond = one_const_eval(self.cond, const_env, visiting)
+            if expect_const_bool(cond, "select condition") then
+                return pvm.once(one_const_eval(self.then_value, const_env, visiting))
+            end
+            return pvm.once(one_const_eval(self.else_value, const_env, visiting))
+        end,
+        [Sem.SemExprIndex] = function(self, const_env, visiting)
+            local base = one_const_eval(self.base, const_env, visiting)
+            if base.elems == nil then
+                error("sem_const_eval: index requires an array constant base")
+            end
+            local index = one_const_eval(self.index, const_env, visiting)
+            local index_ty, parsed = expect_const_intlike(index, "index")
+            local n = tonumber(parsed)
+            if n == nil or n < 0 or n ~= math.floor(n) then
+                error("sem_const_eval: array constant index must be a non-negative integer")
+            end
+            local pos = n + 1
+            if pos < 1 or pos > #base.elems then
+                error("sem_const_eval: array constant index out of bounds")
+            end
+            return pvm.once(base.elems[pos])
+        end,
+        [Sem.SemExprField] = function(self, const_env, visiting)
+            local base = one_const_eval(self.base, const_env, visiting)
+            if base.fields == nil then
+                error("sem_const_eval: field projection requires an aggregate constant base")
+            end
+            local value = find_const_field_value(base.fields, self.field.field_name)
+            if value == nil then
+                error("sem_const_eval: missing field '" .. self.field.field_name .. "' in aggregate constant")
+            end
+            return pvm.once(value)
+        end,
+        [Sem.SemExprAgg] = function(self, const_env, visiting)
+            local fields = {}
+            for i = 1, #self.fields do
+                fields[i] = Sem.SemConstFieldValue(self.fields[i].name, one_const_eval(self.fields[i].value, const_env, visiting))
+            end
+            return pvm.once(Sem.SemConstAgg(self.ty, fields))
+        end,
+        [Sem.SemExprArrayLit] = function(self, const_env, visiting)
+            local elems = {}
+            for i = 1, #self.elems do
+                elems[i] = one_const_eval(self.elems[i], const_env, visiting)
+            end
+            return pvm.once(Sem.SemConstArray(self.elem_ty, elems))
+        end,
+        [Sem.SemExprIf] = function(self, const_env, visiting)
+            local cond = one_const_eval(self.cond, const_env, visiting)
+            if expect_const_bool(cond, "if condition") then
+                return pvm.once(one_const_eval(self.then_expr, const_env, visiting))
+            end
+            return pvm.once(one_const_eval(self.else_expr, const_env, visiting))
+        end,
+        [Sem.SemExprIndexAddr] = function() error("sem_const_eval: address constants are not supported") end,
+        [Sem.SemExprFieldAddr] = function() error("sem_const_eval: address constants are not supported") end,
+        [Sem.SemExprLoad] = function() error("sem_const_eval: load constants are not supported") end,
+        [Sem.SemExprIntrinsicCall] = function() error("sem_const_eval: intrinsic-call constants are not supported") end,
+        [Sem.SemExprCall] = function() error("sem_const_eval: call constants are not supported") end,
+        [Sem.SemExprBlock] = function() error("sem_const_eval: block constants are not supported") end,
+        [Sem.SemExprSwitch] = function() error("sem_const_eval: switch constants are not supported") end,
+        [Sem.SemExprLoop] = function() error("sem_const_eval: loop constants are not supported") end,
+        [Sem.SemExprRef] = function() error("sem_const_eval: ref constants are not supported") end,
+        [Sem.SemExprDeref] = function() error("sem_const_eval: deref constants are not supported") end,
+    })
+
+    lower_const_agg_value_init_from_type = pvm.phase("sem_to_back_const_agg_value_init_from_type", {
+        [Sem.SemTNamed] = function(self, value, data_id, offset, layout_env)
+            local layout = require_named_layout(layout_env, self.module_name, self.type_name)
+            local cmds = {
+                Back.BackCmdDataInitZero(data_id, offset, layout.size),
+            }
+            for i = 1, #layout.fields do
+                local field = layout.fields[i]
+                local field_value = find_const_field_value(value.fields, field.field_name)
+                if field_value == nil then
+                    error("sem_to_back_const_data_init: missing field '" .. field.field_name .. "' in aggregate constant for '" .. const_data_key(self.module_name, self.type_name) .. "'")
+                end
+                copy_cmds(one_const_value_data_init(field_value, data_id, offset + field.offset, layout_env), cmds)
+            end
+            return pvm.once(cmds)
+        end,
+        [Sem.SemTArray] = function()
+            error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type, not SemTArray")
+        end,
+        [Sem.SemTVoid] = function() error("sem_to_back_const_data_init: cannot build a void constant object") end,
+        [Sem.SemTBool] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTI8] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTI16] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTI32] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTI64] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTU8] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTU16] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTU32] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTU64] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTF32] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTF64] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTPtr] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTIndex] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTPtrTo] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTSlice] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+        [Sem.SemTFunc] = function() error("sem_to_back_const_data_init: aggregate constant object requires a named aggregate type") end,
+    })
+
+    lower_const_value_data_init = pvm.phase("sem_to_back_const_value_data_init", {
+        [Sem.SemConstInt] = function(self, data_id, offset)
+            return pvm.once({ Back.BackCmdDataInitInt(data_id, offset, one_scalar(self.ty), self.raw) })
+        end,
+        [Sem.SemConstFloat] = function(self, data_id, offset)
+            return pvm.once({ Back.BackCmdDataInitFloat(data_id, offset, one_scalar(self.ty), self.raw) })
+        end,
+        [Sem.SemConstBool] = function(self, data_id, offset)
+            return pvm.once({ Back.BackCmdDataInitBool(data_id, offset, self.value) })
+        end,
+        [Sem.SemConstNil] = function(self, data_id, offset, layout_env)
+            return pvm.once({ Back.BackCmdDataInitZero(data_id, offset, one_type_mem_size(self.ty, layout_env)) })
+        end,
+        [Sem.SemConstAgg] = function(self, data_id, offset, layout_env)
+            return pvm.once(pvm.one(lower_const_agg_value_init_from_type(self.ty, self, data_id, offset, layout_env)))
+        end,
+        [Sem.SemConstArray] = function(self, data_id, offset, layout_env)
+            local elem_size = one_type_mem_size(self.elem_ty, layout_env)
+            local cmds = {}
+            for i = 1, #self.elems do
+                copy_cmds(one_const_value_data_init(self.elems[i], data_id, offset + ((i - 1) * elem_size), layout_env), cmds)
+            end
+            return pvm.once(cmds)
+        end,
+    })
+
     lower_const_agg_init_from_type = pvm.phase("sem_to_back_const_agg_init_from_type", {
         [Sem.SemTNamed] = function(self, expr, data_id, offset, layout_env)
             local layout = require_named_layout(layout_env, self.module_name, self.type_name)
@@ -1337,75 +1829,62 @@ function M.Define(T)
         [Sem.SemTFunc] = function() error("sem_to_back_const_data_init: aggregate initializer requires a named aggregate type") end,
     })
 
+    local function delegate_const_data_init()
+        return function(self, data_id, offset, layout_env, const_env, visiting)
+            return pvm.once(one_const_value_data_init(one_const_eval(self, const_env, visiting), data_id, offset, layout_env))
+        end
+    end
+
     lower_const_data_init = pvm.phase("sem_to_back_const_data_init", {
-        [Sem.SemExprConstInt] = function(self, data_id, offset)
-            return pvm.once({ Back.BackCmdDataInitInt(data_id, offset, one_scalar(self.ty), self.raw) })
-        end,
-        [Sem.SemExprConstFloat] = function(self, data_id, offset)
-            return pvm.once({ Back.BackCmdDataInitFloat(data_id, offset, one_scalar(self.ty), self.raw) })
-        end,
-        [Sem.SemExprConstBool] = function(self, data_id, offset)
-            return pvm.once({ Back.BackCmdDataInitBool(data_id, offset, self.value) })
-        end,
-        [Sem.SemExprNil] = function(self, data_id, offset, layout_env)
-            return pvm.once({ Back.BackCmdDataInitZero(data_id, offset, one_type_mem_size(self.ty, layout_env)) })
-        end,
-        [Sem.SemExprAgg] = function(self, data_id, offset, layout_env)
-            return pvm.once(pvm.one(lower_const_agg_init_from_type(self.ty, self, data_id, offset, layout_env)))
-        end,
-        [Sem.SemExprArrayLit] = function(self, data_id, offset, layout_env)
-            local elem_size = one_type_mem_size(self.elem_ty, layout_env)
-            local cmds = {}
-            for i = 1, #self.elems do
-                copy_cmds(one_const_data_init(self.elems[i], data_id, offset + ((i - 1) * elem_size), layout_env), cmds)
-            end
-            return pvm.once(cmds)
-        end,
-        [Sem.SemExprBinding] = function()
-            error("sem_to_back_const_data_init: constant data cannot capture runtime bindings")
-        end,
-        [Sem.SemExprNeg] = function() error("sem_to_back_const_data_init: computed negation constants are not yet supported") end,
-        [Sem.SemExprNot] = function() error("sem_to_back_const_data_init: computed logical-not constants are not yet supported") end,
-        [Sem.SemExprBNot] = function() error("sem_to_back_const_data_init: computed bit-not constants are not yet supported") end,
-        [Sem.SemExprRef] = function() error("sem_to_back_const_data_init: ref constants are not yet supported") end,
-        [Sem.SemExprDeref] = function() error("sem_to_back_const_data_init: deref constants are not yet supported") end,
-        [Sem.SemExprAdd] = function() error("sem_to_back_const_data_init: computed add constants are not yet supported") end,
-        [Sem.SemExprSub] = function() error("sem_to_back_const_data_init: computed sub constants are not yet supported") end,
-        [Sem.SemExprMul] = function() error("sem_to_back_const_data_init: computed mul constants are not yet supported") end,
-        [Sem.SemExprDiv] = function() error("sem_to_back_const_data_init: computed div constants are not yet supported") end,
-        [Sem.SemExprRem] = function() error("sem_to_back_const_data_init: computed rem constants are not yet supported") end,
-        [Sem.SemExprEq] = function() error("sem_to_back_const_data_init: comparison constants are not yet supported") end,
-        [Sem.SemExprNe] = function() error("sem_to_back_const_data_init: comparison constants are not yet supported") end,
-        [Sem.SemExprLt] = function() error("sem_to_back_const_data_init: comparison constants are not yet supported") end,
-        [Sem.SemExprLe] = function() error("sem_to_back_const_data_init: comparison constants are not yet supported") end,
-        [Sem.SemExprGt] = function() error("sem_to_back_const_data_init: comparison constants are not yet supported") end,
-        [Sem.SemExprGe] = function() error("sem_to_back_const_data_init: comparison constants are not yet supported") end,
-        [Sem.SemExprAnd] = function() error("sem_to_back_const_data_init: computed and constants are not yet supported") end,
-        [Sem.SemExprOr] = function() error("sem_to_back_const_data_init: computed or constants are not yet supported") end,
-        [Sem.SemExprBitAnd] = function() error("sem_to_back_const_data_init: computed bitand constants are not yet supported") end,
-        [Sem.SemExprBitOr] = function() error("sem_to_back_const_data_init: computed bitor constants are not yet supported") end,
-        [Sem.SemExprBitXor] = function() error("sem_to_back_const_data_init: computed bitxor constants are not yet supported") end,
-        [Sem.SemExprShl] = function() error("sem_to_back_const_data_init: computed shl constants are not yet supported") end,
-        [Sem.SemExprLShr] = function() error("sem_to_back_const_data_init: computed lshr constants are not yet supported") end,
-        [Sem.SemExprAShr] = function() error("sem_to_back_const_data_init: computed ashr constants are not yet supported") end,
-        [Sem.SemExprCastTo] = function() error("sem_to_back_const_data_init: cast constants are not yet supported") end,
-        [Sem.SemExprTruncTo] = function() error("sem_to_back_const_data_init: cast constants are not yet supported") end,
-        [Sem.SemExprZExtTo] = function() error("sem_to_back_const_data_init: cast constants are not yet supported") end,
-        [Sem.SemExprSExtTo] = function() error("sem_to_back_const_data_init: cast constants are not yet supported") end,
-        [Sem.SemExprBitcastTo] = function() error("sem_to_back_const_data_init: bitcast constants are not yet supported") end,
-        [Sem.SemExprSatCastTo] = function() error("sem_to_back_const_data_init: saturating cast constants are not yet supported") end,
-        [Sem.SemExprSelect] = function() error("sem_to_back_const_data_init: select constants are not yet supported") end,
-        [Sem.SemExprIndex] = function() error("sem_to_back_const_data_init: indexed constants are not yet supported") end,
-        [Sem.SemExprField] = function() error("sem_to_back_const_data_init: field-projected constants are not yet supported") end,
-        [Sem.SemExprIndexAddr] = function() error("sem_to_back_const_data_init: address constants are not yet supported") end,
-        [Sem.SemExprFieldAddr] = function() error("sem_to_back_const_data_init: address constants are not yet supported") end,
-        [Sem.SemExprLoad] = function() error("sem_to_back_const_data_init: load constants are not yet supported") end,
-        [Sem.SemExprIntrinsicCall] = function() error("sem_to_back_const_data_init: intrinsic-call constants are not yet supported") end,
-        [Sem.SemExprCall] = function() error("sem_to_back_const_data_init: call constants are not yet supported") end,
-        [Sem.SemExprBlock] = function() error("sem_to_back_const_data_init: block constants are not yet supported") end,
-        [Sem.SemExprIf] = function() error("sem_to_back_const_data_init: branch constants are not yet supported") end,
-        [Sem.SemExprSwitch] = function() error("sem_to_back_const_data_init: switch constants are not yet supported") end,
-        [Sem.SemExprLoop] = function() error("sem_to_back_const_data_init: loop constants are not yet supported") end,
+        [Sem.SemExprConstInt] = delegate_const_data_init(),
+        [Sem.SemExprConstFloat] = delegate_const_data_init(),
+        [Sem.SemExprConstBool] = delegate_const_data_init(),
+        [Sem.SemExprNil] = delegate_const_data_init(),
+        [Sem.SemExprBinding] = delegate_const_data_init(),
+        [Sem.SemExprNeg] = delegate_const_data_init(),
+        [Sem.SemExprNot] = delegate_const_data_init(),
+        [Sem.SemExprBNot] = delegate_const_data_init(),
+        [Sem.SemExprRef] = delegate_const_data_init(),
+        [Sem.SemExprDeref] = delegate_const_data_init(),
+        [Sem.SemExprAdd] = delegate_const_data_init(),
+        [Sem.SemExprSub] = delegate_const_data_init(),
+        [Sem.SemExprMul] = delegate_const_data_init(),
+        [Sem.SemExprDiv] = delegate_const_data_init(),
+        [Sem.SemExprRem] = delegate_const_data_init(),
+        [Sem.SemExprEq] = delegate_const_data_init(),
+        [Sem.SemExprNe] = delegate_const_data_init(),
+        [Sem.SemExprLt] = delegate_const_data_init(),
+        [Sem.SemExprLe] = delegate_const_data_init(),
+        [Sem.SemExprGt] = delegate_const_data_init(),
+        [Sem.SemExprGe] = delegate_const_data_init(),
+        [Sem.SemExprAnd] = delegate_const_data_init(),
+        [Sem.SemExprOr] = delegate_const_data_init(),
+        [Sem.SemExprBitAnd] = delegate_const_data_init(),
+        [Sem.SemExprBitOr] = delegate_const_data_init(),
+        [Sem.SemExprBitXor] = delegate_const_data_init(),
+        [Sem.SemExprShl] = delegate_const_data_init(),
+        [Sem.SemExprLShr] = delegate_const_data_init(),
+        [Sem.SemExprAShr] = delegate_const_data_init(),
+        [Sem.SemExprCastTo] = delegate_const_data_init(),
+        [Sem.SemExprTruncTo] = delegate_const_data_init(),
+        [Sem.SemExprZExtTo] = delegate_const_data_init(),
+        [Sem.SemExprSExtTo] = delegate_const_data_init(),
+        [Sem.SemExprBitcastTo] = delegate_const_data_init(),
+        [Sem.SemExprSatCastTo] = delegate_const_data_init(),
+        [Sem.SemExprSelect] = delegate_const_data_init(),
+        [Sem.SemExprIndex] = delegate_const_data_init(),
+        [Sem.SemExprField] = delegate_const_data_init(),
+        [Sem.SemExprIndexAddr] = delegate_const_data_init(),
+        [Sem.SemExprFieldAddr] = delegate_const_data_init(),
+        [Sem.SemExprLoad] = delegate_const_data_init(),
+        [Sem.SemExprIntrinsicCall] = delegate_const_data_init(),
+        [Sem.SemExprCall] = delegate_const_data_init(),
+        [Sem.SemExprAgg] = delegate_const_data_init(),
+        [Sem.SemExprArrayLit] = delegate_const_data_init(),
+        [Sem.SemExprBlock] = delegate_const_data_init(),
+        [Sem.SemExprIf] = delegate_const_data_init(),
+        [Sem.SemExprSwitch] = delegate_const_data_init(),
+        [Sem.SemExprLoop] = delegate_const_data_init(),
     })
 
     local function addr_with_offset(base_addr, offset, path)
@@ -3605,22 +4084,34 @@ function M.Define(T)
                 Back.BackCmdDeclareFuncExtern(Back.BackExternId(self.func.symbol), self.func.symbol, sig_id),
             }))
         end,
-        [Sem.SemItemConst] = function(self, layout_env)
+        [Sem.SemItemConst] = function(self, layout_env, const_env)
             local data_id = const_data_id("", self.c.name)
             local spec = one_stack_slot_spec(self.c.ty, layout_env)
             local cmds = {
                 Back.BackCmdDeclareData(data_id, spec.size, spec.align),
             }
-            copy_cmds(one_const_data_init(self.c.value, data_id, 0, layout_env), cmds)
+            copy_cmds(one_const_data_init(self.c.value, data_id, 0, layout_env, const_env, nil), cmds)
             return pvm.once(Back.BackItemPlan(cmds))
         end,
     })
 
     lower_module = pvm.phase("sem_to_back_module", {
-        [Sem.SemModule] = function(self, layout_env)
+        [Sem.SemModule] = function(self, layout_env, const_env)
+            local env = ensure_const_env(const_env)
+            local entries = {}
+            for i = 1, #env.entries do
+                entries[i] = env.entries[i]
+            end
+            for i = 1, #self.items do
+                local item = self.items[i]
+                if item.c ~= nil then
+                    entries[#entries + 1] = Sem.SemConstEntry("", item.c.name, item.c.ty, item.c.value)
+                end
+            end
+            local module_const_env = Sem.SemConstEnv(entries)
             local cmds = {}
             for i = 1, #self.items do
-                copy_cmds(one_item(self.items[i], layout_env).cmds, cmds)
+                copy_cmds(one_item(self.items[i], layout_env, module_const_env).cmds, cmds)
             end
             cmds[#cmds + 1] = Back.BackCmdFinalizeModule
             return pvm.once(Back.BackProgram(cmds))

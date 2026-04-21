@@ -182,13 +182,13 @@ This depends on the intended reboot language surface.
 
 ## 3.8 Const system completion
 - [ ] define complete constant-expression subset
-- [ ] implement unary const eval
-- [ ] implement arithmetic const eval
-- [ ] implement comparison const eval
+- [x] implement unary const eval
+- [x] implement arithmetic const eval
+- [x] implement comparison const eval
 - [ ] implement cast const eval
-- [ ] implement select/if const eval if intended
-- [ ] implement field/index projection const eval if intended
-- [ ] implement aggregate/array const eval coherently
+- [x] implement select/if const eval if intended
+- [x] implement field/index projection const eval if intended
+- [x] implement aggregate/array const eval coherently
 - [ ] define whether calls/intrinsics can appear in const eval
 - [ ] support const references between sibling consts/modules in the general const-eval system if intended
 

@@ -688,6 +688,16 @@ Current const-data lowering supports:
 - nil as zero-init
 - named aggregate literal const data
 - array literal const data
+- sibling const references within the current module through explicit `SemConstEnv`
+- computed scalar constant evaluation for:
+  - neg / logical-not / bit-not
+  - add / sub / mul / div / rem
+  - eq / ne / lt / le / gt / ge
+  - bool `and` / `or`
+  - pure `if` / `select`
+- aggregate field projection from constant aggregates
+- array index projection from constant arrays
+- recursive aggregate/array constant materialization through the evaluator
 
 In addition, the type-level array-count evaluator now supports a small explicit subset:
 
@@ -696,20 +706,18 @@ In addition, the type-level array-count evaluator now supports a small explicit 
 - references to explicit index-typed global const bindings through `ElabConstEnv`
 - sibling const references in `ElabModule` count lowering
 
-But general value-level const evaluation still explicitly does not support many computed constant forms, including:
+General value-level const evaluation still explicitly does not support several forms, including:
 
-- unary ops
-- arithmetic
-- comparisons
-- casts
-- select
-- field/index projections
-- loads
+- bitwise binary ops and shifts
+- casts / bitcasts / saturating casts
+- address-taking / dereference / loads
 - intrinsic calls
 - normal calls
-- block/if/switch/loop constant expressions
+- block / switch / loop constant expressions
+- a fully documented final const-expression subset
+- a complete multi-module const-reference story
 
-So constant evaluation is still very incomplete.
+So constant evaluation is no longer literal-only, but it is still incomplete.
 
 ---
 

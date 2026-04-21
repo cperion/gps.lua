@@ -1115,4 +1115,120 @@ assert(const_module == Back.BackProgram({
     Back.BackCmdFinalizeModule,
 }))
 
+local computed_const_module = one_module(Sem.SemModule({
+    Sem.SemItemConst(Sem.SemConst(
+        "A",
+        Sem.SemTI32,
+        Sem.SemExprAdd(
+            Sem.SemTI32,
+            Sem.SemExprConstInt(Sem.SemTI32, "40"),
+            Sem.SemExprConstInt(Sem.SemTI32, "2")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "B",
+        Sem.SemTBool,
+        Sem.SemExprEq(
+            Sem.SemTBool,
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "A", Sem.SemTI32)),
+            Sem.SemExprConstInt(Sem.SemTI32, "42")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "C",
+        Sem.SemTI32,
+        Sem.SemExprIf(
+            Sem.SemExprConstBool(false),
+            Sem.SemExprConstInt(Sem.SemTI32, "1"),
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "A", Sem.SemTI32)),
+            Sem.SemTI32
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "F",
+        Sem.SemTF32,
+        Sem.SemExprMul(
+            Sem.SemTF32,
+            Sem.SemExprConstFloat(Sem.SemTF32, "3.5"),
+            Sem.SemExprConstFloat(Sem.SemTF32, "2")
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "ARR",
+        Sem.SemTArray(Sem.SemTI32, 2),
+        Sem.SemExprArrayLit(Sem.SemTI32, {
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "A", Sem.SemTI32)),
+            Sem.SemExprAdd(
+                Sem.SemTI32,
+                Sem.SemExprBinding(Sem.SemBindGlobal("", "A", Sem.SemTI32)),
+                Sem.SemExprConstInt(Sem.SemTI32, "1")
+            ),
+        })
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "P",
+        Sem.SemTNamed("Demo", "Pair"),
+        Sem.SemExprAgg(Sem.SemTNamed("Demo", "Pair"), {
+            Sem.SemFieldInit("left", Sem.SemExprBinding(Sem.SemBindGlobal("", "A", Sem.SemTI32))),
+            Sem.SemFieldInit("right", Sem.SemExprConstInt(Sem.SemTI32, "7")),
+        })
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "RIGHT",
+        Sem.SemTI32,
+        Sem.SemExprField(
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "P", Sem.SemTNamed("Demo", "Pair"))),
+            Sem.SemFieldByName("right", Sem.SemTI32)
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "ELEM",
+        Sem.SemTI32,
+        Sem.SemExprIndex(
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "ARR", Sem.SemTArray(Sem.SemTI32, 2))),
+            Sem.SemExprConstInt(Sem.SemTIndex, "1"),
+            Sem.SemTI32
+        )
+    )),
+}), pair_layout_env)
+assert(computed_const_module == Back.BackProgram({
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:A"), 4, 4),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:A"), 0, Back.BackI32, "42"),
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:B"), 1, 1),
+    Back.BackCmdDataInitBool(Back.BackDataId("data:const:B"), 0, true),
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:C"), 4, 4),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:C"), 0, Back.BackI32, "42"),
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:F"), 4, 4),
+    Back.BackCmdDataInitFloat(Back.BackDataId("data:const:F"), 0, Back.BackF32, "7"),
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:ARR"), 8, 4),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:ARR"), 0, Back.BackI32, "42"),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:ARR"), 4, Back.BackI32, "43"),
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:P"), 8, 4),
+    Back.BackCmdDataInitZero(Back.BackDataId("data:const:P"), 0, 8),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:P"), 0, Back.BackI32, "42"),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:P"), 4, Back.BackI32, "7"),
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:RIGHT"), 4, 4),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:RIGHT"), 0, Back.BackI32, "7"),
+    Back.BackCmdDeclareData(Back.BackDataId("data:const:ELEM"), 4, 4),
+    Back.BackCmdDataInitInt(Back.BackDataId("data:const:ELEM"), 0, Back.BackI32, "43"),
+    Back.BackCmdFinalizeModule,
+}))
+
+local cycle_ok, cycle_err = pcall(function()
+    return one_module(Sem.SemModule({
+        Sem.SemItemConst(Sem.SemConst(
+            "A",
+            Sem.SemTI32,
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "B", Sem.SemTI32))
+        )),
+        Sem.SemItemConst(Sem.SemConst(
+            "B",
+            Sem.SemTI32,
+            Sem.SemExprBinding(Sem.SemBindGlobal("", "A", Sem.SemTI32))
+        )),
+    }))
+end)
+assert(not cycle_ok)
+assert(string.find(cycle_err, "cyclic const dependency", 1, true) ~= nil)
+
 print("moonlift sem->back lowering ok")
