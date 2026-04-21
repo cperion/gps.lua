@@ -7,3 +7,6 @@
 [submodule "third_party/cranelift"]
 	path = third_party/cranelift
 	url = https://github.com/bytecodealliance/cranelift.git
+[submodule "third_party/luajit"]
+	path = third_party/luajit
+	url = https://github.com/LuaJIT/LuaJIT.git
