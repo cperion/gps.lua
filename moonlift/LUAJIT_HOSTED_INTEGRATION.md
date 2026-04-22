@@ -1,15 +1,15 @@
 # Moonlift LuaJIT-Hosted Integration and Hosted Parsing
 
-Status: design document for a future Moonlift integration direction in which Moonlift hosts or deeply integrates with LuaJIT and also hosts parsing, so the language is not limited to:
+Status: design document for a **deferred future** Moonlift integration direction in which Moonlift hosts or deeply integrates with LuaJIT and also hosts parsing, so the language is not limited to:
 
 - LuaJIT + raw strings
 - FFI-loaded shared libraries
 - builder API only
 
-This hosted/state-aware path is **not** the current implementation.
-Today the implemented bridge is the thinner `moonlift/lua/moonlift/jit.lua` FFI replay path over `BackProgram`.
+This hosted/state-aware path is **not** the current implementation and is **not** the current project priority.
+Today the implemented and prioritized bridge is the thinner `moonlift/lua/moonlift/jit.lua` FFI replay path over `BackProgram`, and the current plan is to finish the language/compiler through that FFI path first.
 
-This document explains the ergonomic, architectural, and compiler-architecture wins of a LuaJIT-hosted and parser-hosted design.
+This document explains the ergonomic, architectural, and compiler-architecture wins of a LuaJIT-hosted and parser-hosted design if/when Moonlift revisits that direction later.
 
 It is complementary to:
 
@@ -51,8 +51,8 @@ Without changing the central compiler architecture.
 This also does **not** mean Moonlift must abandon a plain FFI-facing API forever.
 A reasonable long-term shape is:
 
-- hosted/state-aware integration as the preferred rich path
-- optional simpler FFI API later for LuaJIT users who want library-style embedding
+- finish and keep the plain FFI-facing API as a supported public path for LuaJIT users
+- only later, if still wanted, add hosted/state-aware integration as an additional richer layer
 
 ## Most important wins
 
@@ -163,17 +163,18 @@ For the real parser-hook / integrated-syntax story, deeper hosting becomes much 
 
 ### Important non-goal
 
-Choosing the richer hosted/state-aware direction as the architectural center does **not** mean Moonlift can never also expose a simpler public FFI surface.
+Exploring a richer hosted/state-aware direction later does **not** mean Moonlift should abandon or demote the public FFI surface.
 
 Those are different questions:
 
-- what integration model gives Moonlift the best semantics and ergonomics internally?
-- what compatibility/API surfaces should still be offered to users?
+- what additional integration model might be attractive later?
+- what public/API surface should Moonlift finish and keep working for real users now?
 
 A good long-term answer may be:
 
-- Moonlift internally prefers hosted/state-aware integration
-- Moonlift later also exposes a thinner FFI API for LuaJIT users who just want to load a library and call into it
+- Moonlift first completes and stabilizes the FFI path for real LuaJIT use
+- Moonlift later may add hosted/state-aware integration if it still looks worthwhile
+- the working FFI path remains supported for LuaJIT users who just want to load a library and call into it
 
 ---
 

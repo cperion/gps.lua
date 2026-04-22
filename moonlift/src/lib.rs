@@ -939,7 +939,8 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             }
             BackCmd::Alias(dst, src) => {
                 let value = self.value(src)?;
-                self.bind_value(dst, value)
+                self.values.insert(dst.clone(), value);
+                Ok(())
             }
             BackCmd::StackAddr(dst, slot_id) => {
                 let slot = self.stack_slot(slot_id)?;
@@ -1800,12 +1801,12 @@ mod tests {
             BackCmd::SealBlock(BackBlockId::from("body")),
             BackCmd::SealBlock(BackBlockId::from("exit")),
             BackCmd::SwitchToBlock(BackBlockId::from("body")),
-            BackCmd::Alias(BackValId::from("i.body"), BackValId::from("body.i")),
+            BackCmd::Alias(BackValId::from("i"), BackValId::from("body.i")),
             BackCmd::ConstInt(BackValId::from("one"), BackScalar::I32, "1".to_string()),
             BackCmd::Iadd(
                 BackValId::from("next"),
                 BackScalar::I32,
-                BackValId::from("i.body"),
+                BackValId::from("i"),
                 BackValId::from("one"),
             ),
             BackCmd::Jump(BackBlockId::from("header"), vec![BackValId::from("next")]),

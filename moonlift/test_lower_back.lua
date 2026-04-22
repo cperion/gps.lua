@@ -52,6 +52,8 @@ end
 
 assert(pvm.one(L.lower_scalar(Sem.SemTI32)) == Back.BackI32)
 assert(pvm.one(L.lower_scalar(Sem.SemTIndex)) == Back.BackIndex)
+assert(pvm.one(L.lower_stack_slot_spec(Sem.SemTSlice(Sem.SemTI32), empty_layout_env)) == Back.BackStackSlotSpec(16, 8))
+assert(pvm.one(L.lower_stack_slot_spec(Sem.SemTView(Sem.SemTI32), empty_layout_env)) == Back.BackStackSlotSpec(24, 8))
 assert(pvm.one(L.lower_binding_value(Sem.SemBindLocalValue("lx", "x", Sem.SemTI32))) == Back.BackValId("local:lx"))
 
 local add = one_expr(
@@ -182,6 +184,21 @@ assert(direct_call == Back.BackExprPlan({
     Back.BackCmdCallValueDirect(Back.BackValId("expr.call"), Back.BackI32, Back.BackFuncId("sum"), Back.BackSigId("sig:sum"), { Back.BackValId("expr.call.arg.1") }),
 }, Back.BackValId("expr.call"), Back.BackI32))
 
+local let_scalar = one_stmt(
+    Sem.SemStmtLet(
+        "lx",
+        "x",
+        Sem.SemTI32,
+        Sem.SemExprConstInt(Sem.SemTI32, "9")
+    ),
+    "stmt.let_scalar"
+)
+assert(let_scalar == Back.BackStmtPlan({
+    Back.BackCmdConstInt(Back.BackValId("stmt.let_scalar.init"), Back.BackI32, "9"),
+    Back.BackCmdAlias(Back.BackValId("local:lx"), Back.BackValId("stmt.let_scalar.init")),
+}, Back.BackFallsThrough))
+assert(lacks_cmd(let_scalar, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:local:lx"), 4, 4)))
+
 local set_binding = one_stmt(
     Sem.SemStmtSet(
         Sem.SemPlaceBinding(Sem.SemBindLocalCell("cx", "x", Sem.SemTI32)),
@@ -258,7 +275,8 @@ local while_break_value = one_expr(
 )
 assert(while_break_value.value == Back.BackValId("expr.loopbreak"))
 assert(while_break_value.ty == Back.BackI32)
-assert(contains_cmd(while_break_value, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:loopcarry:loop.break:carry.i"), 4, 4)))
+assert(lacks_cmd(while_break_value, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:loopcarry:loop.break:carry.i"), 4, 4)))
+assert(contains_cmd(while_break_value, Back.BackCmdAlias(Back.BackValId("local:loopcarry:loop.break:carry.i"), Back.BackValId("expr.loopbreak.header.param.1"))))
 assert(contains_cmd(while_break_value, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:breakvalue:flag:expr.loopbreak.exit.block"), 1, 1)))
 assert(contains_cmd(while_break_value, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:breakvalue:value:expr.loopbreak.exit.block"), 4, 4)))
 assert(contains_cmd(while_break_value, Back.BackCmdJump(Back.BackBlockId("expr.loopbreak.exit.block"), { Back.BackValId("expr.loopbreak.body.param.1") })))
@@ -292,9 +310,11 @@ local over_range_expr = one_expr(
 )
 assert(over_range_expr.value == Back.BackValId("expr.over"))
 assert(over_range_expr.ty == Back.BackIndex)
-assert(contains_cmd(over_range_expr, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:loopindex:loop.range:i"), 8, 8)))
+assert(lacks_cmd(over_range_expr, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:loopindex:loop.range:i"), 8, 8)))
+assert(lacks_cmd(over_range_expr, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:loopcarry:loop.range:carry.acc"), 8, 8)))
 assert(contains_cmd(over_range_expr, Back.BackCmdConstInt(Back.BackValId("expr.over.stop"), Back.BackIndex, "3")))
-assert(contains_cmd(over_range_expr, Back.BackCmdStackAddr(Back.BackValId("loop.index.slot.addr:loop.range:i"), Back.BackStackSlotId("slot:loopindex:loop.range:i"))))
+assert(contains_cmd(over_range_expr, Back.BackCmdAlias(Back.BackValId("local:loopindex:loop.range:i"), Back.BackValId("expr.over.header.index"))))
+assert(contains_cmd(over_range_expr, Back.BackCmdAlias(Back.BackValId("local:loopcarry:loop.range:carry.acc"), Back.BackValId("expr.over.header.carry.1"))))
 
 local bounded_over_expr = one_expr(
     Sem.SemExprLoop(
@@ -327,8 +347,46 @@ local bounded_over_expr = one_expr(
     ),
     "expr.view"
 )
-assert(contains_cmd(bounded_over_expr, Back.BackCmdStackAddr(Back.BackValId("expr.view.bounded"), Back.BackStackSlotId("slot:bounded.arr"))))
-assert(contains_cmd(bounded_over_expr, Back.BackCmdConstInt(Back.BackValId("expr.view.stop"), Back.BackIndex, "4")))
+assert(contains_cmd(bounded_over_expr, Back.BackCmdAlias(Back.BackValId("expr.view.view.data"), Back.BackValId("expr.view.view.base"))))
+assert(contains_cmd(bounded_over_expr, Back.BackCmdConstInt(Back.BackValId("expr.view.view.len"), Back.BackIndex, "4")))
+
+local slice_index_expr = one_expr(
+    Sem.SemExprIndex(
+        Sem.SemIndexBaseView(
+            Sem.SemViewValue(
+                Sem.SemExprBinding(Sem.SemBindLocalCell("slice.cell", "s", Sem.SemTSlice(Sem.SemTI32))),
+                Sem.SemTI32
+            )
+        ),
+        Sem.SemExprConstInt(Sem.SemTIndex, "1"),
+        Sem.SemTI32
+    ),
+    "expr.slice_index"
+)
+assert(contains_cmd(slice_index_expr, Back.BackCmdStackAddr(Back.BackValId("expr.slice_index.addr.view.base"), Back.BackStackSlotId("slot:slice.cell"))))
+assert(contains_cmd(slice_index_expr, Back.BackCmdLoad(Back.BackValId("expr.slice_index.addr.view.data"), Back.BackPtr, Back.BackValId("expr.slice_index.addr.view.data.addr"))))
+assert(contains_cmd(slice_index_expr, Back.BackCmdLoad(Back.BackValId("expr.slice_index.addr.view.len"), Back.BackIndex, Back.BackValId("expr.slice_index.addr.view.len.addr"))))
+assert(contains_cmd(slice_index_expr, Back.BackCmdConstInt(Back.BackValId("expr.slice_index.addr.view.stride"), Back.BackIndex, "4")))
+assert(contains_cmd(slice_index_expr, Back.BackCmdLoad(Back.BackValId("expr.slice_index"), Back.BackI32, Back.BackValId("expr.slice_index.addr"))))
+
+local strided_index_expr = one_expr(
+    Sem.SemExprIndex(
+        Sem.SemIndexBaseView(
+            Sem.SemViewStrided(
+                Sem.SemExprBinding(Sem.SemBindArg(0, "ptr", Sem.SemTPtrTo(Sem.SemTI32))),
+                Sem.SemTI32,
+                Sem.SemExprConstInt(Sem.SemTIndex, "8"),
+                Sem.SemExprConstInt(Sem.SemTIndex, "2")
+            )
+        ),
+        Sem.SemExprConstInt(Sem.SemTIndex, "3"),
+        Sem.SemTI32
+    ),
+    "expr.strided_index"
+)
+assert(contains_cmd(strided_index_expr, Back.BackCmdConstInt(Back.BackValId("expr.strided_index.addr.view.elem_size"), Back.BackIndex, "4")))
+assert(contains_cmd(strided_index_expr, Back.BackCmdImul(Back.BackValId("expr.strided_index.addr.view.stride"), Back.BackIndex, Back.BackValId("expr.strided_index.addr.view.stride.expr"), Back.BackValId("expr.strided_index.addr.view.elem_size"))))
+assert(contains_cmd(strided_index_expr, Back.BackCmdImul(Back.BackValId("expr.strided_index.addr.offset"), Back.BackIndex, Back.BackValId("expr.strided_index.addr.index"), Back.BackValId("expr.strided_index.addr.view.stride"))))
 
 local zip_over_expr = one_expr(
     Sem.SemExprLoop(
@@ -359,9 +417,42 @@ local zip_over_expr = one_expr(
     ),
     "expr.zip"
 )
-assert(contains_cmd(zip_over_expr, Back.BackCmdStackAddr(Back.BackValId("expr.zip.zip.1"), Back.BackStackSlotId("slot:zip.a"))))
-assert(contains_cmd(zip_over_expr, Back.BackCmdStackAddr(Back.BackValId("expr.zip.zip.2"), Back.BackStackSlotId("slot:zip.b"))))
-assert(contains_cmd(zip_over_expr, Back.BackCmdConstInt(Back.BackValId("expr.zip.stop"), Back.BackIndex, "3")))
+assert(contains_cmd(zip_over_expr, Back.BackCmdAlias(Back.BackValId("expr.zip.zip.view.1.data"), Back.BackValId("expr.zip.zip.view.1.base"))))
+assert(contains_cmd(zip_over_expr, Back.BackCmdAlias(Back.BackValId("expr.zip.zip.view.2.data"), Back.BackValId("expr.zip.zip.view.2.base"))))
+assert(contains_cmd(zip_over_expr, Back.BackCmdConstInt(Back.BackValId("expr.zip.zip.view.1.len"), Back.BackIndex, "3")))
+
+local slice_zip_over_expr = one_expr(
+    Sem.SemExprLoop(
+        Sem.SemLoopOverExpr(
+            "loop.slice.zip",
+            Sem.SemLoopIndexPort("i", Sem.SemTIndex),
+            Sem.SemDomainZipEq({
+                Sem.SemViewValue(Sem.SemExprBinding(Sem.SemBindLocalCell("slice.a", "a", Sem.SemTSlice(Sem.SemTI32))), Sem.SemTI32),
+                Sem.SemViewValue(Sem.SemExprBinding(Sem.SemBindLocalCell("slice.b", "b", Sem.SemTSlice(Sem.SemTI32))), Sem.SemTI32),
+            }),
+            {
+                Sem.SemLoopCarryPort("carry.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+            },
+            {},
+            {
+                Sem.SemLoopUpdate(
+                    "carry.acc",
+                    Sem.SemExprAdd(
+                        Sem.SemTI32,
+                        Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.slice.zip", "carry.acc", "acc", Sem.SemTI32)),
+                        Sem.SemExprConstInt(Sem.SemTI32, "1")
+                    )
+                ),
+            },
+            Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.slice.zip", "carry.acc", "acc", Sem.SemTI32))
+        ),
+        Sem.SemTI32
+    ),
+    "expr.slice_zip"
+)
+assert(contains_cmd(slice_zip_over_expr, Back.BackCmdLoad(Back.BackValId("expr.slice_zip.zip.view.1.len"), Back.BackIndex, Back.BackValId("expr.slice_zip.zip.view.1.len.addr"))))
+assert(contains_cmd(slice_zip_over_expr, Back.BackCmdLoad(Back.BackValId("expr.slice_zip.zip.view.2.len"), Back.BackIndex, Back.BackValId("expr.slice_zip.zip.view.2.len.addr"))))
+assert(contains_cmd(slice_zip_over_expr, Back.BackCmdTrap))
 
 expect_error(function()
     one_stmt(Sem.SemStmtBreak, "stmt.break")
@@ -412,5 +503,34 @@ assert(contains_cmd(static_module, Back.BackCmdDataInitInt(Back.BackDataId("data
 assert(lacks_cmd(static_module, Back.BackCmdDeclareData(Back.BackDataId("data:const:A"), 4, 4)))
 assert(contains_cmd(static_module, Back.BackCmdDataAddr(Back.BackValId("func:get_s.stmt.1.value.addr"), Back.BackDataId("data:static:S"))))
 assert(static_module.cmds[#static_module.cmds] == Back.BackCmdFinalizeModule)
+
+local arg_residence_module = one_module(Sem.SemModule("", {
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "arg_residence",
+        {
+            Sem.SemParam("n", Sem.SemTI32),
+        },
+        Sem.SemTVoid,
+        {
+            Sem.SemStmtReturnVoid,
+        }
+    )),
+}))
+assert(contains_cmd(arg_residence_module, Back.BackCmdBindEntryParams(
+    Back.BackBlockId("arg_residence:entry"),
+    { Back.BackValId("arg:0:n") }
+)))
+assert(lacks_cmd(arg_residence_module, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:arg:0:n"), 4, 4)))
+assert(lacks_cmd(arg_residence_module, Back.BackCmdStackAddr(Back.BackValId("arg.addr:0:n"), Back.BackStackSlotId("slot:arg:0:n"))))
+
+expect_error(function()
+    one_expr(
+        Sem.SemExprAddrOf(
+            Sem.SemPlaceBinding(Sem.SemBindArg(0, "n", Sem.SemTI32)),
+            Sem.SemTPtrTo(Sem.SemTI32)
+        ),
+        "expr.addr_of_value_arg"
+    )
+end, "sem_to_back_binding_addr: pure value argument 'n' has no canonical storage in Sem->Back yet")
 
 print("moonlift sem->back lowering ok")

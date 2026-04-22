@@ -4,7 +4,7 @@ Status: end-to-end checklist from the **current reboot state** to a **complete M
 
 - full language/compiler implementation
 - open-code / quote / meta layer
-- richer hosting integration
+- deferred future hosted integration
 - plain FFI layer
 
 This document is intentionally a **checklist**, not a narrative status report.
@@ -21,7 +21,7 @@ For the open-code / quoting design target, see:
 
 - `moonlift/QUOTING_SYSTEM_DESIGN.md`
 
-For the richer future hosting direction, see:
+For the deferred future hosting direction, see:
 
 - `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
 
@@ -35,8 +35,8 @@ This checklist treats Moonlift as complete only when all of the following are tr
 - the full intended language surface is implemented, not just manual IR construction
 - the compiler pipeline is coherent from authored source to machine code
 - the open-code / quote / fragment system exists and closes into the ordinary compiler path
-- the hosted integration path exists for the rich user experience
-- the plain FFI layer exists for library/embed users
+- the hosted integration path exists for the richer future user experience, if that path is still pursued
+- the plain FFI layer exists as a stable first-class public path for library/embed/LuaJIT users
 - the backend/runtime model can handle the language’s core value categories, not only scalars
 
 So “complete” here means:
@@ -44,8 +44,8 @@ So “complete” here means:
 - **language complete**
 - **compiler complete**
 - **meta layer complete**
-- **hosting complete**
 - **FFI layer complete**
+- **hosted layer complete, if/when that deferred path is taken on**
 
 ---
 
@@ -70,12 +70,18 @@ The current reboot already has:
   - function-pointer lookup
   - explicit free APIs
 
-But it is still missing major authored-language, meta, hosting, and FFI-completion pieces.
+But it is still missing major authored-language, meta, and FFI-completion pieces, while hosted work is intentionally deferred until after the language and FFI path are complete.
 
 Use this file as the forward checklist from that state.
 
 When checking a box, prefer updating this file in the same change that updates the implementation.
 If the implementation required an architectural correction, update the wording here too rather than preserving stale milestones.
+
+Current delivery priority order is:
+
+1. close the language/compiler path
+2. stabilize and complete the public FFI path
+3. only then revisit hosted/state-aware integration
 
 ## 2.1 Immediate codegen-guided priorities from `CODEGEN_FINDINGS.md`
 
@@ -85,7 +91,7 @@ They should be treated as **ASDL/phase design work first**, not as backend-only 
 ### A. Refactor binding/addressability semantics so value, place, and storage are no longer conflated
 - [x] add explicit `ElabPlace` / `SemPlace`-style ASDL for addressable computations instead of representing `ref` targets only as generic exprs
 - [x] stop encoding storage decisions directly in early/source-facing binding forms when that choice is really machine-facing
-- [ ] add a dedicated storage/addressability classification phase boundary rather than forcing `let`/arg/loop binders into stored forms up front
+- [x] add a dedicated storage/addressability classification phase boundary rather than forcing `let`/arg/loop binders into stored forms up front
 - [ ] split `Sem` binding classes where lowering materially differs:
   - [ ] immutable pure value locals
   - [ ] immutable stored locals
@@ -117,7 +123,7 @@ They should be treated as **ASDL/phase design work first**, not as backend-only 
 - [ ] preserve first-class switch structure longer so dense/sparse dispatch is not collapsed too early into compare chains
 - [ ] add a first-class authored/semantic scalar choose/select form when branchless lowering is intended, instead of expecting generic `if` exprs to imply it
 - [ ] keep code-shape-sensitive math/data-parallel work ASDL-first:
-  - [ ] first-class frontend intrinsic surface for operations like `fma`
+  - [x] first-class frontend intrinsic surface for operations like `fma`
   - [ ] later explicit SIMD/vector forms if the language wants more than scalar backend recovery
 
 ### F. Complete remaining realism gaps exposed by codegen probing
@@ -208,16 +214,15 @@ Surface -> Elab -> Sem -> Back -> Artifact
 - [x] fix/complete `deref` typing (`ptr(T) -> T`) in `Surface -> Elab`
 - [ ] define/addressability rules for all referenceable lvalues
 - [x] add explicit place/lvalue ASDL in `Elab` and `Sem` instead of relying on generic exprs for all addressable operations
-- [ ] move storage classification later than raw frontend elaboration so source-facing binders do not pretend to know final machine storage too early
-- [ ] split pure-value params from address-taken params explicitly instead of treating every param as stored by default
-- [ ] split pure loop-carried/index values from address-taken loop bindings explicitly instead of forcing storage for every carried/index binding
+- [x] move storage classification later than raw frontend elaboration so source-facing binders do not pretend to know final machine storage too early
+- [x] split pure-value params from address-taken params explicitly instead of treating every param as stored by default
+- [x] split pure loop-carried/index values from address-taken loop bindings explicitly instead of forcing storage for every carried/index binding
 - [ ] improve type-directed integer literal elaboration for unsigned / `index` authored code
 - [ ] make typed literal elaboration strong enough that ordinary unsigned / `index` benchmarks do not require helper const globals just to type-check cleanly
 - [x] finalize whether `bool and/or` are strict scalar ops or short-circuit operators
 - [x] if short-circuiting is intended, implement CFG lowering for them
 
 ## 3.5 Complete authored top-level type/layout story
-
 This depends on the intended reboot language surface.
 
 ### If the reboot keeps named types/layouts as imported-only for now
@@ -237,10 +242,10 @@ This depends on the intended reboot language surface.
 - [ ] validate final semantics of `over range(stop)`
 - [ ] validate final semantics of `over range(start, stop)`
 - [x] implement array-backed `over value/view` lowering
-- [ ] implement full slice/view-backed `over value/view` lowering
+- [x] implement full slice/view-backed `over value/view` lowering
 - [x] implement array-backed `over zip_eq(...)` lowering
-- [ ] implement full slice/view-backed `over zip_eq(...)` lowering
-- [ ] define/runtime-check equal-length behavior for zip traversal
+- [x] implement full slice/view-backed `over zip_eq(...)` lowering
+- [x] define/runtime-check equal-length behavior for zip traversal
 - [ ] define complete index/domain typing rules
 - [ ] define final semantics of loop expr exit/result values
 - [x] add explicit loop port/state ASDL rather than treating carries/indexes as generic locals with special helper conventions
@@ -276,11 +281,11 @@ This depends on the intended reboot language surface.
 ## 3.9 Intrinsics completion
 
 ### Frontend
-- [ ] choose frontend intrinsic syntax/binding surface
-- [ ] add Surface representation if needed
-- [ ] add Elab representation if needed
-- [ ] map frontend intrinsic calls into `SemIntrinsic`
-- [ ] make `fma` reachable from authored/frontend code as a first-class code-shape-sensitive operation
+- [x] choose frontend intrinsic syntax/binding surface
+- [x] add Surface representation if needed
+- [x] add Elab representation if needed
+- [x] map frontend intrinsic calls into `SemIntrinsic`
+- [x] make `fma` reachable from authored/frontend code as a first-class code-shape-sensitive operation
 
 ### Sem -> Back
 - [x] implement `SemExprIntrinsicCall` lowering in value position
@@ -322,8 +327,8 @@ This depends on the intended reboot language surface.
 - [ ] define whether unresolved field refs may ever survive past layout resolution
 
 ## 3.12 Complete compiler front door
-- [ ] define the canonical public compile pipeline for closed code
-- [ ] wire `Surface module -> Elab -> Sem -> resolve_sem_layout -> Back -> JIT`
+- [x] define the canonical public compile pipeline for closed code
+- [x] wire `Surface module -> Elab -> Sem -> resolve_sem_layout -> Back -> JIT`
 - [ ] make that one official path the default compile path
 - [ ] remove/retire stale direct shortcuts that bypass the real architecture
 
@@ -338,14 +343,14 @@ Goal:
 ## 4.1 `Sem -> Back` missing pieces
 - [ ] implement full slice/view lowering model
 - [ ] implement bounded-value domain lowering
-- [ ] implement `zip_eq` lowering
+- [x] implement `zip_eq` lowering
 - [x] implement intrinsic lowering
 - [x] stop redeclaring direct/extern callees from call sites during `Sem -> Back`
 - [x] make loop-carried/index lowering use backend-valid value naming without duplicate bound ids
 - [ ] lower explicit `SemPlace`-style addressable forms directly instead of inferring addressability from generic exprs late in the backend
-- [ ] keep params as pure backend values until an explicit addressability requirement forces materialization to storage
-- [ ] keep loop-carried/index values as pure backend/block-param values until an explicit addressability requirement forces materialization to storage
-- [ ] keep pure immutable locals/invariants as backend values unless an explicit addressability requirement forces storage
+- [x] keep params as pure backend values until an explicit addressability requirement forces materialization to storage
+- [x] keep loop-carried/index values as pure backend/block-param values until an explicit addressability requirement forces materialization to storage
+- [x] keep pure immutable locals/invariants as backend values unless an explicit addressability requirement forces storage
 - [ ] fix terminated/block-fill handling for branchy loop bodies and body-local shared values
 - [ ] complete `SemExprCastTo` value lowering in the canonical expr path
 - [ ] complete non-scalar load lowering where intended
@@ -473,6 +478,8 @@ Current implemented reboot parser/frontend now includes:
   - `extern func`
   - `const`
   - `static`
+  - `import`
+  - `type ... = struct { ... }`
   - module packaging
 
 ## 5.3 Diagnostics
@@ -492,8 +499,8 @@ Current state:
 
 ## 5.4 Compile facade
 - [x] `source text -> Surface`
-- [ ] `source text -> compiled artifact`
-- [ ] `source module -> compiled module`
+- [x] `source text -> compiled artifact`
+- [x] `source module/package -> compiled artifact`
 - [ ] source-level error reporting through the canonical public API
 
 Current state:
@@ -503,9 +510,15 @@ Current state:
   - `source text -> Surface`
   - `source text -> Elab`
   - `source text -> Sem`
+  - `source text -> resolved Sem + layout env`
+  - `source text -> BackProgram`
+  - `compile_module`
+  - `pipeline_package`
+  - `back_package`
+  - `compile_package`
   - parse-with-spans helpers
   - try-parse / try-lower / try-sem / try-resolve / try-back / try-compile helpers
-- compile facade exists in bootstrap form, but it is not yet the final fully validated canonical public authored compile path, so the remaining facade boxes stay open for now
+- compile facade therefore exists in real bootstrap form; what remains open is final stabilization/documentation of that API plus complete source-level error reporting
 
 ---
 
@@ -586,13 +599,14 @@ The target is:
 
 ---
 
-# 7. Phase E — Complete the rich hosted integration path
+# 7. Phase E — Deferred hosted integration
 
 Goal:
 
-- implement the richer path described in `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
+- keep the richer path described in `moonlift/LUAJIT_HOSTED_INTEGRATION.md` as future design work, but do not prioritize it before the closed language and FFI path are complete
 
-This is the preferred rich integration path.
+This is **not** the current priority.
+Hosted/state-aware integration should be revisited only after the language/compiler and public FFI path are complete and stable.
 
 ## 7.1 Lua-state-aware native integration
 - [ ] define the hosted/state-aware runtime object model
@@ -636,9 +650,10 @@ This is the preferred rich integration path.
 Goal:
 
 - keep the existing thin public FFI-facing path
-- make it explicit, documented, and complete enough for LuaJIT users who do not want the richer hosted path
+- make it explicit, documented, and complete enough for LuaJIT users
+- finish the language/compiler through this path before revisiting hosted integration
 
-This is the **secondary** path, not the richer architectural center.
+This is the **current primary public integration path**, not a secondary compatibility layer.
 
 There is already a thin FFI layer today (`moonlift/src/ffi.rs` + `moonlift/lua/moonlift/jit.lua`).
 This phase is about stabilizing, documenting, and extending that path rather than inventing it from scratch.
@@ -674,8 +689,8 @@ This phase is about stabilizing, documenting, and extending that path rather tha
 - [x] provide non-hosted library-loading examples
 
 ## 8.5 Relationship to hosted path
-- [ ] ensure hosted path can reuse the core native machinery
-- [x] ensure FFI path remains a thinner compatibility layer, not a second compiler architecture
+- [ ] ensure any later hosted path can reuse the core native machinery
+- [x] ensure the FFI path remains a first-class supported public path for LuaJIT users, not a second compiler architecture
 
 ---
 

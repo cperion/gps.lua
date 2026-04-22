@@ -361,6 +361,7 @@ module MoonliftSem {
 
     SemFieldType = (string field_name, MoonliftSem.SemType ty) unique
     SemFieldLayout = (string field_name, number offset, MoonliftSem.SemType ty) unique
+    SemMemLayout = (number size, number align) unique
     SemTypeLayout = SemLayoutNamed(string module_name, string type_name, MoonliftSem.SemFieldLayout* fields, number size, number align) unique
     SemLayoutEnv = (MoonliftSem.SemTypeLayout* layouts) unique
     SemConstFieldValue = (string name, MoonliftSem.SemConstValue value) unique
@@ -603,6 +604,8 @@ module MoonliftBack {
                      | BackExprTerminated(MoonliftBack.BackCmd* cmds) unique
     BackAddrLowering = BackAddrWrites(MoonliftBack.BackCmd* cmds) unique
                      | BackAddrTerminated(MoonliftBack.BackCmd* cmds) unique
+    BackViewLowering = BackViewPlan(MoonliftBack.BackCmd* cmds, MoonliftBack.BackValId data, MoonliftBack.BackValId len, MoonliftBack.BackValId stride) unique
+                     | BackViewTerminated(MoonliftBack.BackCmd* cmds) unique
     BackStmtPlan = (MoonliftBack.BackCmd* cmds, MoonliftBack.BackFlow flow) unique
     BackFuncPlan = (MoonliftBack.BackCmd* cmds) unique
     BackItemPlan = (MoonliftBack.BackCmd* cmds) unique

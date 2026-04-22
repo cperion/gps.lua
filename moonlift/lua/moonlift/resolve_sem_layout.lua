@@ -9,6 +9,7 @@ function M.Define(T)
 
     local sem_expr_type
     local sem_place_type
+    local resolve_type_mem_layout
     local resolve_type_layout
     local resolve_layout_field
     local resolve_field_ref_from_base_type
@@ -39,6 +40,10 @@ function M.Define(T)
 
     local function one_sem_place_type(node)
         return pvm.one(sem_place_type(node))
+    end
+
+    local function one_type_mem_layout(node, layout_env, module, cache, visiting)
+        return pvm.one(resolve_type_mem_layout(node, layout_env, module, cache, visiting))
     end
 
     local function one_type_layout(node, layout_env)
@@ -245,36 +250,73 @@ function M.Define(T)
         return nil
     end
 
-    local function type_mem_size_align(ty, base_layout_env, module, cache, visiting)
-        if ty == Sem.SemTVoid then return 0, 1 end
-        if ty == Sem.SemTBool then return 1, 1 end
-        if ty == Sem.SemTI8 or ty == Sem.SemTU8 then return 1, 1 end
-        if ty == Sem.SemTI16 or ty == Sem.SemTU16 then return 2, 2 end
-        if ty == Sem.SemTI32 or ty == Sem.SemTU32 or ty == Sem.SemTF32 then return 4, 4 end
-        if ty == Sem.SemTI64 or ty == Sem.SemTU64 or ty == Sem.SemTF64 or ty == Sem.SemTPtr or ty == Sem.SemTIndex or ty.kind == "SemTPtrTo" then
-            return 8, 8
-        end
-        if ty.kind == "SemTArray" then
-            local elem_size, elem_align = type_mem_size_align(ty.elem, base_layout_env, module, cache, visiting)
-            return elem_size * ty.count, elem_align
-        end
-        if ty.kind == "SemTNamed" then
-            local key = named_type_text(ty.module_name, ty.type_name)
-            local layout = find_named_layout(base_layout_env, ty.module_name, ty.type_name)
+    resolve_type_mem_layout = pvm.phase("moonlift_sem_layout_type_mem_layout", {
+        [Sem.SemTVoid] = function()
+            return pvm.once(Sem.SemMemLayout(0, 1))
+        end,
+        [Sem.SemTBool] = function()
+            return pvm.once(Sem.SemMemLayout(1, 1))
+        end,
+        [Sem.SemTI8] = function()
+            return pvm.once(Sem.SemMemLayout(1, 1))
+        end,
+        [Sem.SemTU8] = function()
+            return pvm.once(Sem.SemMemLayout(1, 1))
+        end,
+        [Sem.SemTI16] = function()
+            return pvm.once(Sem.SemMemLayout(2, 2))
+        end,
+        [Sem.SemTU16] = function()
+            return pvm.once(Sem.SemMemLayout(2, 2))
+        end,
+        [Sem.SemTI32] = function()
+            return pvm.once(Sem.SemMemLayout(4, 4))
+        end,
+        [Sem.SemTU32] = function()
+            return pvm.once(Sem.SemMemLayout(4, 4))
+        end,
+        [Sem.SemTF32] = function()
+            return pvm.once(Sem.SemMemLayout(4, 4))
+        end,
+        [Sem.SemTI64] = function()
+            return pvm.once(Sem.SemMemLayout(8, 8))
+        end,
+        [Sem.SemTU64] = function()
+            return pvm.once(Sem.SemMemLayout(8, 8))
+        end,
+        [Sem.SemTF64] = function()
+            return pvm.once(Sem.SemMemLayout(8, 8))
+        end,
+        [Sem.SemTPtr] = function()
+            return pvm.once(Sem.SemMemLayout(8, 8))
+        end,
+        [Sem.SemTIndex] = function()
+            return pvm.once(Sem.SemMemLayout(8, 8))
+        end,
+        [Sem.SemTPtrTo] = function()
+            return pvm.once(Sem.SemMemLayout(8, 8))
+        end,
+        [Sem.SemTArray] = function(self, base_layout_env, module, cache, visiting)
+            local elem = one_type_mem_layout(self.elem, base_layout_env, module, cache, visiting)
+            return pvm.once(Sem.SemMemLayout(elem.size * self.count, elem.align))
+        end,
+        [Sem.SemTNamed] = function(self, base_layout_env, module, cache, visiting)
+            local key = named_type_text(self.module_name, self.type_name)
+            local layout = find_named_layout(base_layout_env, self.module_name, self.type_name)
             if layout ~= nil then
-                return layout.size, layout.align
+                return pvm.once(Sem.SemMemLayout(layout.size, layout.align))
             end
             if cache[key] ~= nil then
-                return cache[key].size, cache[key].align
+                return pvm.once(Sem.SemMemLayout(cache[key].size, cache[key].align))
             end
             if visiting[key] then
                 error("resolve_sem_layout: recursive named type layout is not yet supported for '" .. key .. "'")
             end
             local current_module_name = module.module_name or ""
-            if ty.module_name ~= current_module_name then
+            if self.module_name ~= current_module_name then
                 error("resolve_sem_layout: missing layout for named type '" .. key .. "'")
             end
-            local item = find_module_type_item(module, ty.type_name)
+            local item = find_module_type_item(module, self.type_name)
             if item == nil then
                 error("resolve_sem_layout: missing layout for named type '" .. key .. "'")
             end
@@ -284,31 +326,30 @@ function M.Define(T)
             local fields = {}
             for i = 1, #item.fields do
                 local field = item.fields[i]
-                local field_size, field_align = type_mem_size_align(field.ty, base_layout_env, module, cache, visiting)
-                offset = align_up(offset, field_align)
+                local field_layout = one_type_mem_layout(field.ty, base_layout_env, module, cache, visiting)
+                offset = align_up(offset, field_layout.align)
                 fields[i] = Sem.SemFieldLayout(field.field_name, offset, field.ty)
-                offset = offset + field_size
-                if field_align > struct_align then
-                    struct_align = field_align
+                offset = offset + field_layout.size
+                if field_layout.align > struct_align then
+                    struct_align = field_layout.align
                 end
             end
             local size = align_up(offset, struct_align)
             local synthesized = Sem.SemLayoutNamed(current_module_name, item.name, fields, size, struct_align)
             cache[key] = synthesized
             visiting[key] = nil
-            return synthesized.size, synthesized.align
-        end
-        if ty.kind == "SemTSlice" then
-            error("resolve_sem_layout: slice-valued fields are not yet supported in named layouts")
-        end
-        if ty.kind == "SemTView" then
-            error("resolve_sem_layout: view-valued fields are not yet supported in named layouts")
-        end
-        if ty.kind == "SemTFunc" then
+            return pvm.once(Sem.SemMemLayout(synthesized.size, synthesized.align))
+        end,
+        [Sem.SemTSlice] = function()
+            return pvm.once(Sem.SemMemLayout(16, 8))
+        end,
+        [Sem.SemTView] = function()
+            return pvm.once(Sem.SemMemLayout(24, 8))
+        end,
+        [Sem.SemTFunc] = function()
             error("resolve_sem_layout: function-valued fields are not yet supported in named layouts")
-        end
-        error("resolve_sem_layout: unsupported field type in named layout synthesis")
-    end
+        end,
+    })
 
     synthesize_layout_env = pvm.phase("moonlift_sem_layout_synthesize_layout_env", {
         [Sem.SemModule] = function(self, layout_env)
@@ -321,7 +362,7 @@ function M.Define(T)
                 if item.t ~= nil then
                     local key = named_type_text(self.module_name, item.t.name)
                     if cache[key] == nil then
-                        type_mem_size_align(Sem.SemTNamed(self.module_name, item.t.name), base, self, cache, visiting)
+                        one_type_mem_layout(Sem.SemTNamed(self.module_name, item.t.name), base, self, cache, visiting)
                     end
                     layouts[#layouts + 1] = cache[key]
                 end
@@ -824,6 +865,7 @@ function M.Define(T)
         sem_expr_type = sem_expr_type,
         sem_place_type = sem_place_type,
         synthesize_layout_env = synthesize_layout_env,
+        resolve_type_mem_layout = resolve_type_mem_layout,
         resolve_type_layout = resolve_type_layout,
         resolve_field_ref = resolve_field_ref,
         resolve_view = resolve_view,

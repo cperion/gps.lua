@@ -206,6 +206,66 @@ local sum_to = ffi.cast("int32_t (*)(int32_t)", sum_to_ptr)
 assert(sum_to(10) == 45)
 sum_to_artifact:free()
 
+local sum_view_module = lower_sem_module(Sem.SemModule("", {
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "sum_view",
+        {
+            Sem.SemParam("ptr", Sem.SemTPtrTo(Sem.SemTI32)),
+            Sem.SemParam("n", Sem.SemTIndex),
+        },
+        Sem.SemTI32,
+        {
+            Sem.SemStmtReturnValue(
+                Sem.SemExprLoop(
+                    Sem.SemLoopOverExpr(
+                        "sum.view.loop",
+                        Sem.SemLoopIndexPort("i", Sem.SemTIndex),
+                        Sem.SemDomainView(
+                            Sem.SemViewContiguous(
+                                Sem.SemExprBinding(Sem.SemBindArg(0, "ptr", Sem.SemTPtrTo(Sem.SemTI32))),
+                                Sem.SemTI32,
+                                Sem.SemExprBinding(Sem.SemBindArg(1, "n", Sem.SemTIndex))
+                            )
+                        ),
+                        {
+                            Sem.SemLoopCarryPort("sum.view.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                        },
+                        {},
+                        {
+                            Sem.SemLoopUpdate(
+                                "sum.view.acc",
+                                Sem.SemExprAdd(
+                                    Sem.SemTI32,
+                                    Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.view.loop", "sum.view.acc", "acc", Sem.SemTI32)),
+                                    Sem.SemExprIndex(
+                                        Sem.SemIndexBaseView(
+                                            Sem.SemViewContiguous(
+                                                Sem.SemExprBinding(Sem.SemBindArg(0, "ptr", Sem.SemTPtrTo(Sem.SemTI32))),
+                                                Sem.SemTI32,
+                                                Sem.SemExprBinding(Sem.SemBindArg(1, "n", Sem.SemTIndex))
+                                            )
+                                        ),
+                                        Sem.SemExprBinding(Sem.SemBindLoopIndex("sum.view.loop", "i", Sem.SemTIndex)),
+                                        Sem.SemTI32
+                                    )
+                                )
+                            ),
+                        },
+                        Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.view.loop", "sum.view.acc", "acc", Sem.SemTI32))
+                    ),
+                    Sem.SemTI32
+                )
+            ),
+        }
+    )),
+}))
+local sum_view_artifact = jit:compile(sum_view_module)
+local sum_view_ptr = sum_view_artifact:getpointer(Back.BackFuncId("sum_view"))
+local sum_view = ffi.cast("int32_t (*)(const int32_t*, intptr_t)", sum_view_ptr)
+local view_data = ffi.new("int32_t[4]", { 1, 2, 3, 4 })
+assert(sum_view(view_data, 4) == 10)
+sum_view_artifact:free()
+
 local typed_artifact = source.compile_module([[
 type Pair = struct { left: i32, right: i32 }
 func get_left() -> i32

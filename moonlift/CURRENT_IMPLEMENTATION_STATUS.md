@@ -13,7 +13,7 @@ For the contribution rules that define what counts as an architecturally correct
 
 This is **not** a test-status document.
 It is intentionally focused on implementation coverage rather than test enumeration.
-All current Lua and Rust tests pass as of this review, but this file is about implementation coverage.
+Tests, local build prerequisites, and shared-library availability may still drift independently of this inventory; this file is about implementation coverage.
 
 For the current reboot source-language shape, parser target, and span strategy, see:
 
@@ -25,7 +25,7 @@ For the future open-code / metaprogramming direction, see:
 
 - `moonlift/QUOTING_SYSTEM_DESIGN.md`
 
-For the future richer LuaJIT/self-hosted integration and parser-hosting direction, see:
+For the deferred future LuaJIT-hosted / self-hosted integration and parser-hosting direction, see:
 
 - `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
 
@@ -39,6 +39,10 @@ Do not leave known drift here just because a checklist item or design note exist
 This inventory was based on the current implementation files:
 
 - `moonlift/lua/moonlift/asdl.lua`
+- `moonlift/lua/moonlift/parse_lexer.lua`
+- `moonlift/lua/moonlift/parse.lua`
+- `moonlift/lua/moonlift/source.lua`
+- `moonlift/lua/moonlift/source_spans.lua`
 - `moonlift/lua/moonlift/lower_surface_to_elab.lua`
 - `moonlift/lua/moonlift/lower_surface_to_elab_expr.lua`
 - `moonlift/lua/moonlift/lower_surface_to_elab_loop.lua`
@@ -81,21 +85,23 @@ And the current implementation already contains a real middle/back-end path for 
 - explicit named-module package/import synthesis for qualified cross-module value/type lookup
 - module-local type/layout env synthesis from authored `type ... = struct { ... }` items
 - env-based named-type resolution through `ElabEnv.types`
+- authored intrinsic parsing/lowering through the current closed frontend path
 - semantic layout resolution pass with automatic module layout synthesis
 - large `Sem -> Back` lowering
 - combined package `Sem -> Back` lowering for imported named modules
+- bootstrap source front door helpers in `moonlift.source`, including module/package pipeline + compile helpers
 - `BackCmd` FFI replay
 - Cranelift codegen host in Rust
-- initial reboot text parser scaffold that constructs `MoonliftSurface` directly
+- initial reboot text parser/front-end that constructs `MoonliftSurface` directly
 
 ### Still missing to make the language fully working as an authored language
 - complete reboot parser coverage beyond the current bootstrap subset
 - richer module/package features beyond the current explicit named-module + `import` path
 - richer authored type-definition coverage beyond the current named-struct path
 - full slice/view lowering model
-- authored/frontend intrinsic syntax and binding production
-- fuller const evaluation
+- fuller const evaluation and immediate propagation
 - fuller aggregate / non-scalar ABI support
+- richer diagnostics and source mapping through later layers
 - quote/open-code layer (`Meta`) from the design docs
 
 ---
@@ -133,10 +139,12 @@ Implemented in:
 - unary ops
 - binary ops
 - cast forms
+- intrinsic calls
 - calls
 - index access
 - aggregate literals
 - array literals
+- explicit `select(cond, a, b)`
 - `if` expr
 - `switch` expr
 - block expr
@@ -310,7 +318,9 @@ Implemented in:
 - `moonlift/lua/moonlift/jit.lua`
 
 This currently replays the `BackCmd` stream into the Rust builder via FFI.
-There is already a thin plain FFI-facing path today; what is still missing is a more polished/stable final public FFI surface.
+There is already a thin plain FFI-facing path today, and that FFI path is the current practical/project-priority integration route while the language is completed.
+What is still missing there is a more polished/stable final public FFI surface.
+Practical use through `moonlift.jit` still requires building the shared library with cargo and either letting the default `target/...` search path find it or passing an explicit `libpath`; that build/load requirement is separate from the backend implementation coverage described here.
 
 ### Rust side
 Implemented in:
@@ -343,28 +353,18 @@ It exists.
 
 ---
 
-# 4. What exists only as manual/internal IR today
+# 4. What still exists mainly as internal / pass-produced IR today
 
-Some ASDL forms exist and are supported downstream, but they are not yet produced by a complete authored frontend.
+Some semantic forms are real and used downstream, but are still reached mostly through internal passes, lower-level helper lowering, or manual `Sem` construction in tests rather than through broad first-class authored syntax.
 
-These include:
+Important current examples include:
 
-- `SemExprSelect`
-- `SemExprIndexAddr`
-- `SemExprFieldAddr`
-- `SemExprLoad`
-- `SemExprIntrinsicCall`
 - `SemStmtAssert`
-- `SemFieldByOffset`
-- `SemIndexBaseView`
-- `SemIndexBasePtr`
+- `SemExprLoad`
+- resolved field refs like `SemFieldByOffset`
+- lower-level explicit view/index forms such as `SemView*` and `SemIndexBaseView`
 
-These are useful real internal forms, but many of them are currently reached only by:
-
-- manual `Sem` construction in tests/debugging
-- or by internal passes like `resolve_sem_layout`
-
-rather than by a full top-level authored language path.
+These are useful real semantic forms, but they should be understood as part of the current internal/compiler IR story rather than as uniformly surfaced authored constructs.
 
 ---
 
@@ -372,7 +372,7 @@ rather than by a full top-level authored language path.
 
 This is the core missing-work inventory.
 
-## 5.1 Top-level `Surface -> Elab` value-item lowering now exists, but authored type/layout declarations and qualified paths are still missing
+## 5.1 Top-level `Surface -> Elab` item lowering is now real for value items, imports, and authored struct types
 
 The reboot now has real frontend lowering for:
 
@@ -380,20 +380,26 @@ The reboot now has real frontend lowering for:
 - `SurfFunc`
 - `SurfExternFunc`
 - `SurfConst`
+- `SurfStatic`
+- `SurfImport`
+- `SurfTypeDecl`
 - `SurfItemFunc`
 - `SurfItemExtern`
 - `SurfItemConst`
+- `SurfItemStatic`
+- `SurfItemImport`
+- `SurfItemType`
 - `SurfModule`
 
-What is still missing at this layer is:
+What is still missing at this layer is not the existence of authored top-level items, but broader completion around:
 
-- authored type-definition items / layout-definition items
-- type/layout env synthesis from authored top-level declarations
-- a text parser/frontend that produces those authored top-level items
+- richer authored type-definition families beyond the current named-struct path
+- broader package/module features beyond the current named-module import path
+- clearer final surface rules for visibility/export semantics
 
 ---
 
-## 5.2 Top-level `Elab -> Sem` value-item lowering now exists, but export/visibility semantics are still minimal
+## 5.2 Top-level `Elab -> Sem` item lowering now exists, but export/visibility semantics are still minimal
 
 These current ASDL nodes now have real lowering:
 
@@ -401,9 +407,15 @@ These current ASDL nodes now have real lowering:
 - `ElabFunc`
 - `ElabExternFunc`
 - `ElabConst`
+- `ElabStatic`
+- `ElabImport`
+- `ElabTypeDecl`
 - `ElabItemFunc`
 - `ElabItemExtern`
 - `ElabItemConst`
+- `ElabItemStatic`
+- `ElabItemImport`
+- `ElabItemType`
 - `ElabModule`
 
 Current explicit limitation:
@@ -546,52 +558,36 @@ So today they are implemented as short-circuit boolean operations.
 
 ---
 
-## 5.10 Named types/layouts are only manually usable today
+## 5.10 Named struct types/layouts are now authored and integrated on the current reboot path
 
-The current frontend can work with:
+The current frontend now supports an authored top-level path for:
 
-- `SurfTNamed`
-- field access on named types
-- aggregate literals for named types
+- defining named struct types with `type Name = struct { ... }`
+- synthesizing matching layout/type env entries
+- using those named types in aggregate literals, field access, and qualified module paths
+- carrying them through `Surface -> Elab -> Sem -> resolve_sem_layout`
 
-but only if matching layouts are manually supplied through env/layout data.
+So named aggregate support is no longer only manual-context support.
 
-There is no current authored top-level path for:
+Current explicit limitations:
 
-- defining named types
-- deriving/registering their layouts
-- making them available to the normal frontend automatically
-
-So named aggregate support currently exists only in a manual-context sense.
+- the authored type-definition story is still basically the named-struct path
+- broader type-definition families / richer layout declarations are still future work
+- the broader namespace/import story can still grow beyond the current qualified named-module path
 
 ---
 
-## 5.11 Intrinsics are implemented in `Sem -> Back` and the Rust backend, but not surfaced at the frontend
+## 5.11 Intrinsics are now real from authored source through `Sem -> Back` and the Rust backend
 
-The ASDL contains this `SemIntrinsic` family:
+The ASDL now carries an explicit intrinsic family across the current closed path:
 
-- `SemPopcount`
-- `SemClz`
-- `SemCtz`
-- `SemRotl`
-- `SemRotr`
-- `SemBswap`
-- `SemFma`
-- `SemSqrt`
-- `SemAbs`
-- `SemFloor`
-- `SemCeil`
-- `SemTruncFloat`
-- `SemRound`
-- `SemTrap`
-- `SemAssume`
+- `MoonliftSurface.SurfIntrinsic`
+- `MoonliftElab.ElabIntrinsic`
+- `MoonliftSem.SemIntrinsic`
 
-Current backend status:
+Authored source can now parse and lower intrinsic calls through the normal frontend path into `SemExprIntrinsicCall`.
 
-### Implemented in `Sem -> Back`
-`SemExprIntrinsicCall` now lowers in value position for scalar-result intrinsics and in materialization position where that is meaningful.
-
-Current intrinsic lowering is scalar-only and split as follows:
+Current implemented scalar intrinsic family includes:
 
 - integer-like scalar intrinsics:
   - `popcount`
@@ -615,13 +611,24 @@ Current intrinsic lowering is scalar-only and split as follows:
   - `assume`
     - currently stmt-position / void-form control intrinsics in `Sem -> Back`
 
-### Implemented in the Rust backend / FFI replay path
-The backend command vocabulary and Rust Cranelift host now include lowering/replay for the intrinsic-backed `BackCmd` forms needed by the currently supported `SemIntrinsic` family.
+### Frontend status
+The reboot parser and frontend lowering now include intrinsic call parsing/binding and lower those calls through:
 
-### Still missing at frontend
-There is still no current Surface/Elab frontend syntax or binding path producing `SemIntrinsic` from authored source.
+- `SurfExprIntrinsicCall`
+- `ElabExprIntrinsicCall`
+- `SemExprIntrinsicCall`
 
-So intrinsic support is now real in the semantic/backend layers, but it is **not yet an authored frontend feature**.
+### `Sem -> Back` status
+`SemExprIntrinsicCall` lowers in value position for scalar-result intrinsics and in materialization position where that is meaningful.
+
+### Rust backend / FFI replay status
+The backend command vocabulary and Rust Cranelift host include lowering/replay for the intrinsic-backed `BackCmd` forms needed by the currently supported scalar intrinsic family.
+
+Current explicit limitations:
+
+- intrinsic lowering is still scalar-oriented
+- intrinsics are not yet part of const evaluation
+- there is not yet a richer user-facing intrinsic namespace/binding story beyond the current direct intrinsic call surface
 
 ---
 
@@ -651,23 +658,25 @@ This is one of the biggest backend/runtime gaps.
 - `SemDomainView`
 - `SemDomainZipEq`
 
-### Missing end-to-end in lowering
-Current `Sem -> Back` explicitly lacks full support for:
+### What is now implemented in lowering
+`Sem -> Back` now has an explicit bounded-view lowering path with a real backend result shape for:
 
-- slice/view indexing
-- slice/view mem sizing in key cases
-- slice runtime copying
-- slice/view-backed `SemDomainView` lowering beyond simple value-backed array cases
+- slice/view indexing through `SemIndexBaseView`
+- slice/view-backed `SemDomainView` lowering
 - slice/view-backed `zip_eq` `over` loops
-- a complete explicit low-level slice/view representation and bounds model
+- explicit contiguous/strided/window/interleaved `SemView*` lowering
+- slice/view mem sizing in key runtime cases
+- slice/view stack-slot sizing for stack-resident values
+- slice/view runtime copying for stack-resident values
+- runtime equal-length checks for dynamic `zip_eq` traversal
 
-What is now implemented in this area:
+Still missing or still restricted:
 
-- value-backed array `SemDomainView` lowering in `Sem -> Back`
-- value-backed array `SemDomainZipEq` lowering in `Sem -> Back`
-- compile-time equal-length enforcement for array-valued `zip_eq`
+- a fully finished authored-language story for constructing/passing slice/view values through the current non-scalar ABI/value path
+- a complete explicit low-level slice/view bounds/checking model beyond the current bounded-view lowering shape
+- broader non-scalar load/call/result/materialization completion around slice/view values
 
-So slices/views/domains exist structurally in the IR, simple array-backed domain/view cases now lower, but the full slice/view-backed domain model is still not machine-lowered yet.
+So slices/views/domains no longer stop at array-only machine lowering: the backend now lowers bounded slice/view indexing and traversal directly, but the broader non-scalar language/runtime story is still not complete.
 
 ---
 
@@ -742,18 +751,18 @@ The address-of / place model is explicit now, but still incomplete.
 
 Implemented now:
 - address of mutable locals through canonical local-cell stack slots
-- address of arguments through canonical entry stack slots
-- address of loop-carried locals and `over`-loop index bindings through canonical loop slots
 - address of static globals through `SemBindGlobalStatic`
 - address of projected/deref/index places built from those addressable bases
+- a real function-scoped `SemResidencePlan` phase boundary for storage/addressability classification
+- place-root bindings (`SemPlaceBinding(...)`) now force stack residence in that plan instead of relying only on default-by-type answers
 
 Still missing or restricted:
-- address of pure immutable `SemBindLocalValue` locals
+- the broader not-yet-finished non-scalar/value-model path
 - address of pure const globals (`SemBindGlobalConst`)
 - address of many computed values except where explicit materialization already exists
 - a fully general addressability model across all place categories
 
-So references/places exist in the IR and work for cells, args, loop ports, statics, and derived places over those bases, but the full place/storage model is still partial.
+So references/places exist in the IR, storage/addressability now has an explicit function-scoped phase answer, and `Sem -> Back` now consumes that answer for pure-value locals/args/loop values, but the broader non-scalar/general-place story is still incomplete.
 
 ---
 
@@ -836,26 +845,29 @@ So floating remainder is not currently implemented end-to-end.
 
 ---
 
-## 5.21 A bootstrap parser / text frontend now exists, but only for a subset
+## 5.21 A bootstrap parser / text frontend now exists and already covers most of the current closed reboot surface
 
-There is now an initial reboot parser scaffold in:
+There is now an initial reboot parser/front-end in:
 
 - `moonlift/lua/moonlift/parse_lexer.lua`
 - `moonlift/lua/moonlift/parse.lua`
 - `moonlift/test_parse_smoke.lua`
 
-It already constructs `MoonliftSurface` ASDL values directly for a useful bootstrap subset, including:
+It already constructs `MoonliftSurface` ASDL values directly for a substantial bootstrap/front-door surface, including:
 
 - top-level items:
   - `func`
   - `extern func`
   - `const`
   - `static`
+  - `import`
+  - `type ... = struct { ... }`
 - types:
   - scalar
   - pointer
   - array
   - slice
+  - `view(T)`
   - function type
   - named path
 - expressions:
@@ -893,36 +905,51 @@ It already constructs `MoonliftSurface` ASDL values directly for a useful bootst
   - try-lower / try-sem / try-resolve / try-back / try-compile helpers
   - `parse -> Surface -> Elab`
   - `parse -> Surface -> Elab -> Sem`
+  - `pipeline_module`
+  - `pipeline_package`
+  - `back_module`
+  - `back_package`
+  - `compile_module`
+  - `compile_package`
 - current source spans are stored in a parallel **path-keyed** span index rather than a naive `node -> span` map, because interned `Surface` values do not preserve occurrence identity by object identity alone
 - current public source helpers can already bridge some lower-stage errors back to source paths/line+column when the lower-stage error carries structural path text
 
-But it is still only a bootstrap parser/front-end.
+But it is still a bootstrap/front-door rather than the final frozen authored language.
 
 Still missing from the reboot authored front door:
 
 - complete grammar coverage for everything already present in `Surface`
 - frozen authored syntax for currently open `Surface` areas such as `view`
 - richer diagnostics and source span plumbing through later compiler layers
-- coherent top-level compile facade over parse + lower + resolve + JIT
 - hosted fragment / quote syntax
 
-So the reboot is no longer parser-less, but it is not yet a complete authored text language either.
+So the reboot is no longer parser-less, and it now has a real authored source front door, but it is not yet the final complete authored text language.
 
 ---
 
-## 5.22 No integrated top-level compile facade yet
+## 5.22 A bootstrap top-level compile facade now exists
 
-The pipeline pieces exist, but the complete user-facing authored compile flow is still missing.
+The pipeline pieces are no longer only manual / semi-manual.
+`moonlift/lua/moonlift/source.lua` now exposes real authored-source helpers for:
 
-Still missing as a coherent top-level path:
-- authored top-level `Surface` module construction from source text
-- env synthesis
-- top-level `Surface -> Elab`
-- top-level `Elab -> Sem`
-- automatic layout resolution pass insertion
-- normal top-level compile facade into JIT artifact/session objects
+- `source text -> Surface`
+- `source text -> Elab`
+- `source text -> Sem`
+- `source text -> resolved Sem + synthesized layout env`
+- `source text -> BackProgram`
+- `source text -> compiled artifact` via `compile_module`
+- named source package/module sets -> compiled artifact via `compile_package`
 
-Right now these pieces are still manual / semi-manual.
+The closed compile path used by those helpers is the real reboot path:
+
+- parse -> `Surface`
+- `Surface -> Elab`
+- `Elab -> Sem`
+- synthesize/resolve layout
+- `Sem -> Back`
+- JIT compile
+
+What is still missing here is not the existence of a compile facade, but its final stabilization as the single clearly documented public front door, plus richer source-level diagnostics and retirement of stale shortcut paths.
 
 ---
 
@@ -932,15 +959,14 @@ Recent direct machine-code inspection of small benchmark kernels shows several r
 
 - dense integer `switch` currently lowers as a compare-chain CFG, not as a preserved switch form that could become a jump table
 - plain scalar `if` chooses currently lower as branch CFG, not as an explicit select/branchless choice form
-- function arguments are still eagerly spilled to stack slots at entry because the current addressability policy gives args canonical storage unconditionally
+- scalar function arguments now stay as backend entry values by default, and function-scoped residence planning materializes storage only when addressability requires it; the same policy now also covers pure scalar loop carries/indices, while general-place/non-scalar cases are still less complete
 - authored unsigned / `index` benchmarking is still awkward because type-directed integer literal elaboration is not yet strong enough
-- frontend/authored intrinsic syntax is still missing even though semantic/backend intrinsic lowering now exists
 
-So the current backend is already useful for real codegen observation, but some important machine-shape outcomes are still determined by open frontend/lowering policy decisions rather than by finished intended language semantics.
+So the current backend is already useful for real codegen observation, but some important machine-shape outcomes are still determined by open frontend/lowering policy decisions—especially switch preservation, select/branchless choice, and the still-incomplete storage/addressability policy—rather than by finished intended language semantics.
 
 ---
 
-## 5.23 No `Meta` / quote / open-code implementation yet
+## 5.24 No `Meta` / quote / open-code implementation yet
 
 The metaprogramming layer discussed in:
 
@@ -962,7 +988,7 @@ So the meta side is still design-only.
 
 # 6. What is partly implemented but still incomplete
 
-## 6.1 Modules/functions/items now exist as authored frontend forms for value items, but the authored type/layout story is still incomplete
+## 6.1 Modules/functions/items and authored struct type items now exist, but the broader language story is still incomplete
 
 This distinction still matters.
 
@@ -970,46 +996,54 @@ This distinction still matters.
 - `SurfFunc` / `ElabFunc` / `SemFuncExport`
 - `SurfExternFunc` / `ElabExternFunc` / `SemExternFunc`
 - `SurfConst` / `ElabConst` / `SemConst`
+- `SurfStatic` / `ElabStatic` / `SemStatic`
+- `SurfImport` / `ElabImport` / `SemImport`
+- `SurfStruct` / `ElabStruct` / `SemStruct`
 - `SurfItem*` / `ElabItem*` / `SemItem*`
 - `SurfModule` / `ElabModule` / `SemModule`
+- named-module package imports / qualified refs/types through the source helpers
 - their downstream `Sem -> Back` lowering
 
 ### Still missing today
-- authored type-definition items
-- authored layout-definition items
-- automatic multi-module import/qualified-path env synthesis
+- broader type-definition families beyond named structs
+- broader package/module surface beyond the current named-module path
 - a visibility/export distinction for authored functions
 
 ---
 
-## 6.2 Field and layout machinery exists, but still needs authored integration
+## 6.2 Field and layout machinery is integrated for the current named-struct path, but broader completion remains
 
 Current real support includes:
+- authored top-level struct type declarations
+- automatic layout synthesis from authored program items
 - named layout env
 - field-name resolution to offset
 - named aggregate copying/materialization
 - field-address and field-load support downstream
 
 But current real missing parts include:
-- authored top-level type declaration path
-- automatic layout synthesis from authored program items
-- fully integrated type namespace handling
+- broader type/layout families beyond the current struct path
+- finalizing which unresolved forms may survive past layout resolution
+- fuller non-scalar / view-driven layout and value-model completion
 
 ---
 
-## 6.3 Loops are strong on `while` and `range`, weak on bounded-value / zip-domain lowering
+## 6.3 Loops are strong on `while`, `range`, and bounded view/zip domains; broader non-scalar domain/value completion is still open
 
 Current real support:
 - while loops
 - `over range(stop)`
 - `over range(start, stop)`
+- array-backed `over value/view`
+- slice/view-backed `over value/view`
+- array-backed `zip_eq(...)`
+- slice/view-backed `zip_eq(...)` with runtime equal-length checks
 - loop exprs and stmt loops
 - carry/next machinery
 
 Missing/partial:
-- `over` bounded aggregate/slice values
-- `zip_eq(...)` lowering to machine code
-- complete low-level domain model for multi-domain traversal
+- complete low-level domain model for broader multi-domain traversal
+- broader non-scalar value creation/ABI/materialization around slice/view values
 
 ---
 
@@ -1052,21 +1086,30 @@ That is a real compiler middle and backend.
 
 The biggest missing authored-language area is now:
 
-- parser/text frontend
-- multi-module namespace/import integration
-- authored type/layout declarations and synthesis
+- finalizing and documenting the bootstrap source front door as the clear public authored entry path
+- richer diagnostics / source mapping through later compiler layers
+- broader package/module surface beyond the current named-module import path
+- finishing currently open authored areas such as the final `view` surface story
 
-Without those, the language still does not yet exist as a complete authored system, even though the closed value-item lowering path is now real.
+So the language now has a real authored front door, but that front door is still incomplete and still visibly in bootstrap form.
 
 ## 8.3 The biggest missing runtime/value-model areas
 
 The biggest incomplete runtime/value-model areas are:
 
 - slices/views
-- intrinsics
-- fuller const evaluation
+- fuller const evaluation / immediate propagation
 - non-scalar ABI/value support
-- top-level type/layout integration
+- storage/addressability classification cleanup
+- code-shape preservation for switch/select-sensitive lowering
+
+The repo now also has a ratcheting semantic-dispatch audit for active semantic/backend compiler files:
+
+- `moonlift/test_semantic_dispatch_audit.lua`
+- `moonlift/semantic_dispatch_audit_baseline.txt`
+
+The audited active semantic/backend files are currently at **zero baseline findings**.
+That means the previously-inventoried raw `.kind` / raw helper type-classification debt in those audited files has been paid down, and new sites should now fail as immediate regressions.
 
 ## 8.4 The biggest missing future-architecture area
 
@@ -1074,7 +1117,7 @@ The biggest planned-but-not-implemented area is the open-code/meta layer describ
 
 - `moonlift/QUOTING_SYSTEM_DESIGN.md`
 
-And the richer future host/parser integration strategy described in:
+And the deferred future host/parser integration strategy described in:
 
 - `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
 
@@ -1084,15 +1127,15 @@ And the richer future host/parser integration strategy described in:
 
 If compressed to one sentence:
 
-> Moonlift already has a real local frontend core, real top-level value-item lowering through `Surface -> Elab -> Sem`, basic env-based qualified value refs, a layout-resolution pass, and a substantial backend, but it still lacks a complete authored language front door: **parser/text input, multi-module namespace/import integration, authored type/layout synthesis, slices/views, intrinsics, const eval, and fuller non-scalar ABI/value support**.
+> Moonlift already has a real authored parser/source front door, real top-level item lowering through `Surface -> Elab -> Sem`, qualified module imports, authored struct type/layout synthesis, a layout-resolution pass, bootstrap `compile_module` / `compile_package` helpers, and a substantial backend, but it still needs slices/views, fuller const/value-model/ABI completion, richer diagnostics, and the future `Meta` layer; hosted integration remains deferred until after the language and FFI path are finished.
 
 And if compressed even further:
 
 - **expr/stmt/loop core:** real
-- **top-level value-item frontend:** real
+- **top-level value/type/module frontend:** real
+- **bootstrap source compile/package facade:** real
 - **scalar backend:** real
-- **authored type/layout + multi-module namespace frontend:** still incomplete
-- **slice/intrinsic/parser/meta path:** not done
+- **slice/value-model/meta path:** still incomplete
 
 ---
 
@@ -1104,6 +1147,6 @@ For the future open-code / metaprogramming layer:
 
 - `moonlift/QUOTING_SYSTEM_DESIGN.md`
 
-For the future richer LuaJIT-hosted / parser-hosted integration strategy:
+For the deferred future LuaJIT-hosted / parser-hosted integration strategy:
 
 - `moonlift/LUAJIT_HOSTED_INTEGRATION.md`

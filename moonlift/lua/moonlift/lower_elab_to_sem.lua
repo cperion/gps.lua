@@ -15,6 +15,8 @@ function M.Define(T)
     local lower_index_base
     local lower_view
     local lower_expr
+    local elab_view_value_elem_type
+    local sem_type_is_index
     local lower_domain
     local lower_stmt
     local lower_loop
@@ -148,6 +150,14 @@ function M.Define(T)
 
     local function one_sem_expr_type(node)
         return pvm.one(sem_expr_type(node))
+    end
+
+    local function one_view_value_elem_type(node, const_env)
+        return pvm.one(elab_view_value_elem_type(node, const_env))
+    end
+
+    local function one_sem_type_is_index(node)
+        return pvm.one(sem_type_is_index(node))
     end
 
     local function one_call_target_from_binding(binding, fn_ty, const_env)
@@ -567,13 +577,68 @@ function M.Define(T)
         end,
     })
 
-    local function view_value_expr(node, const_env)
-        local expr_ty = one_elab_expr_type(node)
-        if expr_ty.kind ~= "ElabTPtr" and expr_ty.kind ~= "ElabTArray" and expr_ty.kind ~= "ElabTSlice" and expr_ty.kind ~= "ElabTView" then
+    elab_view_value_elem_type = pvm.phase("moonlift_elab_view_value_elem_type", {
+        [Elab.ElabTPtr] = function(self, const_env)
+            return pvm.once(one_type(self.elem, const_env))
+        end,
+        [Elab.ElabTArray] = function(self, const_env)
+            return pvm.once(one_type(self.elem, const_env))
+        end,
+        [Elab.ElabTSlice] = function(self, const_env)
+            return pvm.once(one_type(self.elem, const_env))
+        end,
+        [Elab.ElabTView] = function(self, const_env)
+            return pvm.once(one_type(self.elem, const_env))
+        end,
+        [Elab.ElabTVoid] = function()
             error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
-        end
-        local elem_ty = expr_ty.elem or expr_ty.elem
-        return Sem.SemViewValue(one_expr(node, const_env), one_type(elem_ty, const_env))
+        end,
+        [Elab.ElabTBool] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTI8] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTI16] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTI32] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTI64] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTU8] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTU16] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTU32] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTU64] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTF32] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTF64] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTIndex] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTFunc] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+        [Elab.ElabTNamed] = function()
+            error("elab_to_sem_view: domain values currently require pointer/array/slice/view typed expressions")
+        end,
+    })
+
+    local function view_value_expr(node, const_env)
+        return Sem.SemViewValue(one_expr(node, const_env), one_view_value_elem_type(one_elab_expr_type(node), const_env))
     end
 
     lower_view = pvm.phase("elab_to_sem_view", {
@@ -717,6 +782,29 @@ function M.Define(T)
         end,
     })
 
+    sem_type_is_index = pvm.phase("moonlift_sem_type_is_index", {
+        [Sem.SemTIndex] = function() return pvm.once(true) end,
+        [Sem.SemTVoid] = function() return pvm.once(false) end,
+        [Sem.SemTBool] = function() return pvm.once(false) end,
+        [Sem.SemTI8] = function() return pvm.once(false) end,
+        [Sem.SemTI16] = function() return pvm.once(false) end,
+        [Sem.SemTI32] = function() return pvm.once(false) end,
+        [Sem.SemTI64] = function() return pvm.once(false) end,
+        [Sem.SemTU8] = function() return pvm.once(false) end,
+        [Sem.SemTU16] = function() return pvm.once(false) end,
+        [Sem.SemTU32] = function() return pvm.once(false) end,
+        [Sem.SemTU64] = function() return pvm.once(false) end,
+        [Sem.SemTF32] = function() return pvm.once(false) end,
+        [Sem.SemTF64] = function() return pvm.once(false) end,
+        [Sem.SemTPtr] = function() return pvm.once(false) end,
+        [Sem.SemTPtrTo] = function() return pvm.once(false) end,
+        [Sem.SemTArray] = function() return pvm.once(false) end,
+        [Sem.SemTSlice] = function() return pvm.once(false) end,
+        [Sem.SemTView] = function() return pvm.once(false) end,
+        [Sem.SemTFunc] = function() return pvm.once(false) end,
+        [Sem.SemTNamed] = function() return pvm.once(false) end,
+    })
+
     lower_field_type = pvm.phase("elab_to_sem_field_type", {
         [Elab.ElabFieldType] = function(self, const_env)
             return pvm.once(Sem.SemFieldType(self.field_name, one_type(self.ty, const_env)))
@@ -764,7 +852,7 @@ function M.Define(T)
     })
 
     local function coerce_index_expr(expr)
-        if one_sem_expr_type(expr) == Sem.SemTIndex then
+        if one_sem_type_is_index(one_sem_expr_type(expr)) then
             return expr
         end
         return Sem.SemExprCastTo(Sem.SemTIndex, expr)

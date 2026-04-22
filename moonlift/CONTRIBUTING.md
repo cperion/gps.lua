@@ -137,6 +137,20 @@ Those are the model.
 
 ## 4.3 If a helper asks a semantic question, that is a warning sign
 
+Moonlift now also has a ratcheting audit test for this class of mistake:
+
+- `moonlift/test_semantic_dispatch_audit.lua`
+- baseline file: `moonlift/semantic_dispatch_audit_baseline.txt`
+
+Rule:
+
+- do **not** add new raw semantic `.kind` dispatch or new raw helper type-classification logic in active semantic/backend compiler files
+- if a distinction matters, represent it explicitly and answer it through ASDL + `pvm.phase(...)`
+- the audit baseline is debt inventory, **not** permission to add more debt
+- the current goal is to keep the baseline empty; treat any new finding as a regression unless the audit scope itself is intentionally expanded
+
+If you remove old raw dispatch sites, update the baseline in the same change so the ratchet tightens.
+
 Examples of dangerous helper questions:
 
 - “does this terminate?”

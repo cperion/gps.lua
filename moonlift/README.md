@@ -10,6 +10,8 @@ Current focus:
 - define correct ASDL compiler layers
 - move semantic/frontend lowering into Lua
 - keep Rust as a small validated backend/codegen layer
+- finish the closed language and the public LuaJIT FFI path first
+- treat deeper hosted/state-aware integration as later follow-on work, not the current priority
 
 Design docs for the current direction:
 
@@ -22,7 +24,7 @@ Design docs for the current direction:
 - `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md` — living checklist from current state to complete language + hosting + FFI
 - `moonlift/CODEGEN_FINDINGS.md` — current machine-code findings observed from the Cranelift backend
 - `moonlift/QUOTING_SYSTEM_DESIGN.md` — fragment/function metaprogramming design
-- `moonlift/LUAJIT_HOSTED_INTEGRATION.md` — why deeper LuaJIT hosting + hosted parsing is attractive
+- `moonlift/LUAJIT_HOSTED_INTEGRATION.md` — deferred future hosted/state-aware integration design; not the current priority
 
 Lua ASDL schema currently lives in a single file:
 
@@ -131,8 +133,9 @@ The Rust tests currently validate:
 
 ## LuaJIT FFI bridge
 
-This is the **current** practical bridge and remains useful.
-Longer-term, Moonlift may prefer a deeper LuaJIT/state-aware hosted integration, but that does **not** rule out continuing to provide the current plain FFI-facing path for LuaJIT users who want the simpler library/loading model.
+This is the **current** practical bridge and the current project-priority integration path.
+The near-term goal is to finish the language/compiler through this FFI-facing path first.
+Only after that is done should deeper hosted/state-aware integration be revisited, and even then the working FFI path should remain available for LuaJIT users who want the simpler library/loading model.
 
 There is now also a direct LuaJIT bridge at:
 
