@@ -48,6 +48,28 @@ local function is_paint_program_list(v)
     return classof(v) == Paint.ProgramList
 end
 
+local function plain_array_last(items)
+    local max = 0
+    for k in pairs(items) do
+        if type(k) == "number" and k >= 1 and k == math.floor(k) and k > max then
+            max = k
+        end
+    end
+    return max
+end
+
+local function dense_optional_items(items)
+    local out = {}
+    local n = plain_array_last(items)
+    for i = 1, n do
+        local v = items[i]
+        if v ~= nil and v ~= false then
+            out[#out + 1] = v
+        end
+    end
+    return out
+end
+
 local function append_style_value(v, styles)
     if is_token(v) then
         styles[#styles + 1] = v
@@ -258,11 +280,11 @@ function M.id(value)
 end
 
 function M.box(items)
-    return parse_box(expect_table(items, 2))
+    return parse_box(dense_optional_items(expect_table(items, 2)))
 end
 
 function M.text(items)
-    return parse_text(expect_table(items, 2))
+    return parse_text(dense_optional_items(expect_table(items, 2)))
 end
 
 function M.text_ref(content_id, items)
@@ -270,7 +292,7 @@ function M.text_ref(content_id, items)
 end
 
 function M.paint(items)
-    return parse_paint(expect_table(items, 2))
+    return parse_paint(dense_optional_items(expect_table(items, 2)))
 end
 
 function M.scroll(id, axis, items)
@@ -280,7 +302,7 @@ function M.scroll(id, axis, items)
     if axis ~= Style.ScrollX and axis ~= Style.ScrollY and axis ~= Style.ScrollBoth then
         error("scroll expects Style.ScrollX, Style.ScrollY, or Style.ScrollBoth as second argument", 2)
     end
-    return parse_scroll(id, axis, expect_table(items, 2))
+    return parse_scroll(id, axis, dense_optional_items(expect_table(items, 2)))
 end
 
 function M.scroll_x(id, items)
@@ -296,7 +318,7 @@ function M.scroll_both(id, items)
 end
 
 function M.fragment(items)
-    return parse_fragment(expect_table(items, 2))
+    return parse_fragment(dense_optional_items(expect_table(items, 2)))
 end
 
 function M.with_state(state, child)

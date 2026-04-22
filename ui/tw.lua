@@ -45,6 +45,16 @@ local function clone_cond(cond, bp, scheme, motion, state)
     return S.Cond(bp or cond.bp, scheme or cond.scheme, motion or cond.motion, state or cond.state)
 end
 
+local function plain_array_last(items)
+    local max = 0
+    for k in pairs(items) do
+        if type(k) == "number" and k >= 1 and k == math.floor(k) and k > max then
+            max = k
+        end
+    end
+    return max
+end
+
 local function collect_tokens(value, out)
     if value == nil or value == false then
         return
@@ -64,7 +74,8 @@ local function collect_tokens(value, out)
     end
 
     if type(value) == "table" and not classof(value) then
-        for i = 1, #value do
+        local n = plain_array_last(value)
+        for i = 1, n do
             collect_tokens(value[i], out)
         end
         return
@@ -102,7 +113,8 @@ local function map_cond(value, bp, scheme, motion)
 
     if type(value) == "table" and not classof(value) then
         local out = {}
-        for i = 1, #value do
+        local n = plain_array_last(value)
+        for i = 1, n do
             collect_tokens(map_cond(value[i], bp, scheme, motion), out)
         end
         return S.Group(out)
@@ -535,8 +547,12 @@ M.track = {
 
 local function collect_tracks(args)
     local out = {}
-    for i = 1, #args do
-        out[#out + 1] = args[i]
+    local n = plain_array_last(args)
+    for i = 1, n do
+        local v = args[i]
+        if v ~= nil and v ~= false then
+            out[#out + 1] = v
+        end
     end
     return out
 end
@@ -599,7 +615,8 @@ local function map_state_cond(value, hovered, focused, active, selected, disable
 
     if type(value) == "table" and not classof(value) then
         local out = {}
-        for i = 1, #value do
+        local n = plain_array_last(value)
+        for i = 1, n do
             collect_tokens(map_state_cond(value[i], hovered, focused, active, selected, disabled), out)
         end
         return S.Group(out)

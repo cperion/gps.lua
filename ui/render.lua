@@ -21,12 +21,12 @@ local flow_plan = plan.flow_plan
 local flex_plan = plan.flex_plan
 local grid_plan = plan.grid_plan
 
-local function has_visual(visual)
-    return visual.bg ~= 0 or visual.border_w > 0
+local function has_box_visual(box_visual)
+    return box_visual.bg ~= 0 or box_visual.border_w > 0
 end
 
-local function make_op(kind, id, x, y, w, h, dx, dy, visual, text, cursor, scroll_axis, paint)
-    return View.Op(kind, id, x, y, w, h, dx, dy, visual, text, cursor, scroll_axis, paint)
+local function make_op(kind, id, x, y, w, h, dx, dy, box_visual, text, cursor, scroll_axis, paint)
+    return View.Op(kind, id, x, y, w, h, dx, dy, box_visual, text, cursor, scroll_axis, paint)
 end
 
 local function once_trip(op)
@@ -90,10 +90,10 @@ local function text_layout_one(style, constraint, text_system)
     return pvm.one(text_layout_phase(style, constraint, text_system))
 end
 
-local function append_visual_ops(parts, node, w, h)
+local function append_box_ops(parts, node, w, h)
     local box = node.box
-    if has_visual(box.visual) then
-        parts[#parts + 1] = once_trip(make_op(View.KRect, node.id, 0, 0, w, h, 0, 0, box.visual, nil, nil, nil, nil))
+    if has_box_visual(box.box_visual) then
+        parts[#parts + 1] = once_trip(make_op(View.KBox, node.id, 0, 0, w, h, 0, 0, box.box_visual, nil, nil, nil, nil))
     end
 end
 
@@ -117,12 +117,12 @@ local function append_surface_op(parts, kind, id, w, h)
 end
 
 local function begin_container(parts, node, w, h)
-    append_visual_ops(parts, node, w, h)
+    append_box_ops(parts, node, w, h)
 
     local box = node.box
     local clipped = should_clip(box)
     if clipped then
-        parts[#parts + 1] = once_trip(make_op(View.KPushClip, node.id, 0, 0, w, h, 0, 0, nil, nil, nil, nil, nil))
+        parts[#parts + 1] = once_trip(make_op(View.KPushClipRect, node.id, 0, 0, w, h, 0, 0, nil, nil, nil, nil, nil))
     end
 
     local pad = box.padding
@@ -189,7 +189,7 @@ M.phase = pvm.phase("ui.render", {
 
     [Layout.Leaf] = function(self, w, h, text_system, content_store)
         local parts = {}
-        append_visual_ops(parts, self, w, h)
+        append_box_ops(parts, self, w, h)
 
         local text_style = leaf_text_style(self.text, content_store)
         if text_style ~= nil then
@@ -220,7 +220,7 @@ M.phase = pvm.phase("ui.render", {
 
     [Layout.Paint] = function(self, w, h, text_system, content_store)
         local parts = {}
-        append_visual_ops(parts, self, w, h)
+        append_box_ops(parts, self, w, h)
 
         if #self.paint.items > 0 then
             local pad = self.box.padding
@@ -247,7 +247,7 @@ M.phase = pvm.phase("ui.render", {
 
     [Layout.Scroll] = function(self, w, h, text_system, content_store)
         local parts = {}
-        append_visual_ops(parts, self, w, h)
+        append_box_ops(parts, self, w, h)
 
         local pad = self.box.padding
         local cw = max0(w - pad.left - pad.right)

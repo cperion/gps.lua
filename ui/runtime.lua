@@ -76,16 +76,49 @@ local function pointer_inside_xywh(x, y, rx, ry, rw, rh)
        and x < rx + rw and y < ry + rh
 end
 
+local function driver_push_clip_rect(driver, x, y, w, h)
+    if driver == nil then return end
+    if driver.push_clip_rect then
+        driver:push_clip_rect(x, y, w, h)
+        return
+    end
+    if driver.push_clip then
+        driver:push_clip(x, y, w, h)
+    end
+end
+
+local function driver_pop_clip_rect(driver)
+    if driver == nil then return end
+    if driver.pop_clip_rect then
+        driver:pop_clip_rect()
+        return
+    end
+    if driver.pop_clip then
+        driver:pop_clip()
+    end
+end
+
+local function driver_draw_box(driver, x, y, w, h, box_visual)
+    if driver == nil then return end
+    if driver.draw_box then
+        driver:draw_box(x, y, w, h, box_visual)
+        return
+    end
+    if driver.draw_rect then
+        driver:draw_rect(x, y, w, h, box_visual)
+    end
+end
+
 local function run_common(driver, opts, want_report, g, p, c)
     opts = opts or {}
 
     local KPushTx = View.KPushTx
     local KPopTx = View.KPopTx
-    local KPushClip = View.KPushClip
+    local KPushClipRect = View.KPushClipRect
     local KPopClip = View.KPopClip
     local KPushScroll = View.KPushScroll
     local KPopScroll = View.KPopScroll
-    local KRect = View.KRect
+    local KBox = View.KBox
     local KText = View.KText
     local KPaint = View.KPaint
     local KHit = View.KHit
@@ -139,7 +172,7 @@ local function run_common(driver, opts, want_report, g, p, c)
             tx_stack_y[tx_top] = nil
             tx_top = tx_top - 1
 
-        elseif kind == KPushClip then
+        elseif kind == KPushClipRect then
             local abs_x = tx_x + op.x
             local abs_y = tx_y + op.y
             local ix, iy, iw, ih = rect_intersect(abs_x, abs_y, op.w, op.h, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
@@ -149,14 +182,10 @@ local function run_common(driver, opts, want_report, g, p, c)
             else
                 clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top] = ix, iy, iw, ih
             end
-            if driver and driver.push_clip then
-                driver:push_clip(clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
-            end
+            driver_push_clip_rect(driver, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
 
         elseif kind == KPopClip then
-            if driver and driver.pop_clip then
-                driver:pop_clip()
-            end
+            driver_pop_clip_rect(driver)
             clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top] = nil, nil, nil, nil
             clip_top = clip_top - 1
 
@@ -200,9 +229,7 @@ local function run_common(driver, opts, want_report, g, p, c)
             else
                 clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top] = ix, iy, iw, ih
             end
-            if driver and driver.push_clip then
-                driver:push_clip(clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
-            end
+            driver_push_clip_rect(driver, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
 
             local scroll_x, scroll_y = scroll_lookup(opts.scrolls, op.id)
             if scroll_x < 0 then scroll_x = 0 elseif scroll_x > max_x then scroll_x = max_x end
@@ -211,9 +238,7 @@ local function run_common(driver, opts, want_report, g, p, c)
             tx_y = tx_y - scroll_y
 
         elseif kind == KPopScroll then
-            if driver and driver.pop_clip then
-                driver:pop_clip()
-            end
+            driver_pop_clip_rect(driver)
             clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top] = nil, nil, nil, nil
             clip_top = clip_top - 1
 
@@ -222,12 +247,12 @@ local function run_common(driver, opts, want_report, g, p, c)
             scroll_stack_x[scroll_top], scroll_stack_y[scroll_top] = nil, nil
             scroll_top = scroll_top - 1
 
-        elseif kind == KRect then
+        elseif kind == KBox then
             local abs_x = tx_x + op.x
             local abs_y = tx_y + op.y
-            local ix, iy, iw, ih = rect_intersect(abs_x, abs_y, op.w, op.h, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
-            if ix ~= nil and driver and driver.draw_rect then
-                driver:draw_rect(ix, iy, iw, ih, op.visual)
+            local ix = rect_intersect(abs_x, abs_y, op.w, op.h, clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top])
+            if ix ~= nil then
+                driver_draw_box(driver, abs_x, abs_y, op.w, op.h, op.box_visual)
             end
 
         elseif kind == KText then

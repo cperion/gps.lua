@@ -583,6 +583,8 @@ function M.Define(T)
 
             Overflow = OVisible | OHidden | OScroll | OAuto
 
+            Shape = ShapeRect | ShapeRoundRect | ShapeCapsule
+
             Edges = (number top,
                      number right,
                      number bottom,
@@ -596,12 +598,12 @@ function M.Define(T)
                       Layout.MarginVal bottom,
                       Layout.MarginVal left) unique
 
-            Visual = (number bg,
-                      number fg,
-                      number border_color,
-                      number border_w,
-                      number radius,
-                      number opacity) unique
+            BoxVisual = (number bg,
+                         number border_color,
+                         number border_w,
+                         Layout.Shape shape,
+                         number radius,
+                         number opacity) unique
 
             Rect = (number x,
                     number y,
@@ -704,7 +706,7 @@ function M.Define(T)
                         Layout.SelfAlign self_align,
                         Layout.Edges padding,
                         Layout.Margin margin,
-                        Layout.Visual visual,
+                        Layout.BoxVisual box_visual,
                         Layout.Overflow overflow_x,
                         Layout.Overflow overflow_y,
                         Style.Cursor cursor) unique
@@ -767,7 +769,7 @@ function M.Define(T)
         }
 
         module View {
-            Kind = KRect | KText | KPaint | KPushClip | KPopClip | KPushTx | KPopTx
+            Kind = KBox | KText | KPaint | KPushClipRect | KPopClip | KPushTx | KPopTx
                  | KPushScroll | KPopScroll
                  | KHit | KFocus | KCursor
                  | KDragSource | KDropTarget | KDropSlot
@@ -780,7 +782,7 @@ function M.Define(T)
                   number h,
                   number dx,
                   number dy,
-                  Layout.Visual? visual,
+                  Layout.BoxVisual? box_visual,
                   Layout.TextLayout? text,
                   Style.Cursor? cursor,
                   Style.ScrollAxis? scroll_axis,

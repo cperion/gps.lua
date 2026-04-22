@@ -138,7 +138,13 @@ local function resolve_border_width(border_w, theme)
     error("ui.resolve: unknown border width", 2)
 end
 
-local function resolve_radius(radius, theme)
+local function resolve_box_shape(radius)
+    if radius == S.R0 then return Layout.ShapeRect end
+    if radius == S.RFull then return Layout.ShapeCapsule end
+    return Layout.ShapeRoundRect
+end
+
+local function resolve_box_radius(radius, theme)
     local scale = theme.radii
     if radius == S.R0 then return scale.r0 end
     if radius == S.RSm then return scale.rsm end
@@ -148,7 +154,7 @@ local function resolve_radius(radius, theme)
     if radius == S.RXl then return scale.rxl end
     if radius == S.R2xl then return scale.r2xl end
     if radius == S.R3xl then return scale.r3xl end
-    if radius == S.RFull then return scale.rfull end
+    if radius == S.RFull then return 0 end
     error("ui.resolve: unknown radius", 2)
 end
 
@@ -377,12 +383,12 @@ local resolve_phase = pvm.phase("ui.resolve", function(spec, theme)
             resolve_margin_value(spec.margin.bottom, theme),
             resolve_margin_value(spec.margin.left, theme)
         ),
-        Layout.Visual(
+        Layout.BoxVisual(
             resolve_color(spec.bg, theme),
-            resolve_color(spec.fg, theme),
             resolve_color(spec.border_color, theme),
             resolve_border_width(spec.border_w, theme),
-            resolve_radius(spec.radius, theme),
+            resolve_box_shape(spec.radius),
+            resolve_box_radius(spec.radius, theme),
             resolve_opacity(spec.opacity, theme)
         ),
         resolve_overflow(spec.overflow_x),

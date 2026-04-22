@@ -10,6 +10,8 @@ local Core = T.Core
 local tw = ui.tw
 local b = ui.build
 local paint = ui.paint
+local ds = require("ds")
+local kit = require("ui_kit")
 
 local CONTENT_SCROLL_ID = demo_apply.CONTENT_SCROLL_ID
 local SIDEBAR_W = 240
@@ -109,83 +111,28 @@ local function hex_border_focus(ctx)  return ctx.is_dark and 0xc4b5fdff or 0x8b5
 -- ── Micro-Widgets ──────────────────────────────────────────────────────
 
 local function section_title(ctx, title, subtitle)
-    return b.box {
-        tw.flow, tw.gap_y_1, tw.mb_6,
-        b.text { tw.text_2xl, tw.font_semibold, tw.tracking_tight, fg_main(ctx), title },
-        subtitle and b.text { tw.text_sm, fg_accent(ctx), subtitle } or nil,
+    return kit.SectionTitle {
+        title = title,
+        subtitle = subtitle,
     }
 end
 
 local function label(ctx, text)
-    return b.text { tw.text_sm, tw.font_medium, tw.leading_none, fg_main(ctx), text }
+    return kit.Label { text = text }
 end
 
 local function description(ctx, text)
-    return b.text { tw.text_sm, fg_muted(ctx), text }
+    return kit.Description { text = text }
 end
 
 local function ui_button(ctx, id, text, variant, size)
-    local state = ctx.state_for(id)
-
-    local bg, fg, border, hover_bg, active_bg
-    if variant == "primary" then
-        bg = bg_primary(ctx)
-        fg = fg_primary(ctx)
-        hover_bg = bg_primary_hover(ctx)
-        active_bg = bg_primary_active(ctx)
-    elseif variant == "secondary" then
-        bg = bg_muted(ctx)
-        fg = fg_main(ctx)
-        hover_bg = bg_muted_hover(ctx)
-        active_bg = bg_muted_hover(ctx)
-    elseif variant == "outline" then
-        fg = fg_main(ctx)
-        border = border_subtle(ctx)
-        hover_bg = bg_muted(ctx)
-        active_bg = bg_muted_hover(ctx)
-    elseif variant == "ghost" then
-        fg = fg_main(ctx)
-        hover_bg = bg_muted(ctx)
-        active_bg = bg_muted_hover(ctx)
-    elseif variant == "destructive" then
-        bg = ctx.is_dark and tw.bg.red[900] or tw.bg.red[600]
-        fg = tw.fg.white
-        hover_bg = ctx.is_dark and tw.bg.red[800] or tw.bg.red[800]
-        active_bg = hover_bg
-    end
-
-    local px, py, text_size, rounded = tw.px_4, tw.py_2, tw.text_sm, tw.rounded_md
-    if size == "sm" then
-        px, py, text_size = tw.px_3, tw.py_1, tw.text_xs
-    elseif size == "lg" then
-        px, py, text_size = tw.px_8, tw.py_3, tw.text_base
-    elseif size == "icon" then
-        px, py, text_size, rounded = tw.w_px(40), tw.h_px(40), tw.text_lg, tw.rounded_md
-    end
-
-    local label_node
-    if size == "icon" then
-        label_node = b.text { tw.text_lg, tw.font_medium, fg, text }
-    else
-        label_node = b.text { text_size, tw.font_medium, fg, text }
-    end
-
-    return b.with_state(state,
-        b.with_input(b.id(id), T.Interact.ActivateTarget,
-            b.box {
-                b.id(id .. ":frame"),
-                tw.flex, tw.row, tw.items_center, tw.justify_center,
-                px, py, rounded,
-                tw.cursor_pointer,
-                bg,
-                border and tw.border_1 or nil,
-                border,
-                hover_bg and tw.hover(hover_bg) or nil,
-                active_bg and tw.active(active_bg) or nil,
-                tw.focus(tw.border_2),
-                tw.focus(border_focus(ctx)),
-                label_node,
-            }))
+    return kit.Button {
+        id = id,
+        label = text,
+        variant = variant,
+        size = size,
+        state = ctx.state_for(id),
+    }
 end
 
 local function ui_switch(ctx, id, is_on)
@@ -231,23 +178,12 @@ local function ui_switch(ctx, id, is_on)
 end
 
 local function ui_text_input(ctx, id, value, placeholder)
-    local has_value = #value > 0
-
-    return b.with_state(ctx.state_for(id),
-        b.with_input(b.id(id), T.Interact.EditTarget,
-            b.box {
-                b.id(id..":field"),
-                tw.flex, tw.row, tw.items_center,
-                tw.w_full, tw.px_3, tw.py_2,
-                tw.rounded_md, tw.border_1,
-                border_subtle(ctx),
-                bg_background(ctx),
-                tw.hover(bg_muted(ctx)),
-                tw.focus(tw.border_2),
-                tw.focus(border_focus(ctx)),
-                tw.cursor_text,
-                b.text { tw.text_sm, has_value and fg_main(ctx) or fg_muted(ctx), has_value and value or placeholder }
-            }))
+    return kit.Input {
+        id = id,
+        value = value,
+        placeholder = placeholder,
+        state = ctx.state_for(id),
+    }
 end
 
 local function ui_slider(ctx, id, value, w)
@@ -308,9 +244,11 @@ local function ui_badge(ctx, label_text, variant)
 
     return b.box {
         tw.flex, tw.row, tw.items_center,
-        tw.px_2_5, tw.py_0_5, tw.rounded_full,
-        bg, border and tw.border_1 or nil, border,
-        b.text { tw.text_xs, tw.font_semibold, fg, label_text }
+        tw.px_2, tw.py_0_5, tw.rounded_md,
+        bg,
+        border and tw.border_1 or nil,
+        border,
+        b.text { tw.text_xs, tw.font_semibold, tw.leading_none, fg, label_text }
     }
 end
 
@@ -321,20 +259,26 @@ local function section_buttons(ctx)
         tw.flow, tw.w_full, tw.gap_y_8,
         section_title(ctx, "Buttons", "Displays a button or a component that looks like a button."),
         b.box { tw.flow, tw.gap_y_4, label(ctx, "Variants"),
-            b.box { tw.flex, tw.row, tw.wrap, tw.gap_4,
-                ui_button(ctx, "btn:primary", "Primary", "primary"),
-                ui_button(ctx, "btn:secondary", "Secondary", "secondary"),
-                ui_button(ctx, "btn:outline", "Outline", "outline"),
-                ui_button(ctx, "btn:ghost", "Ghost", "ghost"),
-                ui_button(ctx, "btn:danger", "Destructive", "destructive"),
+            kit.Toolbar {
+                styles = tw.gap_4,
+                children = {
+                    ui_button(ctx, "btn:primary", "Primary", "primary"),
+                    ui_button(ctx, "btn:secondary", "Secondary", "secondary"),
+                    ui_button(ctx, "btn:outline", "Outline", "outline"),
+                    ui_button(ctx, "btn:ghost", "Ghost", "ghost"),
+                    ui_button(ctx, "btn:danger", "Destructive", "destructive"),
+                }
             }
         },
         b.box { tw.flow, tw.gap_y_4, label(ctx, "Sizes"),
-            b.box { tw.flex, tw.row, tw.wrap, tw.gap_4, tw.items_center,
-                ui_button(ctx, "btn:sm", "Small", "primary", "sm"),
-                ui_button(ctx, "btn:md", "Default", "primary", "md"),
-                ui_button(ctx, "btn:lg", "Large", "primary", "lg"),
-                ui_button(ctx, "btn:icon1", "+", "outline", "icon"),
+            kit.Toolbar {
+                styles = tw.gap_4,
+                children = {
+                    ui_button(ctx, "btn:sm", "Small", "primary", "sm"),
+                    ui_button(ctx, "btn:md", "Default", "primary", "md"),
+                    ui_button(ctx, "btn:lg", "Large", "primary", "lg"),
+                    ui_button(ctx, "btn:icon1", "+", "outline", "icon"),
+                }
             }
         }
     }
@@ -437,20 +381,21 @@ local function section_cards(ctx, cards)
     local grid = {}
     for i = 1, #cards do
         local c = cards[i]
-        grid[i] = b.box {
-            tw.flow, tw.w_px(300), tw.p_6,
-            tw.rounded_xl, tw.border_1, border_subtle(ctx), bg_surface(ctx),
-            b.box { tw.flow, tw.gap_y_1_5, tw.mb_4,
-                b.text { tw.text_lg, tw.font_semibold, tw.leading_none, tw.tracking_tight, fg_main(ctx), c.title },
-                b.text { tw.text_sm, fg_muted(ctx), c.body },
-            },
-            ui_button(ctx, "card_btn:"..i, c.meta, "outline", "sm")
+        grid[i] = kit.Card {
+            styles = tw.w_px(300),
+            title = c.title,
+            subtitle = c.body,
+            footer = kit.Toolbar {
+                children = {
+                    ui_button(ctx, "card_btn:" .. i, c.meta, "outline", "sm")
+                }
+            }
         }
     end
     return b.box {
         tw.flow, tw.w_full, tw.gap_y_8,
         section_title(ctx, "Cards", "Displays a card with header, content, and footer."),
-        b.box { tw.flex, tw.row, tw.wrap, tw.gap_6, b.fragment(grid) }
+        kit.Toolbar { styles = tw.gap_6, children = grid }
     }
 end
 
@@ -525,9 +470,10 @@ local function section_tabs(ctx, active_tab)
         content_title, content_body = "Notifications", "Choose what updates you want to receive."
     end
 
-    local tab_bar = b.box {
-        tw.flex, tw.row, tw.gap_1, tw.p_1, tw.rounded_lg, bg_muted(ctx),
-        b.fragment(tab_items)
+    local tab_bar = kit.Toolbar {
+        inset = true,
+        styles = tw.gap_1,
+        children = tab_items,
     }
 
     local tab_content = b.box {
@@ -634,22 +580,12 @@ local function build_sidebar(ctx, app)
         local item = NAV_ITEMS[i]
         local is_selected = app.section == item.section
 
-        nav_rows[i] = b.with_state(ctx.state_for(item.id, { selected = is_selected }),
-            b.with_input(b.id(item.id), T.Interact.ActivateTarget,
-                b.box {
-                    b.id(item.id .. ":row"), tw.flex, tw.row, tw.items_center,
-                    tw.w_full, tw.px_3, tw.py_2, tw.rounded_md, tw.cursor_pointer,
-                    tw.selected(bg_muted(ctx)),
-                    tw.hover(bg_muted_hover(ctx)),
-                    tw.active(bg_muted_hover(ctx)),
-                    b.text {
-                        tw.text_sm, tw.font_medium, fg_muted(ctx),
-                        tw.selected(fg_main(ctx)),
-                        tw.hover(fg_main(ctx)),
-                        tw.active(fg_main(ctx)),
-                        item.label
-                    },
-                }))
+        nav_rows[i] = kit.ListItem {
+            id = item.id,
+            title = item.label,
+            selected = is_selected,
+            state = ctx.state_for(item.id, { selected = is_selected }),
+        }
     end
 
     return F.Compose.Raw {
@@ -659,8 +595,8 @@ local function build_sidebar(ctx, app)
             tw.gap_y_8,
             b.box {
                 tw.flow, tw.px_2,
-                b.text { tw.text_lg, tw.font_semibold, tw.tracking_tight, fg_main(ctx), "petal/ui" },
-                b.text { tw.text_xs, fg_accent(ctx), "Cute Widget Garden" },
+                b.text { ds.text.brand_title, "petal/ui" },
+                b.text { ds.text.brand_subtitle, "Cute Widget Garden" },
             },
             b.box { tw.flow, tw.gap_y_1, b.fragment(nav_rows) },
             b.box { tw.grow_1, tw.basis_px(0), tw.min_h_px(0) },
@@ -676,16 +612,16 @@ function M.compose_root(state, vw, vh)
         id = b.id("root"),
         styles = tw.list {
             tw.w_px(vw), tw.h_px(vh),
-            bg_background(ctx),
-            ctx.is_dark and tw.fg.slate[100] or tw.fg.slate[900],
+            ds.surface.app,
+            tw.fg.slate[900],
+            tw.dark(tw.fg.slate[100]),
         },
         
         left = build_sidebar(ctx, state.app),
         left_styles = tw.list {
             tw.w_px(SIDEBAR_W),
             tw.px_4, tw.py_6,
-            bg_surface_soft(ctx),
-            tw.border_r_1, border_subtle(ctx),
+            ds.surface.panel_soft,
         },
         
         center = F.Compose.ScrollPanel {
@@ -699,8 +635,7 @@ function M.compose_root(state, vw, vh)
                     tw.w_full, tw.max_w_px(860),
                     tw.py_10, tw.px_8,
                     tw.rounded_3xl,
-                    tw.border_1, border_subtle(ctx),
-                    bg_surface(ctx),
+                    ds.surface.panel,
                     build_section(ctx, state.app)
                 }
             }

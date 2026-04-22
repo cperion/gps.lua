@@ -93,7 +93,7 @@ local function content_box_for_scroll(axis)
         Layout.SelfAuto,
         Layout.Edges(0, 0, 0, 0),
         Layout.Margin(Layout.MarginPx(0), Layout.MarginPx(0), Layout.MarginPx(0), Layout.MarginPx(0)),
-        Layout.Visual(0, 0, 0, 0, 0, 100),
+        Layout.BoxVisual(0, 0, 0, Layout.ShapeRect, 0, 100),
         Layout.OVisible,
         Layout.OVisible,
         S.CursorDefault

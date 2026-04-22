@@ -29,6 +29,16 @@ local function is_vertex(v)
     return classof(v) == Paint.Vertex
 end
 
+local function plain_array_last(items)
+    local max = 0
+    for k in pairs(items) do
+        if type(k) == "number" and k >= 1 and k == math.floor(k) and k > max then
+            max = k
+        end
+    end
+    return max
+end
+
 local function expect_plain_array(items, level)
     if type(items) ~= "table" or classof(items) then
         error("paint list expects one plain Lua array table", level or 3)
@@ -39,7 +49,8 @@ end
 local function collect_vertices(items, level)
     items = expect_plain_array(items, level)
     local out = {}
-    for i = 1, #items do
+    local n = plain_array_last(items)
+    for i = 1, n do
         local v = items[i]
         if is_vertex(v) then
             out[#out + 1] = v
@@ -114,7 +125,8 @@ end
 function M.list(items)
     items = expect_plain_array(items, 2)
     local out = {}
-    for i = 1, #items do
+    local n = plain_array_last(items)
+    for i = 1, n do
         local v = items[i]
         if is_program(v) then
             out[#out + 1] = v
