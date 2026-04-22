@@ -11,9 +11,9 @@ local L = Lower.Define(T)
 local Surf = T.MoonliftSurface
 local Elab = T.MoonliftElab
 
-local env = Elab.ElabEnv({
-    Elab.ElabValueEntry("N", Elab.ElabGlobal("", "N", Elab.ElabTIndex)),
-    Elab.ElabValueEntry("Foo.N", Elab.ElabGlobal("Foo", "N", Elab.ElabTIndex)),
+local env = Elab.ElabEnv("", {
+    Elab.ElabValueEntry("N", Elab.ElabGlobalConst("", "N", Elab.ElabTIndex)),
+    Elab.ElabValueEntry("Foo.N", Elab.ElabGlobalConst("Foo", "N", Elab.ElabTIndex)),
 }, {
     Elab.ElabTypeEntry("Foo.Bar", Elab.ElabTNamed("Foo", "Bar")),
 }, {})
@@ -58,7 +58,7 @@ local arr_named_i32 = pvm.one(L.lower_type(
     env
 ))
 assert(arr_named_i32 == Elab.ElabTArray(
-    Elab.ElabBindingExpr(Elab.ElabGlobal("", "N", Elab.ElabTIndex)),
+    Elab.ElabBindingExpr(Elab.ElabGlobalConst("", "N", Elab.ElabTIndex)),
     Elab.ElabTI32
 ))
 
@@ -70,7 +70,7 @@ local arr_qualified_i32 = pvm.one(L.lower_type(
     env
 ))
 assert(arr_qualified_i32 == Elab.ElabTArray(
-    Elab.ElabBindingExpr(Elab.ElabGlobal("Foo", "N", Elab.ElabTIndex)),
+    Elab.ElabBindingExpr(Elab.ElabGlobalConst("Foo", "N", Elab.ElabTIndex)),
     Elab.ElabTI32
 ))
 

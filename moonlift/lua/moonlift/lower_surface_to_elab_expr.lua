@@ -11,13 +11,15 @@ function M.Define(T)
 
     local type_lower = LowerType.Define(T).lower_type
     local lower_expr
+    local lower_place
     local expr_type
+    local place_type
     local call_sig
     local index_elem_type
     local field_type
-    local ref_result_type
     local deref_result_type
     local path_binding_matches
+    local lower_intrinsic
 
     local function one_type(node, env)
         return pvm.one(type_lower(node, env))
@@ -27,8 +29,16 @@ function M.Define(T)
         return pvm.one(lower_expr(node, env, expected_ty))
     end
 
+    local function one_place(node, env)
+        return pvm.one(lower_place(node, env))
+    end
+
     local function one_expr_type(node)
         return pvm.one(expr_type(node))
+    end
+
+    local function one_place_type(node)
+        return pvm.one(place_type(node))
     end
 
     local function find_value_binding(env, name)
@@ -79,6 +89,71 @@ function M.Define(T)
         return nil
     end
 
+    local function path_from_parts(parts)
+        local names = {}
+        for i = 1, #parts do
+            names[i] = Surf.SurfName(parts[i])
+        end
+        return Surf.SurfPath(names)
+    end
+
+    local function path_parts_from_expr(node)
+        if node.kind == "SurfNameRef" then
+            return { node.name }
+        end
+        if node.kind == "SurfPathRef" then
+            return collect_name_parts(node.path)
+        end
+        if node.kind == "SurfExprDot" then
+            local parts = path_parts_from_expr(node.base)
+            if parts == nil then return nil end
+            parts[#parts + 1] = node.name
+            return parts
+        end
+        return nil
+    end
+
+    local function path_parts_from_place(node)
+        if node.kind == "SurfPlaceName" then
+            return { node.name }
+        end
+        if node.kind == "SurfPlacePath" then
+            return collect_name_parts(node.path)
+        end
+        if node.kind == "SurfPlaceDot" then
+            local parts = path_parts_from_place(node.base)
+            if parts == nil then return nil end
+            parts[#parts + 1] = node.name
+            return parts
+        end
+        return nil
+    end
+
+    local function head_name_from_parts(parts)
+        if parts == nil or #parts == 0 then return nil end
+        return parts[1]
+    end
+
+    local function find_dotted_expr_binding(node, env)
+        local parts = path_parts_from_expr(node)
+        local head = head_name_from_parts(parts)
+        if head ~= nil and find_value_binding(env, head) ~= nil then
+            return nil
+        end
+        if parts == nil or #parts < 2 then return nil end
+        return find_path_binding(env, path_from_parts(parts))
+    end
+
+    local function find_dotted_place_binding(node, env)
+        local parts = path_parts_from_place(node)
+        local head = head_name_from_parts(parts)
+        if head ~= nil and find_value_binding(env, head) ~= nil then
+            return nil
+        end
+        if parts == nil or #parts < 2 then return nil end
+        return find_path_binding(env, path_from_parts(parts))
+    end
+
     local function binding_ty(binding)
         return binding.ty
     end
@@ -86,7 +161,7 @@ function M.Define(T)
     local function find_named_layout(env, module_name, type_name)
         local layouts = env and env.layouts or nil
         if layouts == nil then return nil end
-        for i = 1, #layouts do
+        for i = #layouts, 1, -1 do
             local layout = layouts[i]
             if layout.module_name == module_name and layout.type_name == type_name then
                 return layout
@@ -145,6 +220,10 @@ function M.Define(T)
         return pvm.one(field_type(node, env, field_name))
     end
 
+    local function one_intrinsic(node)
+        return pvm.one(lower_intrinsic(node))
+    end
+
     local function same_type_binary(ctor)
         return function(self, env)
             local lhs = one_expr(self.lhs, env, nil)
@@ -200,29 +279,35 @@ function M.Define(T)
         end
     end
 
-    ref_result_type = pvm.phase("surface_to_elab_ref_result_type", {
-        [Elab.ElabTVoid] = function(self)
-            return pvm.once(Elab.ElabTPtr(self))
+    local function global_path_matches(self, entry_name, full_text, module_name, item_name)
+        if entry_name == full_text then
+            return pvm.once(true)
+        end
+        return pvm.once(self.module_name == module_name and self.item_name == item_name)
+    end
+
+    path_binding_matches = pvm.phase("surface_to_elab_path_binding_matches", {
+        [Elab.ElabLocalValue] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
         end,
-        [Elab.ElabTBool] = function(self)
-            return pvm.once(Elab.ElabTPtr(self))
+        [Elab.ElabLocalCell] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
         end,
-        [Elab.ElabTI8] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTI16] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTI32] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTI64] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTU8] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTU16] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTU32] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTU64] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTF32] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTF64] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTIndex] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTPtr] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTArray] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTSlice] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTFunc] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
-        [Elab.ElabTNamed] = function(self) return pvm.once(Elab.ElabTPtr(self)) end,
+        [Elab.ElabArg] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabLoopCarry] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabLoopIndex] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabExtern] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabGlobalFunc] = global_path_matches,
+        [Elab.ElabGlobalConst] = global_path_matches,
+        [Elab.ElabGlobalStatic] = global_path_matches,
     })
 
     deref_result_type = pvm.phase("surface_to_elab_deref_result_type", {
@@ -244,44 +329,15 @@ function M.Define(T)
         [Elab.ElabTIndex] = function() error("surface_to_elab_expr: cannot dereference an index-typed value") end,
         [Elab.ElabTArray] = function() error("surface_to_elab_expr: cannot dereference an array-typed value") end,
         [Elab.ElabTSlice] = function() error("surface_to_elab_expr: cannot dereference a slice-typed value") end,
+        [Elab.ElabTView] = function() error("surface_to_elab_expr: cannot dereference a view-typed value") end,
         [Elab.ElabTFunc] = function() error("surface_to_elab_expr: cannot dereference a function-typed value") end,
         [Elab.ElabTNamed] = function() error("surface_to_elab_expr: cannot dereference a named aggregate value") end,
     })
 
-    path_binding_matches = pvm.phase("surface_to_elab_path_binding_matches", {
-        [Elab.ElabLocalValue] = function(self, entry_name, full_text)
-            return pvm.once(entry_name == full_text)
-        end,
-        [Elab.ElabLocalStoredValue] = function(self, entry_name, full_text)
-            return pvm.once(entry_name == full_text)
-        end,
-        [Elab.ElabLocalCell] = function(self, entry_name, full_text)
-            return pvm.once(entry_name == full_text)
-        end,
-        [Elab.ElabArg] = function(self, entry_name, full_text)
-            return pvm.once(entry_name == full_text)
-        end,
-        [Elab.ElabExtern] = function(self, entry_name, full_text)
-            return pvm.once(entry_name == full_text)
-        end,
-        [Elab.ElabGlobal] = function(self, entry_name, full_text, module_name, item_name)
-            if entry_name == full_text then
-                return pvm.once(true)
-            end
-            return pvm.once(self.module_name == module_name and self.item_name == item_name)
-        end,
-    })
-
     call_sig = pvm.phase("surface_to_elab_call_sig", {
-        [Elab.ElabTFunc] = function(self)
-            return pvm.once(self)
-        end,
-        [Elab.ElabTVoid] = function()
-            error("surface_to_elab_expr: cannot call a void-typed value")
-        end,
-        [Elab.ElabTBool] = function()
-            error("surface_to_elab_expr: cannot call a bool-typed value")
-        end,
+        [Elab.ElabTFunc] = function(self) return pvm.once(self) end,
+        [Elab.ElabTVoid] = function() error("surface_to_elab_expr: cannot call a void-typed value") end,
+        [Elab.ElabTBool] = function() error("surface_to_elab_expr: cannot call a bool-typed value") end,
         [Elab.ElabTI8] = function() error("surface_to_elab_expr: cannot call an integer-typed value") end,
         [Elab.ElabTI16] = function() error("surface_to_elab_expr: cannot call an integer-typed value") end,
         [Elab.ElabTI32] = function() error("surface_to_elab_expr: cannot call an integer-typed value") end,
@@ -296,6 +352,7 @@ function M.Define(T)
         [Elab.ElabTPtr] = function() error("surface_to_elab_expr: cannot call a pointer-typed value") end,
         [Elab.ElabTArray] = function() error("surface_to_elab_expr: cannot call an array-typed value") end,
         [Elab.ElabTSlice] = function() error("surface_to_elab_expr: cannot call a slice-typed value") end,
+        [Elab.ElabTView] = function() error("surface_to_elab_expr: cannot call a view-typed value") end,
         [Elab.ElabTNamed] = function() error("surface_to_elab_expr: cannot call a named aggregate value") end,
     })
 
@@ -303,6 +360,7 @@ function M.Define(T)
         [Elab.ElabTPtr] = function(self) return pvm.once(self.elem) end,
         [Elab.ElabTArray] = function(self) return pvm.once(self.elem) end,
         [Elab.ElabTSlice] = function(self) return pvm.once(self.elem) end,
+        [Elab.ElabTView] = function(self) return pvm.once(self.elem) end,
         [Elab.ElabTVoid] = function() error("surface_to_elab_expr: cannot index a void-typed value") end,
         [Elab.ElabTBool] = function() error("surface_to_elab_expr: cannot index a bool-typed value") end,
         [Elab.ElabTI8] = function() error("surface_to_elab_expr: cannot index an integer-typed value") end,
@@ -348,7 +406,33 @@ function M.Define(T)
         [Elab.ElabTPtr] = function() error("surface_to_elab_expr: cannot select a field from a pointer value; dereference first if the pointee is an aggregate") end,
         [Elab.ElabTArray] = function() error("surface_to_elab_expr: cannot select a named field from an array value") end,
         [Elab.ElabTSlice] = function() error("surface_to_elab_expr: cannot select a named field from a slice value") end,
+        [Elab.ElabTView] = function() error("surface_to_elab_expr: cannot select a named field from a view value") end,
         [Elab.ElabTFunc] = function() error("surface_to_elab_expr: cannot select a field from a function value") end,
+    })
+
+    lower_intrinsic = pvm.phase("surface_to_elab_intrinsic", {
+        [Surf.SurfPopcount] = function() return pvm.once(Elab.ElabPopcount) end,
+        [Surf.SurfClz] = function() return pvm.once(Elab.ElabClz) end,
+        [Surf.SurfCtz] = function() return pvm.once(Elab.ElabCtz) end,
+        [Surf.SurfRotl] = function() return pvm.once(Elab.ElabRotl) end,
+        [Surf.SurfRotr] = function() return pvm.once(Elab.ElabRotr) end,
+        [Surf.SurfBswap] = function() return pvm.once(Elab.ElabBswap) end,
+        [Surf.SurfFma] = function() return pvm.once(Elab.ElabFma) end,
+        [Surf.SurfSqrt] = function() return pvm.once(Elab.ElabSqrt) end,
+        [Surf.SurfAbs] = function() return pvm.once(Elab.ElabAbs) end,
+        [Surf.SurfFloor] = function() return pvm.once(Elab.ElabFloor) end,
+        [Surf.SurfCeil] = function() return pvm.once(Elab.ElabCeil) end,
+        [Surf.SurfTruncFloat] = function() return pvm.once(Elab.ElabTruncFloat) end,
+        [Surf.SurfRound] = function() return pvm.once(Elab.ElabRound) end,
+        [Surf.SurfTrap] = function() return pvm.once(Elab.ElabTrap) end,
+        [Surf.SurfAssume] = function() return pvm.once(Elab.ElabAssume) end,
+    })
+
+    place_type = pvm.phase("elab_place_type", {
+        [Elab.ElabPlaceBinding] = function(self) return pvm.once(binding_ty(self.binding)) end,
+        [Elab.ElabPlaceDeref] = function(self) return pvm.once(self.elem) end,
+        [Elab.ElabPlaceField] = function(self) return pvm.once(self.ty) end,
+        [Elab.ElabPlaceIndex] = function(self) return pvm.once(self.ty) end,
     })
 
     expr_type = pvm.phase("elab_expr_type", {
@@ -360,7 +444,7 @@ function M.Define(T)
         [Elab.ElabExprNeg] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabExprNot] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabExprBNot] = function(self) return pvm.once(self.ty) end,
-        [Elab.ElabExprRef] = function(self) return pvm.once(self.ty) end,
+        [Elab.ElabExprAddrOf] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabExprDeref] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabExprAdd] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabExprSub] = function(self) return pvm.once(self.ty) end,
@@ -387,15 +471,59 @@ function M.Define(T)
         [Elab.ElabExprSExtTo] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabExprBitcastTo] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabExprSatCastTo] = function(self) return pvm.once(self.ty) end,
+        [Elab.ElabExprIntrinsicCall] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabCall] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabField] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabIndex] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabAgg] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabArrayLit] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabIfExpr] = function(self) return pvm.once(self.ty) end,
+        [Elab.ElabSelectExpr] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabSwitchExpr] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabLoopExprNode] = function(self) return pvm.once(self.ty) end,
         [Elab.ElabBlockExpr] = function(self) return pvm.once(self.ty) end,
+    })
+
+    lower_place = pvm.phase("surface_to_elab_place", {
+        [Surf.SurfPlaceName] = function(self, env)
+            local binding = find_value_binding(env, self.name)
+            if binding == nil then
+                error("surface_to_elab_place: unknown binding '" .. self.name .. "'")
+            end
+            return pvm.once(Elab.ElabPlaceBinding(binding))
+        end,
+        [Surf.SurfPlacePath] = function(self, env)
+            local binding = find_path_binding(env, self.path)
+            if binding == nil then
+                local full_text = split_value_path(self.path)
+                error("surface_to_elab_place: unknown qualified binding '" .. full_text .. "'")
+            end
+            return pvm.once(Elab.ElabPlaceBinding(binding))
+        end,
+        [Surf.SurfPlaceDeref] = function(self, env)
+            local base = one_expr(self.base, env, nil)
+            return pvm.once(Elab.ElabPlaceDeref(base, pvm.one(deref_result_type(one_expr_type(base)))))
+        end,
+        [Surf.SurfPlaceDot] = function(self, env)
+            local binding = find_dotted_place_binding(self, env)
+            if binding ~= nil then
+                return pvm.once(Elab.ElabPlaceBinding(binding))
+            end
+            local base = one_place(self.base, env)
+            local ty = one_field_type(one_place_type(base), env, self.name)
+            return pvm.once(Elab.ElabPlaceField(base, self.name, ty))
+        end,
+        [Surf.SurfPlaceField] = function(self, env)
+            local base = one_place(self.base, env)
+            local ty = one_field_type(one_place_type(base), env, self.name)
+            return pvm.once(Elab.ElabPlaceField(base, self.name, ty))
+        end,
+        [Surf.SurfPlaceIndex] = function(self, env)
+            local base = one_expr(self.base, env, nil)
+            local elem_ty = one_index_elem_type(one_expr_type(base))
+            local index = one_expr(self.index, env, Elab.ElabTIndex)
+            return pvm.once(Elab.ElabPlaceIndex(Elab.ElabIndexBaseView(base, elem_ty), index, elem_ty))
+        end,
     })
 
     lower_expr = pvm.phase("surface_to_elab_expr", {
@@ -429,12 +557,22 @@ function M.Define(T)
             end
             return pvm.once(Elab.ElabBindingExpr(binding))
         end,
+        [Surf.SurfExprDot] = function(self, env)
+            local binding = find_dotted_expr_binding(self, env)
+            if binding ~= nil then
+                return pvm.once(Elab.ElabBindingExpr(binding))
+            end
+            local base = one_expr(self.base, env, nil)
+            local ty = one_field_type(one_expr_type(base), env, self.name)
+            return pvm.once(Elab.ElabField(base, self.name, ty))
+        end,
         [Surf.SurfExprNeg] = unary_same_type(Elab.ElabExprNeg),
         [Surf.SurfExprNot] = unary_same_type(Elab.ElabExprNot),
         [Surf.SurfExprBNot] = unary_same_type(Elab.ElabExprBNot),
         [Surf.SurfExprRef] = function(self, env)
-            local value = one_expr(self.value, env, nil)
-            return pvm.once(Elab.ElabExprRef(pvm.one(ref_result_type(one_expr_type(value))), value))
+            local place = one_place(self.place, env)
+            local ty = Elab.ElabTPtr(one_place_type(place))
+            return pvm.once(Elab.ElabExprAddrOf(place, ty))
         end,
         [Surf.SurfExprDeref] = function(self, env)
             local value = one_expr(self.value, env, nil)
@@ -465,6 +603,14 @@ function M.Define(T)
         [Surf.SurfExprSExtTo] = cast_handler(Elab.ElabExprSExtTo),
         [Surf.SurfExprBitcastTo] = cast_handler(Elab.ElabExprBitcastTo),
         [Surf.SurfExprSatCastTo] = cast_handler(Elab.ElabExprSatCastTo),
+        [Surf.SurfExprIntrinsicCall] = function(self, env, expected_ty)
+            local args = {}
+            for i = 1, #self.args do
+                args[i] = one_expr(self.args[i], env, nil)
+            end
+            local ty = expected_ty or (args[1] ~= nil and one_expr_type(args[1]) or Elab.ElabTVoid)
+            return pvm.once(Elab.ElabExprIntrinsicCall(one_intrinsic(self.op), ty, args))
+        end,
         [Surf.SurfCall] = function(self, env)
             local callee = one_expr(self.callee, env, nil)
             local sig = one_call_sig(one_expr_type(callee))
@@ -486,7 +632,7 @@ function M.Define(T)
             local base = one_expr(self.base, env, nil)
             local elem_ty = one_index_elem_type(one_expr_type(base))
             local index = one_expr(self.index, env, Elab.ElabTIndex)
-            return pvm.once(Elab.ElabIndex(base, index, elem_ty))
+            return pvm.once(Elab.ElabIndex(Elab.ElabIndexBaseView(base, elem_ty), index, elem_ty))
         end,
         [Surf.SurfAgg] = function(self, env)
             local ty = one_type(self.ty, env)
@@ -505,12 +651,36 @@ function M.Define(T)
             end
             return pvm.once(Elab.ElabArrayLit(Elab.ElabTArray(Elab.ElabInt(tostring(#self.elems), Elab.ElabTIndex), elem_ty), elems))
         end,
+        [Surf.SurfIfExpr] = function(self, env, expected_ty)
+            local cond = one_expr(self.cond, env, Elab.ElabTBool)
+            local then_expr = one_expr(self.then_expr, env, expected_ty)
+            local then_ty = one_expr_type(then_expr)
+            local else_expr = one_expr(self.else_expr, env, then_ty)
+            local else_ty = one_expr_type(else_expr)
+            if then_ty ~= else_ty then
+                error("surface_to_elab_expr: if expr branches must currently have identical elaborated types")
+            end
+            return pvm.once(Elab.ElabIfExpr(cond, then_expr, else_expr, then_ty))
+        end,
+        [Surf.SurfSelectExpr] = function(self, env, expected_ty)
+            local cond = one_expr(self.cond, env, Elab.ElabTBool)
+            local then_expr = one_expr(self.then_expr, env, expected_ty)
+            local then_ty = one_expr_type(then_expr)
+            local else_expr = one_expr(self.else_expr, env, then_ty)
+            local else_ty = one_expr_type(else_expr)
+            if then_ty ~= else_ty then
+                error("surface_to_elab_expr: select expr branches must currently have identical elaborated types")
+            end
+            return pvm.once(Elab.ElabSelectExpr(cond, then_expr, else_expr, then_ty))
+        end,
     })
 
     return {
         lower_type = type_lower,
         lower_expr = lower_expr,
+        lower_place = lower_place,
         expr_type = expr_type,
+        place_type = place_type,
     }
 end
 

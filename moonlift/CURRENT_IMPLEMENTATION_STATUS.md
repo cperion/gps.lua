@@ -15,6 +15,12 @@ This is **not** a test-status document.
 It is intentionally focused on implementation coverage rather than test enumeration.
 All current Lua and Rust tests pass as of this review, but this file is about implementation coverage.
 
+For the current reboot source-language shape, parser target, and span strategy, see:
+
+- `moonlift/REBOOT_SOURCE_SPEC.md`
+- `moonlift/REBOOT_SOURCE_GRAMMAR.md`
+- `moonlift/SOURCE_SPAN_STRATEGY.md`
+
 For the future open-code / metaprogramming direction, see:
 
 - `moonlift/QUOTING_SYSTEM_DESIGN.md`
@@ -68,20 +74,24 @@ And the current implementation already contains a real middle/back-end path for 
 - local expression lowering
 - local statement lowering
 - local loop and domain lowering
-- top-level `Surface -> Elab` lowering for params/funcs/externs/consts/items/modules
-- top-level `Elab -> Sem` lowering for params/funcs/externs/consts/items/modules
+- top-level `Surface -> Elab` lowering for params/funcs/externs/consts/statics/imports/type-items/modules
+- top-level `Elab -> Sem` lowering for params/funcs/externs/consts/statics/imports/type-items/modules
 - function-arg env synthesis from params
-- sibling-item value env synthesis for funcs/consts/externs
+- sibling-item value env synthesis for funcs/consts/externs/statics
+- explicit named-module package/import synthesis for qualified cross-module value/type lookup
+- module-local type/layout env synthesis from authored `type ... = struct { ... }` items
 - env-based named-type resolution through `ElabEnv.types`
-- semantic layout resolution pass
+- semantic layout resolution pass with automatic module layout synthesis
 - large `Sem -> Back` lowering
+- combined package `Sem -> Back` lowering for imported named modules
 - `BackCmd` FFI replay
 - Cranelift codegen host in Rust
+- initial reboot text parser scaffold that constructs `MoonliftSurface` directly
 
 ### Still missing to make the language fully working as an authored language
-- parser / text frontend in the rebooted codebase
-- complete multi-module namespace/import/qualified-path integration
-- type / layout synthesis from authored top-level code
+- complete reboot parser coverage beyond the current bootstrap subset
+- richer module/package features beyond the current explicit named-module + `import` path
+- richer authored type-definition coverage beyond the current named-struct path
 - full slice/view lowering model
 - authored/frontend intrinsic syntax and binding production
 - fuller const evaluation
@@ -112,17 +122,18 @@ Implemented in:
 - `SurfTIndex`
 - `SurfTPtr`
 - `SurfTSlice`
+- `SurfTView`
 - `SurfTFunc`
 - `SurfTNamed`
 
 ### Expressions implemented
 - integer / float / bool / nil literals
 - `SurfNameRef`
+- authored dotted value syntax with later resolution (`SurfExprDot`)
 - unary ops
 - binary ops
 - cast forms
 - calls
-- field access
 - index access
 - aggregate literals
 - array literals
@@ -135,12 +146,12 @@ Implemented in:
 - `let`
 - `var`
 - `set`
-- `store`
 - expr stmt
 - `if`
 - `switch`
 - `return`
 - `break`
+- `break value`
 - `continue`
 - loop stmt
 
@@ -162,30 +173,39 @@ The current `Surface -> Elab` code already threads local env effects for:
 - block expr stmt lists
 - loop carry bindings and `next`
 
-### Top-level value-item lowering implemented
+### Top-level item lowering implemented
 The current `Surface -> Elab` code also lowers:
 
 - `SurfParam`
 - `SurfFunc`
 - `SurfExternFunc`
 - `SurfConst`
+- `SurfStatic`
+- `SurfImport`
+- authored `SurfStruct` type items
 - `SurfItemFunc`
 - `SurfItemExtern`
 - `SurfItemConst`
+- `SurfItemStatic`
+- `SurfItemImport`
+- `SurfItemType`
 - `SurfModule`
 
-And it already synthesizes real value environments for:
+And it already synthesizes real module environments for:
 
 - function arguments from params
 - sibling function references in module scope
 - sibling const references in module scope
 - sibling extern references in module scope
+- sibling static references in module scope
+- sibling named types/layouts from authored type items
+- imported qualified module namespaces through the named-package source front door
 
-So the frontend is now real for local code and top-level value items, not just a sketch.
+So the frontend is now real for local code and top-level items, not just a sketch.
 
 ---
 
-## 3.2 `Elab -> Sem` for local code and top-level value items is real
+## 3.2 `Elab -> Sem` for local code and top-level items is real
 
 Implemented in:
 
@@ -202,6 +222,7 @@ Implemented:
 - `ElabFunc -> SemFunc`
 - `ElabExternFunc -> SemExternFunc`
 - `ElabConst -> SemConst`
+- `ElabImport -> SemImport`
 - `ElabItem -> SemItem`
 - `ElabModule -> SemModule`
 
@@ -214,7 +235,7 @@ Also implemented:
 
 Top-level authored funcs currently lower to `SemFuncExport`, since the rebooted Surface layer does not yet expose a visibility/export distinction.
 
-So the elaborated-to-semantic lowering is real for both local code and top-level value items.
+So the elaborated-to-semantic lowering is real for both local code and top-level items.
 
 ---
 
@@ -403,45 +424,56 @@ What is still missing is richer authored parameter semantics beyond plain typed 
 
 ---
 
-## 5.4 Environment / namespace synthesis is now partial rather than missing
+## 5.4 Environment / namespace synthesis is now real but still intentionally narrow
 
-Current authored `Surface -> Elab` now automatically builds real value environments for:
+Current authored `Surface -> Elab` now automatically builds real value/type/layout environments for:
 
 - function argument env construction
 - module/global value env construction for sibling items
-- sibling function/const/extern name resolution
+- sibling function/const/extern/static name resolution
+- module-local type/layout env construction from authored type items
+- explicit named-module package imports through `import Demo`
 - env-based qualified value path resolution through `SurfPathRef`
 
 Still missing authored infrastructure includes:
 
-- type env construction
-- layout env construction from authored top-level declarations
-- a complete multi-module namespace/import story
-- clearer shadowing/lookup rules for competing qualified vs local names
+- richer package/module features beyond the current named-module host API
+- import aliasing / renaming if the reboot later wants it
+- clearer documented shadowing/lookup rules for every namespace corner case
 
 ---
 
 ## 5.5 Qualified path references are now partially implemented
 
-`SurfPathRef` now lowers through the real frontend for value references.
-It can resolve:
+The frontend now supports qualified value lookup, and the reboot parser preserves authored dotted value syntax explicitly before elaboration resolves it.
+
+Current value-name behavior:
+
+- explicit already-disambiguated `SurfPathRef` still lowers through the real frontend
+- authored dotted value syntax parses as `SurfExprDot(...)`
+- if the head of a dotted chain resolves as a local/runtime value binding, lowering treats the chain as field projection
+- otherwise lowering may resolve the chain as a qualified value binding
+
+What currently resolves:
 
 - env-provided qualified value references
-- module-qualified global function refs through `ElabGlobal(module_name, item_name, ...)`
-- module-qualified global const refs through `ElabGlobal(module_name, item_name, ...)`
+- module-qualified global function refs through `ElabGlobalFunc(module_name, item_name, ...)`
+- module-qualified global const refs through `ElabGlobalConst(module_name, item_name, ...)`
+- explicit named-package imports that synthesize those env entries automatically for direct imports
 
 Still missing:
-- a complete multi-module authored module/import system that synthesizes those env entries automatically
-- explicit shadowing/precedence rules for qualified vs local lookup
+- a broader documented namespace story beyond the current authored-dot local-head rule and qualified-only imports
+- richer module/package features beyond the current named-module package API
 
-So qualified value refs are no longer a total blocker, but real authored module systems are still incomplete.
+So qualified value refs are no longer a blocker, and the reboot now has a real authored import path, but the broader package story can still grow.
 
 ---
 
-## 5.6 `ElabEnv.types` is now wired into named-type resolution, but type env synthesis is still missing
+## 5.6 `ElabEnv.types` is wired into named-type resolution, and current authored type env synthesis now exists
 
 `ElabEnv` contains:
 
+- `module_name`
 - `values`
 - `types`
 - `layouts`
@@ -450,7 +482,12 @@ The current frontend now uses `types` for real `SurfTNamed` lowering.
 Named type paths must resolve through explicit `ElabEnv.types` entries, with no lexical fallback.
 This includes module-qualified type lookup when the env carries entries like `"Foo.Bar"`.
 
-What is still missing is authored infrastructure for automatically constructing those type envs from source modules/imports.
+Current authored infrastructure now synthesizes those type envs from:
+
+- local authored type items
+- explicit named-module imports through the package front door
+
+What is still missing is broader namespace/import surface beyond the current qualified import model.
 
 ---
 
@@ -609,8 +646,9 @@ This is one of the biggest backend/runtime gaps.
 - `SurfTSlice`
 - `ElabTSlice`
 - `SemTSlice`
+- `SemView`
 - `SemIndexBaseView`
-- `SemDomainBoundedValue`
+- `SemDomainView`
 - `SemDomainZipEq`
 
 ### Missing end-to-end in lowering
@@ -619,17 +657,17 @@ Current `Sem -> Back` explicitly lacks full support for:
 - slice/view indexing
 - slice/view mem sizing in key cases
 - slice runtime copying
-- slice-valued bounded `over` loops
-- slice-valued `zip_eq` `over` loops
+- slice/view-backed `SemDomainView` lowering beyond simple value-backed array cases
+- slice/view-backed `zip_eq` `over` loops
 - a complete explicit low-level slice/view representation and bounds model
 
 What is now implemented in this area:
 
-- array-valued `SemDomainBoundedValue` lowering in `Sem -> Back`
-- array-valued `SemDomainZipEq` lowering in `Sem -> Back`
+- value-backed array `SemDomainView` lowering in `Sem -> Back`
+- value-backed array `SemDomainZipEq` lowering in `Sem -> Back`
 - compile-time equal-length enforcement for array-valued `zip_eq`
 
-So slices/domains exist structurally in the IR, array-valued bounded/zip domains now lower, but the full slice/view-backed domain model is still not machine-lowered yet.
+So slices/views/domains exist structurally in the IR, simple array-backed domain/view cases now lower, but the full slice/view-backed domain model is still not machine-lowered yet.
 
 ---
 
@@ -674,8 +712,13 @@ rather than full aggregate/multi-result values.
 
 ## 5.16 Global mutation is not implemented
 
-`SemBindGlobal` exists.
-Const/global reads exist.
+The global binding space is now split explicitly:
+
+- `SemBindGlobalFunc`
+- `SemBindGlobalConst`
+- `SemBindGlobalStatic`
+
+Runtime reads exist for statics, while consts are expected to fold or lower through constant-data initialization rather than ordinary runtime binding reads.
 
 But global assignment/store lowering is explicitly not implemented in `Sem -> Back`.
 
@@ -695,20 +738,22 @@ So externs are callable, but not fully first-class values.
 
 ## 5.18 Addressability is still partial
 
-The address-of / lvalue model is incomplete, but it is stronger than before.
+The address-of / place model is explicit now, but still incomplete.
 
 Implemented now:
+- address of mutable locals through canonical local-cell stack slots
 - address of arguments through canonical entry stack slots
-- address of immutable `let` locals through stored-local bindings and canonical stack slots
 - address of loop-carried locals and `over`-loop index bindings through canonical loop slots
-- address of globals/const data through `SemBindGlobal`
+- address of static globals through `SemBindGlobalStatic`
+- address of projected/deref/index places built from those addressable bases
 
 Still missing or restricted:
+- address of pure immutable `SemBindLocalValue` locals
+- address of pure const globals (`SemBindGlobalConst`)
 - address of many computed values except where explicit materialization already exists
-- a fully general addressability model across all lvalue categories
-- a final documented rule for the remaining manual/internal pure-SSA local cases
+- a fully general addressability model across all place categories
 
-So references exist in the IR and now work for args, stored immutable locals, loop-carried/index locals, and globals/const data, but the full lvalue/storage model is still partial.
+So references/places exist in the IR and work for cells, args, loop ports, statics, and derived places over those bases, but the full place/storage model is still partial.
 
 ---
 
@@ -791,17 +836,77 @@ So floating remainder is not currently implemented end-to-end.
 
 ---
 
-## 5.21 No parser / text frontend exists yet in the reboot
+## 5.21 A bootstrap parser / text frontend now exists, but only for a subset
 
-Right now the rebooted Moonlift is still authored by constructing ASDL values directly.
+There is now an initial reboot parser scaffold in:
 
-That means there is no current reboot-native:
-- parser
-- text frontend
-- hosted fragment syntax
-- integrated source compiler front door
+- `moonlift/lua/moonlift/parse_lexer.lua`
+- `moonlift/lua/moonlift/parse.lua`
+- `moonlift/test_parse_smoke.lua`
 
-So the current implementation is a compiler core and builder/IR layer, not yet a full authored text language.
+It already constructs `MoonliftSurface` ASDL values directly for a useful bootstrap subset, including:
+
+- top-level items:
+  - `func`
+  - `extern func`
+  - `const`
+  - `static`
+- types:
+  - scalar
+  - pointer
+  - array
+  - slice
+  - function type
+  - named path
+- expressions:
+  - literals
+  - names / paths
+  - unary / binary ops
+  - casts
+  - intrinsic calls
+  - calls / field / index
+  - field-based aggregate literals
+  - array literals via `[]T { ... }`
+  - explicit `select(cond, a, b)`
+  - `if` expr
+  - `switch` expr
+  - block expr
+  - canonical loop expr
+- statements:
+  - `let`
+  - `var`
+  - `set`
+  - expr stmt
+  - `if`
+  - `switch`
+  - `return`
+  - `break`
+  - `break value`
+  - `continue`
+  - canonical loop stmt
+- public helper facade:
+  - `moonlift/lua/moonlift/source.lua`
+  - `moonlift/lua/moonlift/source_spans.lua`
+  - parse helpers
+  - parse-with-spans helpers
+  - try-parse helpers with structured diagnostics
+  - try-lower / try-sem / try-resolve / try-back / try-compile helpers
+  - `parse -> Surface -> Elab`
+  - `parse -> Surface -> Elab -> Sem`
+- current source spans are stored in a parallel **path-keyed** span index rather than a naive `node -> span` map, because interned `Surface` values do not preserve occurrence identity by object identity alone
+- current public source helpers can already bridge some lower-stage errors back to source paths/line+column when the lower-stage error carries structural path text
+
+But it is still only a bootstrap parser/front-end.
+
+Still missing from the reboot authored front door:
+
+- complete grammar coverage for everything already present in `Surface`
+- frozen authored syntax for currently open `Surface` areas such as `view`
+- richer diagnostics and source span plumbing through later compiler layers
+- coherent top-level compile facade over parse + lower + resolve + JIT
+- hosted fragment / quote syntax
+
+So the reboot is no longer parser-less, but it is not yet a complete authored text language either.
 
 ---
 

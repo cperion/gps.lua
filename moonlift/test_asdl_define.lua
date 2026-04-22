@@ -15,13 +15,13 @@ assert(T.MoonliftBack.BackProgram ~= nil)
 
 local S = T.MoonliftSem
 local i32_ty = S.SemTI32
-local idx = S.SemBindLocalValue('loop.i', 'i', i32_ty)
+local idx = S.SemBindLoopCarry('loop', 'carry.i', 'i', i32_ty)
 local bind = S.SemExprBinding(idx)
 local zero = S.SemExprConstInt(i32_ty, '0')
-local init = S.SemLoopBinding('loop.i', 'i', i32_ty, zero)
+local init = S.SemLoopCarryPort('carry.i', 'i', i32_ty, zero)
 local cond = S.SemExprLt(S.SemTBool, bind, S.SemExprConstInt(i32_ty, '4'))
-local nextv = S.SemLoopNext(idx, S.SemExprAdd(i32_ty, bind, S.SemExprConstInt(i32_ty, '1')))
-local loop = S.SemLoopWhileExpr({ init }, cond, {}, { nextv }, bind)
+local nextv = S.SemLoopUpdate('carry.i', S.SemExprAdd(i32_ty, bind, S.SemExprConstInt(i32_ty, '1')))
+local loop = S.SemLoopWhileExpr('loop', { init }, cond, {}, { nextv }, bind)
 assert(loop ~= nil)
 
 local B = T.MoonliftBack

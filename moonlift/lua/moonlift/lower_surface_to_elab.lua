@@ -85,6 +85,30 @@ function M.Define(T)
         return nil
     end
 
+    local function path_from_parts(parts)
+        local names = {}
+        for i = 1, #parts do
+            names[i] = Surf.SurfName(parts[i])
+        end
+        return Surf.SurfPath(names)
+    end
+
+    local function path_parts_from_count_expr(node)
+        if node.kind == "SurfNameRef" then
+            return { node.name }
+        end
+        if node.kind == "SurfPathRef" then
+            return collect_name_parts(node.path)
+        end
+        if node.kind == "SurfExprDot" then
+            local parts = path_parts_from_count_expr(node.base)
+            if parts == nil then return nil end
+            parts[#parts + 1] = node.name
+            return parts
+        end
+        return nil
+    end
+
     local function one_count_expr(node, env)
         return pvm.one(lower_array_count_expr(node, env))
     end
@@ -93,19 +117,34 @@ function M.Define(T)
         [Elab.ElabLocalValue] = function(self, entry_name, full_text)
             return pvm.once(entry_name == full_text)
         end,
-        [Elab.ElabLocalStoredValue] = function(self, entry_name, full_text)
-            return pvm.once(entry_name == full_text)
-        end,
         [Elab.ElabLocalCell] = function(self, entry_name, full_text)
             return pvm.once(entry_name == full_text)
         end,
         [Elab.ElabArg] = function(self, entry_name, full_text)
             return pvm.once(entry_name == full_text)
         end,
+        [Elab.ElabLoopCarry] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
+        [Elab.ElabLoopIndex] = function(self, entry_name, full_text)
+            return pvm.once(entry_name == full_text)
+        end,
         [Elab.ElabExtern] = function(self, entry_name, full_text)
             return pvm.once(entry_name == full_text)
         end,
-        [Elab.ElabGlobal] = function(self, entry_name, full_text, module_name, item_name)
+        [Elab.ElabGlobalFunc] = function(self, entry_name, full_text, module_name, item_name)
+            if entry_name == full_text then
+                return pvm.once(true)
+            end
+            return pvm.once(self.module_name == module_name and self.item_name == item_name)
+        end,
+        [Elab.ElabGlobalConst] = function(self, entry_name, full_text, module_name, item_name)
+            if entry_name == full_text then
+                return pvm.once(true)
+            end
+            return pvm.once(self.module_name == module_name and self.item_name == item_name)
+        end,
+        [Elab.ElabGlobalStatic] = function(self, entry_name, full_text, module_name, item_name)
             if entry_name == full_text then
                 return pvm.once(true)
             end
@@ -114,16 +153,25 @@ function M.Define(T)
     })
 
     array_count_binding_expr = pvm.phase("surface_to_elab_array_count_binding_expr", {
-        [Elab.ElabGlobal] = function(self)
+        [Elab.ElabGlobalConst] = function(self)
             if self.ty ~= Elab.ElabTIndex then
                 error("surface_to_elab_type: array count refs must resolve to index-typed global const bindings")
             end
             return pvm.once(Elab.ElabBindingExpr(self))
         end,
+        [Elab.ElabGlobalFunc] = function()
+            error("surface_to_elab_type: array count refs must resolve to index-typed global const bindings")
+        end,
+        [Elab.ElabGlobalStatic] = function()
+            error("surface_to_elab_type: array count refs must resolve to index-typed global const bindings")
+        end,
         [Elab.ElabLocalValue] = function()
             error("surface_to_elab_type: array count refs cannot depend on runtime local bindings")
         end,
-        [Elab.ElabLocalStoredValue] = function()
+        [Elab.ElabLoopCarry] = function()
+            error("surface_to_elab_type: array count refs cannot depend on runtime local bindings")
+        end,
+        [Elab.ElabLoopIndex] = function()
             error("surface_to_elab_type: array count refs cannot depend on runtime local bindings")
         end,
         [Elab.ElabLocalCell] = function()
@@ -161,6 +209,19 @@ function M.Define(T)
             local binding = find_path_binding(env, self.path)
             if binding == nil then
                 local full_text = split_value_path(self.path)
+                error("surface_to_elab_type: unknown qualified array count binding '" .. full_text .. "'")
+            end
+            return pvm.once(pvm.one(array_count_binding_expr(binding)))
+        end,
+        [Surf.SurfExprDot] = function(self, env)
+            local parts = path_parts_from_count_expr(self)
+            if parts == nil or #parts < 2 then
+                error("surface_to_elab_type: array count dot expressions must currently resolve to qualified const bindings")
+            end
+            local path = path_from_parts(parts)
+            local binding = find_path_binding(env, path)
+            if binding == nil then
+                local full_text = split_value_path(path)
                 error("surface_to_elab_type: unknown qualified array count binding '" .. full_text .. "'")
             end
             return pvm.once(pvm.one(array_count_binding_expr(binding)))
@@ -212,6 +273,9 @@ function M.Define(T)
         end,
         [Surf.SurfTSlice] = function(self, env)
             return pvm.once(Elab.ElabTSlice(one_type(self.elem, env)))
+        end,
+        [Surf.SurfTView] = function(self, env)
+            return pvm.once(Elab.ElabTView(one_type(self.elem, env)))
         end,
         [Surf.SurfTArray] = function(self, env)
             return pvm.once(Elab.ElabTArray(one_count_expr(self.count, env), one_type(self.elem, env)))

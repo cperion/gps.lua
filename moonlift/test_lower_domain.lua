@@ -11,7 +11,7 @@ local L = Lower.Define(T)
 local Surf = T.MoonliftSurface
 local Elab = T.MoonliftElab
 
-local env = Elab.ElabEnv({
+local env = Elab.ElabEnv("", {
     Elab.ElabValueEntry("n", Elab.ElabLocalValue("env.n", "n", Elab.ElabTI32)),
     Elab.ElabValueEntry("a", Elab.ElabLocalValue("env.a", "a", Elab.ElabTI32)),
     Elab.ElabValueEntry("b", Elab.ElabArg(1, "b", Elab.ElabTI32)),

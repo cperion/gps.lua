@@ -11,15 +11,15 @@ local L = Lower.Define(T)
 local Surf = T.MoonliftSurface
 local Elab = T.MoonliftElab
 
-local env = Elab.ElabEnv({
+local env = Elab.ElabEnv("", {
     Elab.ElabValueEntry("x", Elab.ElabLocalValue("env.x", "x", Elab.ElabTI32)),
     Elab.ElabValueEntry("y", Elab.ElabArg(1, "y", Elab.ElabTI32)),
     Elab.ElabValueEntry("flag", Elab.ElabLocalValue("env.flag", "flag", Elab.ElabTBool)),
-    Elab.ElabValueEntry("sum", Elab.ElabGlobal("", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
+    Elab.ElabValueEntry("sum", Elab.ElabGlobalFunc("", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
     Elab.ElabValueEntry("ptr", Elab.ElabLocalValue("env.ptr", "ptr", Elab.ElabTPtr(Elab.ElabTF32))),
     Elab.ElabValueEntry("pair", Elab.ElabLocalValue("env.pair", "pair", Elab.ElabTNamed("Demo", "Pair"))),
-    Elab.ElabValueEntry("Demo.sum", Elab.ElabGlobal("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
-    Elab.ElabValueEntry("Demo.K", Elab.ElabGlobal("Demo", "K", Elab.ElabTI32)),
+    Elab.ElabValueEntry("Demo.sum", Elab.ElabGlobalFunc("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
+    Elab.ElabValueEntry("Demo.K", Elab.ElabGlobalConst("Demo", "K", Elab.ElabTI32)),
 }, {
     Elab.ElabTypeEntry("Demo.Pair", Elab.ElabTNamed("Demo", "Pair")),
 }, {
@@ -51,10 +51,10 @@ assert(xr == Elab.ElabBindingExpr(Elab.ElabLocalValue("env.x", "x", Elab.ElabTI3
 local neg = one(Surf.SurfExprNeg(Surf.SurfNameRef("x")))
 assert(neg == Elab.ElabExprNeg(Elab.ElabTI32, xr))
 
-local ref_x = one(Surf.SurfExprRef(Surf.SurfNameRef("x")))
-assert(ref_x == Elab.ElabExprRef(
-    Elab.ElabTPtr(Elab.ElabTI32),
-    Elab.ElabBindingExpr(Elab.ElabLocalValue("env.x", "x", Elab.ElabTI32))
+local ref_x = one(Surf.SurfExprRef(Surf.SurfPlaceName("x")))
+assert(ref_x == Elab.ElabExprAddrOf(
+    Elab.ElabPlaceBinding(Elab.ElabLocalValue("env.x", "x", Elab.ElabTI32)),
+    Elab.ElabTPtr(Elab.ElabTI32)
 ))
 
 local deref_ptr = one(Surf.SurfExprDeref(Surf.SurfNameRef("ptr")))
@@ -111,44 +111,47 @@ assert(casted == Elab.ElabExprCastTo(
 
 local call = one(Surf.SurfCall(Surf.SurfNameRef("sum"), { Surf.SurfInt("7") }))
 assert(call == Elab.ElabCall(
-    Elab.ElabBindingExpr(Elab.ElabGlobal("", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
+    Elab.ElabBindingExpr(Elab.ElabGlobalFunc("", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
     Elab.ElabTI32,
     { Elab.ElabInt("7", Elab.ElabTI32) }
 ))
 
-local qualified_sum_ref = one(Surf.SurfPathRef(Surf.SurfPath({ Surf.SurfName("Demo"), Surf.SurfName("sum") })))
+local qualified_sum_ref = one(Surf.SurfExprDot(Surf.SurfNameRef("Demo"), "sum"))
 assert(qualified_sum_ref == Elab.ElabBindingExpr(
-    Elab.ElabGlobal("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))
+    Elab.ElabGlobalFunc("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))
 ))
 
 local qualified_call = one(Surf.SurfCall(
-    Surf.SurfPathRef(Surf.SurfPath({ Surf.SurfName("Demo"), Surf.SurfName("sum") })),
+    Surf.SurfExprDot(Surf.SurfNameRef("Demo"), "sum"),
     { Surf.SurfInt("8") }
 ))
 assert(qualified_call == Elab.ElabCall(
-    Elab.ElabBindingExpr(Elab.ElabGlobal("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
+    Elab.ElabBindingExpr(Elab.ElabGlobalFunc("Demo", "sum", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
     Elab.ElabTI32,
     { Elab.ElabInt("8", Elab.ElabTI32) }
 ))
 
 local qualified_const = one(Surf.SurfExprAdd(
-    Surf.SurfPathRef(Surf.SurfPath({ Surf.SurfName("Demo"), Surf.SurfName("K") })),
+    Surf.SurfExprDot(Surf.SurfNameRef("Demo"), "K"),
     Surf.SurfInt("1")
 ))
 assert(qualified_const == Elab.ElabExprAdd(
     Elab.ElabTI32,
-    Elab.ElabBindingExpr(Elab.ElabGlobal("Demo", "K", Elab.ElabTI32)),
+    Elab.ElabBindingExpr(Elab.ElabGlobalConst("Demo", "K", Elab.ElabTI32)),
     Elab.ElabInt("1", Elab.ElabTI32)
 ))
 
 local index = one(Surf.SurfIndex(Surf.SurfNameRef("ptr"), Surf.SurfInt("1")))
 assert(index == Elab.ElabIndex(
-    Elab.ElabBindingExpr(Elab.ElabLocalValue("env.ptr", "ptr", Elab.ElabTPtr(Elab.ElabTF32))),
+    Elab.ElabIndexBaseView(
+        Elab.ElabBindingExpr(Elab.ElabLocalValue("env.ptr", "ptr", Elab.ElabTPtr(Elab.ElabTF32))),
+        Elab.ElabTF32
+    ),
     Elab.ElabInt("1", Elab.ElabTIndex),
     Elab.ElabTF32
 ))
 
-local field = one(Surf.SurfField(Surf.SurfNameRef("pair"), "left"))
+local field = one(Surf.SurfExprDot(Surf.SurfNameRef("pair"), "left"))
 assert(field == Elab.ElabField(
     Elab.ElabBindingExpr(Elab.ElabLocalValue("env.pair", "pair", Elab.ElabTNamed("Demo", "Pair"))),
     "left",

@@ -20,11 +20,17 @@ function M.Define(T)
 
     local lower_param
     local lower_param_entry
+    local lower_field_decl
+    local lower_type_decl
+    local lower_import
+    local lower_item_type_entry
+    local lower_item_type_layout
     local lower_item_value_entry
     local count_decl_type
     local lower_func
     local lower_extern_func
     local lower_const
+    local lower_static
     local lower_item
     local lower_module
 
@@ -48,6 +54,26 @@ function M.Define(T)
         return pvm.one(lower_param_entry(node, env, index))
     end
 
+    local function one_field_decl(node, env)
+        return pvm.one(lower_field_decl(node, env))
+    end
+
+    local function one_type_decl(node, env)
+        return pvm.one(lower_type_decl(node, env))
+    end
+
+    local function one_import(node)
+        return pvm.one(lower_import(node))
+    end
+
+    local function one_item_type_entry(node, env)
+        return pvm.one(lower_item_type_entry(node, env))
+    end
+
+    local function one_item_type_layout(node, env)
+        return pvm.one(lower_item_type_layout(node, env))
+    end
+
     local function one_item_value_entry(node, env)
         return pvm.one(lower_item_value_entry(node, env))
     end
@@ -68,6 +94,10 @@ function M.Define(T)
         return pvm.one(lower_const(node, env))
     end
 
+    local function one_static(node, env)
+        return pvm.one(lower_static(node, env))
+    end
+
     local function one_item(node, env)
         return pvm.one(lower_item(node, env))
     end
@@ -76,7 +106,20 @@ function M.Define(T)
         if env ~= nil then
             return env
         end
-        return Elab.ElabEnv({}, {}, {})
+        return Elab.ElabEnv("", {}, {}, {})
+    end
+
+    local function current_module_name(env)
+        local base = ensure_env(env)
+        return base.module_name or ""
+    end
+
+    local function path_text(path)
+        local parts = {}
+        for i = 1, #path.parts do
+            parts[i] = path.parts[i].text
+        end
+        return table.concat(parts, ".")
     end
 
     local function extend_env_values(env, entries)
@@ -92,6 +135,45 @@ function M.Define(T)
         return pvm.with(base, { values = values })
     end
 
+    local function extend_env_types(env, entries)
+        local base = ensure_env(env)
+        local types = {}
+        local old_types = base.types or {}
+        for i = 1, #old_types do
+            types[i] = old_types[i]
+        end
+        for i = 1, #entries do
+            types[#types + 1] = entries[i]
+        end
+        return pvm.with(base, { types = types })
+    end
+
+    local function extend_env_layouts(env, entries)
+        local base = ensure_env(env)
+        local layouts = {}
+        local old_layouts = base.layouts or {}
+        for i = 1, #old_layouts do
+            layouts[i] = old_layouts[i]
+        end
+        for i = 1, #entries do
+            layouts[#layouts + 1] = entries[i]
+        end
+        return pvm.with(base, { layouts = layouts })
+    end
+
+    local function with_path(path, fn)
+        local ok, result = xpcall(fn, function(err)
+            if type(err) == "string" and path ~= nil and path ~= "" and not string.find(err, path, 1, true) then
+                return path .. ": " .. err
+            end
+            return err
+        end)
+        if not ok then
+            error(result, 0)
+        end
+        return result
+    end
+
     lower_param = pvm.phase("surface_to_elab_param", {
         [Surf.SurfParam] = function(self, env)
             return pvm.once(Elab.ElabParam(self.name, one_type(self.ty, env)))
@@ -105,6 +187,42 @@ function M.Define(T)
         end,
     })
 
+    lower_field_decl = pvm.phase("surface_to_elab_field_decl", {
+        [Surf.SurfFieldDecl] = function(self, env)
+            return pvm.once(Elab.ElabFieldType(self.field_name, one_type(self.ty, env)))
+        end,
+    })
+
+    lower_type_decl = pvm.phase("surface_to_elab_type_decl", {
+        [Surf.SurfStruct] = function(self, env)
+            local fields = {}
+            for i = 1, #self.fields do
+                fields[i] = one_field_decl(self.fields[i], env)
+            end
+            return pvm.once(Elab.ElabStruct(self.name, fields))
+        end,
+    })
+
+    lower_import = pvm.phase("surface_to_elab_import", {
+        [Surf.SurfImport] = function(self)
+            return pvm.once(Elab.ElabImport(path_text(self.path)))
+        end,
+    })
+
+    lower_item_type_entry = pvm.phase("surface_to_elab_item_type_entry", {
+        [Surf.SurfItemType] = function(self, env)
+            local module_name = current_module_name(env)
+            return pvm.once(Elab.ElabTypeEntry(self.t.name, Elab.ElabTNamed(module_name, self.t.name)))
+        end,
+    })
+
+    lower_item_type_layout = pvm.phase("surface_to_elab_item_type_layout", {
+        [Surf.SurfItemType] = function(self, env)
+            local t = one_type_decl(self.t, env)
+            return pvm.once(Elab.ElabLayoutNamed(current_module_name(env), t.name, t.fields))
+        end,
+    })
+
     lower_item_value_entry = pvm.phase("surface_to_elab_item_value_entry", {
         [Surf.SurfItemFunc] = function(self, env)
             local params = {}
@@ -112,7 +230,7 @@ function M.Define(T)
                 params[i] = one_type(self.func.params[i].ty, env)
             end
             local fn_ty = Elab.ElabTFunc(params, one_type(self.func.result, env))
-            return pvm.once(Elab.ElabValueEntry(self.func.name, Elab.ElabGlobal("", self.func.name, fn_ty)))
+            return pvm.once(Elab.ElabValueEntry(self.func.name, Elab.ElabGlobalFunc(current_module_name(env), self.func.name, fn_ty)))
         end,
         [Surf.SurfItemExtern] = function(self, env)
             local params = {}
@@ -123,14 +241,15 @@ function M.Define(T)
             return pvm.once(Elab.ElabValueEntry(self.func.name, Elab.ElabExtern(self.func.symbol, fn_ty)))
         end,
         [Surf.SurfItemConst] = function(self, env)
-            return pvm.once(Elab.ElabValueEntry(self.c.name, Elab.ElabGlobal("", self.c.name, one_type(self.c.ty, env))))
+            return pvm.once(Elab.ElabValueEntry(self.c.name, Elab.ElabGlobalConst(current_module_name(env), self.c.name, one_type(self.c.ty, env))))
+        end,
+        [Surf.SurfItemStatic] = function(self, env)
+            return pvm.once(Elab.ElabValueEntry(self.s.name, Elab.ElabGlobalStatic(current_module_name(env), self.s.name, one_type(self.s.ty, env))))
         end,
     })
 
     count_decl_type = pvm.phase("surface_to_elab_count_decl_type", {
-        [Surf.SurfTIndex] = function()
-            return pvm.once(true)
-        end,
+        [Surf.SurfTIndex] = function() return pvm.once(true) end,
         [Surf.SurfTVoid] = function() return pvm.once(false) end,
         [Surf.SurfTBool] = function() return pvm.once(false) end,
         [Surf.SurfTI8] = function() return pvm.once(false) end,
@@ -147,6 +266,7 @@ function M.Define(T)
         [Surf.SurfTArray] = function() return pvm.once(false) end,
         [Surf.SurfTSlice] = function() return pvm.once(false) end,
         [Surf.SurfTFunc] = function() return pvm.once(false) end,
+        [Surf.SurfTView] = function() return pvm.once(false) end,
         [Surf.SurfTNamed] = function() return pvm.once(false) end,
     })
 
@@ -163,7 +283,10 @@ function M.Define(T)
             local body = {}
             local current_env = body_env
             for i = 1, #self.body do
-                local stmt = one_stmt(self.body[i], current_env, "func." .. self.name .. ".stmt." .. i)
+                local stmt_path = "func." .. self.name .. ".stmt." .. i
+                local stmt = with_path(stmt_path, function()
+                    return one_stmt(self.body[i], current_env, stmt_path)
+                end)
                 body[i] = stmt
                 local effect = pvm.one(api.stmt_env_effect(stmt))
                 current_env = pvm.one(api.apply_stmt_env_effect(effect, current_env))
@@ -189,6 +312,13 @@ function M.Define(T)
         end,
     })
 
+    lower_static = pvm.phase("surface_to_elab_static", {
+        [Surf.SurfStatic] = function(self, env)
+            local ty = one_type(self.ty, ensure_env(env))
+            return pvm.once(Elab.ElabStatic(self.name, ty, one_expr(self.value, ensure_env(env), ty)))
+        end,
+    })
+
     lower_item = pvm.phase("surface_to_elab_item", {
         [Surf.SurfItemFunc] = function(self, env)
             return pvm.once(Elab.ElabItemFunc(one_func(self.func, env)))
@@ -199,29 +329,62 @@ function M.Define(T)
         [Surf.SurfItemConst] = function(self, env)
             return pvm.once(Elab.ElabItemConst(one_const(self.c, env)))
         end,
+        [Surf.SurfItemStatic] = function(self, env)
+            return pvm.once(Elab.ElabItemStatic(one_static(self.s, env)))
+        end,
+        [Surf.SurfItemImport] = function(self)
+            return pvm.once(Elab.ElabItemImport(one_import(self.imp)))
+        end,
+        [Surf.SurfItemType] = function(self, env)
+            return pvm.once(Elab.ElabItemType(one_type_decl(self.t, env)))
+        end,
     })
 
     lower_module = pvm.phase("surface_to_elab_module", {
         [Surf.SurfModule] = function(self, env)
             local module_env = ensure_env(env)
+
             local provisional_count_entries = {}
             for i = 1, #self.items do
                 local item = self.items[i]
                 if item.c ~= nil and one_count_decl_type(item.c.ty) then
-                    provisional_count_entries[#provisional_count_entries + 1] = Elab.ElabValueEntry(item.c.name, Elab.ElabGlobal("", item.c.name, Elab.ElabTIndex))
+                    provisional_count_entries[#provisional_count_entries + 1] = Elab.ElabValueEntry(item.c.name, Elab.ElabGlobalConst(current_module_name(module_env), item.c.name, Elab.ElabTIndex))
                 end
             end
             local count_env = extend_env_values(module_env, provisional_count_entries)
+
+            local type_entries = {}
+            for i = 1, #self.items do
+                local item = self.items[i]
+                if item.t ~= nil then
+                    type_entries[#type_entries + 1] = one_item_type_entry(item, count_env)
+                end
+            end
+            local type_env = extend_env_types(count_env, type_entries)
+
+            local type_layouts = {}
+            for i = 1, #self.items do
+                local item = self.items[i]
+                if item.t ~= nil then
+                    type_layouts[#type_layouts + 1] = one_item_type_layout(item, type_env)
+                end
+            end
+            local layout_env = extend_env_layouts(type_env, type_layouts)
+
             local item_entries = {}
             for i = 1, #self.items do
-                item_entries[i] = one_item_value_entry(self.items[i], count_env)
+                local item = self.items[i]
+                if item.func ~= nil or item.c ~= nil or item.s ~= nil then
+                    item_entries[#item_entries + 1] = one_item_value_entry(item, layout_env)
+                end
             end
-            local lowered_env = extend_env_values(count_env, item_entries)
+            local lowered_env = extend_env_values(layout_env, item_entries)
+
             local items = {}
             for i = 1, #self.items do
                 items[i] = one_item(self.items[i], lowered_env)
             end
-            return pvm.once(Elab.ElabModule(items))
+            return pvm.once(Elab.ElabModule(current_module_name(module_env), items))
         end,
     })
 
@@ -236,9 +399,11 @@ function M.Define(T)
         stmt_env_effect = api.stmt_env_effect,
         apply_stmt_env_effect = api.apply_stmt_env_effect,
         lower_param = lower_param,
+        lower_import = lower_import,
         lower_func = lower_func,
         lower_extern_func = lower_extern_func,
         lower_const = lower_const,
+        lower_static = lower_static,
         lower_item = lower_item,
         lower_module = lower_module,
     }

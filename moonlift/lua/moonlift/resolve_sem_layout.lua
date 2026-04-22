@@ -8,28 +8,37 @@ function M.Define(T)
     local Sem = T.MoonliftSem
 
     local sem_expr_type
+    local sem_place_type
     local resolve_type_layout
     local resolve_layout_field
     local resolve_field_ref_from_base_type
     local resolve_field_ref
+    local resolve_view
+    local resolve_place
     local resolve_index_base
     local resolve_call_target
     local resolve_field_init
     local resolve_switch_stmt_arm
     local resolve_switch_expr_arm
-    local resolve_loop_binding
-    local resolve_loop_next
+    local resolve_loop_carry
+    local resolve_loop_update
     local resolve_domain
     local resolve_expr
     local resolve_stmt
     local resolve_loop
     local resolve_func
     local resolve_const
+    local resolve_static
+    local synthesize_layout_env
     local resolve_item
     local resolve_module
 
     local function one_sem_expr_type(node)
         return pvm.one(sem_expr_type(node))
+    end
+
+    local function one_sem_place_type(node)
+        return pvm.one(sem_place_type(node))
     end
 
     local function one_type_layout(node, layout_env)
@@ -46,6 +55,14 @@ function M.Define(T)
 
     local function one_field_ref(node, base_ty, layout_env)
         return pvm.one(resolve_field_ref(node, base_ty, layout_env))
+    end
+
+    local function one_view(node, layout_env)
+        return pvm.one(resolve_view(node, layout_env))
+    end
+
+    local function one_place(node, layout_env)
+        return pvm.one(resolve_place(node, layout_env))
     end
 
     local function one_index_base(node, layout_env)
@@ -68,12 +85,12 @@ function M.Define(T)
         return pvm.one(resolve_switch_expr_arm(node, layout_env))
     end
 
-    local function one_loop_binding(node, layout_env)
-        return pvm.one(resolve_loop_binding(node, layout_env))
+    local function one_loop_carry(node, layout_env)
+        return pvm.one(resolve_loop_carry(node, layout_env))
     end
 
-    local function one_loop_next(node, layout_env)
-        return pvm.one(resolve_loop_next(node, layout_env))
+    local function one_loop_update(node, layout_env)
+        return pvm.one(resolve_loop_update(node, layout_env))
     end
 
     local function one_domain(node, layout_env)
@@ -100,6 +117,14 @@ function M.Define(T)
         return pvm.one(resolve_const(node, layout_env))
     end
 
+    local function one_static(node, layout_env)
+        return pvm.one(resolve_static(node, layout_env))
+    end
+
+    local function one_synthesized_layout_env(node, layout_env)
+        return pvm.one(synthesize_layout_env(node, layout_env))
+    end
+
     local function one_item(node, layout_env)
         return pvm.one(resolve_item(node, layout_env))
     end
@@ -107,7 +132,7 @@ function M.Define(T)
     local function find_named_layout(layout_env, module_name, type_name)
         local layouts = layout_env and layout_env.layouts or nil
         if layouts == nil then return nil end
-        for i = 1, #layouts do
+        for i = #layouts, 1, -1 do
             local layout = layouts[i]
             if layout.module_name == module_name and layout.type_name == type_name then
                 return layout
@@ -156,18 +181,26 @@ function M.Define(T)
         return out
     end
 
-    local function resolve_loop_binding_list(nodes, layout_env)
+    local function resolve_loop_carry_list(nodes, layout_env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_loop_binding(nodes[i], layout_env)
+            out[i] = one_loop_carry(nodes[i], layout_env)
         end
         return out
     end
 
-    local function resolve_loop_next_list(nodes, layout_env)
+    local function resolve_loop_update_list(nodes, layout_env)
         local out = {}
         for i = 1, #nodes do
-            out[i] = one_loop_next(nodes[i], layout_env)
+            out[i] = one_loop_update(nodes[i], layout_env)
+        end
+        return out
+    end
+
+    local function resolve_view_list(nodes, layout_env)
+        local out = {}
+        for i = 1, #nodes do
+            out[i] = one_view(nodes[i], layout_env)
         end
         return out
     end
@@ -179,6 +212,124 @@ function M.Define(T)
         return module_name .. "." .. type_name
     end
 
+    local function ensure_layout_env(layout_env)
+        if layout_env ~= nil then
+            return layout_env
+        end
+        return Sem.SemLayoutEnv({})
+    end
+
+    local function extend_layout_env(layout_env, layouts)
+        local base = ensure_layout_env(layout_env)
+        local out = {}
+        for i = 1, #base.layouts do
+            out[i] = base.layouts[i]
+        end
+        for i = 1, #layouts do
+            out[#out + 1] = layouts[i]
+        end
+        return Sem.SemLayoutEnv(out)
+    end
+
+    local function align_up(value, align)
+        return math.floor((value + align - 1) / align) * align
+    end
+
+    local function find_module_type_item(module, type_name)
+        for i = 1, #module.items do
+            local item = module.items[i]
+            if item.t ~= nil and item.t.name == type_name then
+                return item.t
+            end
+        end
+        return nil
+    end
+
+    local function type_mem_size_align(ty, base_layout_env, module, cache, visiting)
+        if ty == Sem.SemTVoid then return 0, 1 end
+        if ty == Sem.SemTBool then return 1, 1 end
+        if ty == Sem.SemTI8 or ty == Sem.SemTU8 then return 1, 1 end
+        if ty == Sem.SemTI16 or ty == Sem.SemTU16 then return 2, 2 end
+        if ty == Sem.SemTI32 or ty == Sem.SemTU32 or ty == Sem.SemTF32 then return 4, 4 end
+        if ty == Sem.SemTI64 or ty == Sem.SemTU64 or ty == Sem.SemTF64 or ty == Sem.SemTPtr or ty == Sem.SemTIndex or ty.kind == "SemTPtrTo" then
+            return 8, 8
+        end
+        if ty.kind == "SemTArray" then
+            local elem_size, elem_align = type_mem_size_align(ty.elem, base_layout_env, module, cache, visiting)
+            return elem_size * ty.count, elem_align
+        end
+        if ty.kind == "SemTNamed" then
+            local key = named_type_text(ty.module_name, ty.type_name)
+            local layout = find_named_layout(base_layout_env, ty.module_name, ty.type_name)
+            if layout ~= nil then
+                return layout.size, layout.align
+            end
+            if cache[key] ~= nil then
+                return cache[key].size, cache[key].align
+            end
+            if visiting[key] then
+                error("resolve_sem_layout: recursive named type layout is not yet supported for '" .. key .. "'")
+            end
+            local current_module_name = module.module_name or ""
+            if ty.module_name ~= current_module_name then
+                error("resolve_sem_layout: missing layout for named type '" .. key .. "'")
+            end
+            local item = find_module_type_item(module, ty.type_name)
+            if item == nil then
+                error("resolve_sem_layout: missing layout for named type '" .. key .. "'")
+            end
+            visiting[key] = true
+            local offset = 0
+            local struct_align = 1
+            local fields = {}
+            for i = 1, #item.fields do
+                local field = item.fields[i]
+                local field_size, field_align = type_mem_size_align(field.ty, base_layout_env, module, cache, visiting)
+                offset = align_up(offset, field_align)
+                fields[i] = Sem.SemFieldLayout(field.field_name, offset, field.ty)
+                offset = offset + field_size
+                if field_align > struct_align then
+                    struct_align = field_align
+                end
+            end
+            local size = align_up(offset, struct_align)
+            local synthesized = Sem.SemLayoutNamed(current_module_name, item.name, fields, size, struct_align)
+            cache[key] = synthesized
+            visiting[key] = nil
+            return synthesized.size, synthesized.align
+        end
+        if ty.kind == "SemTSlice" then
+            error("resolve_sem_layout: slice-valued fields are not yet supported in named layouts")
+        end
+        if ty.kind == "SemTView" then
+            error("resolve_sem_layout: view-valued fields are not yet supported in named layouts")
+        end
+        if ty.kind == "SemTFunc" then
+            error("resolve_sem_layout: function-valued fields are not yet supported in named layouts")
+        end
+        error("resolve_sem_layout: unsupported field type in named layout synthesis")
+    end
+
+    synthesize_layout_env = pvm.phase("moonlift_sem_layout_synthesize_layout_env", {
+        [Sem.SemModule] = function(self, layout_env)
+            local base = ensure_layout_env(layout_env)
+            local cache = {}
+            local visiting = {}
+            local layouts = {}
+            for i = 1, #self.items do
+                local item = self.items[i]
+                if item.t ~= nil then
+                    local key = named_type_text(self.module_name, item.t.name)
+                    if cache[key] == nil then
+                        type_mem_size_align(Sem.SemTNamed(self.module_name, item.t.name), base, self, cache, visiting)
+                    end
+                    layouts[#layouts + 1] = cache[key]
+                end
+            end
+            return pvm.once(extend_layout_env(base, layouts))
+        end,
+    })
+
     sem_expr_type = pvm.phase("moonlift_sem_layout_resolve_expr_type", {
         [Sem.SemExprConstInt] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprConstFloat] = function(self) return pvm.once(self.ty) end,
@@ -188,7 +339,7 @@ function M.Define(T)
         [Sem.SemExprNeg] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprNot] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprBNot] = function(self) return pvm.once(self.ty) end,
-        [Sem.SemExprRef] = function(self) return pvm.once(self.ty) end,
+        [Sem.SemExprAddrOf] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprDeref] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprAdd] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprSub] = function(self) return pvm.once(self.ty) end,
@@ -218,8 +369,6 @@ function M.Define(T)
         [Sem.SemExprSelect] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprIndex] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprField] = function(self) return pvm.once(self.field.ty) end,
-        [Sem.SemExprIndexAddr] = function() return pvm.once(Sem.SemTPtr) end,
-        [Sem.SemExprFieldAddr] = function() return pvm.once(Sem.SemTPtr) end,
         [Sem.SemExprLoad] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprIntrinsicCall] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprCall] = function(self) return pvm.once(self.ty) end,
@@ -229,6 +378,13 @@ function M.Define(T)
         [Sem.SemExprIf] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprSwitch] = function(self) return pvm.once(self.ty) end,
         [Sem.SemExprLoop] = function(self) return pvm.once(self.ty) end,
+    })
+
+    sem_place_type = pvm.phase("moonlift_sem_layout_resolve_place_type", {
+        [Sem.SemPlaceBinding] = function(self) return pvm.once(self.binding.ty) end,
+        [Sem.SemPlaceDeref] = function(self) return pvm.once(self.elem) end,
+        [Sem.SemPlaceField] = function(self) return pvm.once(self.field.ty) end,
+        [Sem.SemPlaceIndex] = function(self) return pvm.once(self.ty) end,
     })
 
     resolve_type_layout = pvm.phase("moonlift_sem_layout_resolve_type_layout", {
@@ -256,6 +412,7 @@ function M.Define(T)
         [Sem.SemTPtrTo] = function() error("resolve_sem_layout: pointer-to values have no direct field layout; deref before field access") end,
         [Sem.SemTArray] = function() error("resolve_sem_layout: arrays have no named field layout") end,
         [Sem.SemTSlice] = function() error("resolve_sem_layout: slices have no named field layout yet") end,
+        [Sem.SemTView] = function() error("resolve_sem_layout: views have no named field layout yet") end,
         [Sem.SemTFunc] = function() error("resolve_sem_layout: functions have no field layout") end,
     })
 
@@ -295,6 +452,7 @@ function M.Define(T)
         [Sem.SemTPtrTo] = function() error("resolve_sem_layout: cannot resolve a field on pointer-to values; deref before field access") end,
         [Sem.SemTArray] = function() error("resolve_sem_layout: cannot resolve a named field on arrays") end,
         [Sem.SemTSlice] = function() error("resolve_sem_layout: cannot resolve a named field on slices yet") end,
+        [Sem.SemTView] = function() error("resolve_sem_layout: cannot resolve a named field on views yet") end,
         [Sem.SemTFunc] = function() error("resolve_sem_layout: cannot resolve a field on function values") end,
     })
 
@@ -307,12 +465,46 @@ function M.Define(T)
         end,
     })
 
-    resolve_index_base = pvm.phase("moonlift_sem_layout_resolve_index_base", {
-        [Sem.SemIndexBaseView] = function(self, layout_env)
-            return pvm.once(Sem.SemIndexBaseView(one_expr(self.base, layout_env), self.elem, one_expr(self.limit, layout_env)))
+    resolve_view = pvm.phase("moonlift_sem_layout_resolve_view", {
+        [Sem.SemViewValue] = function(self, layout_env)
+            return pvm.once(Sem.SemViewValue(one_expr(self.base, layout_env), self.elem))
         end,
-        [Sem.SemIndexBasePtr] = function(self, layout_env)
-            return pvm.once(Sem.SemIndexBasePtr(one_expr(self.base, layout_env), self.elem))
+        [Sem.SemViewContiguous] = function(self, layout_env)
+            return pvm.once(Sem.SemViewContiguous(one_expr(self.data, layout_env), self.elem, one_expr(self.len, layout_env)))
+        end,
+        [Sem.SemViewStrided] = function(self, layout_env)
+            return pvm.once(Sem.SemViewStrided(one_expr(self.data, layout_env), self.elem, one_expr(self.len, layout_env), one_expr(self.stride, layout_env)))
+        end,
+        [Sem.SemViewWindow] = function(self, layout_env)
+            return pvm.once(Sem.SemViewWindow(one_view(self.base, layout_env), one_expr(self.start, layout_env), one_expr(self.len, layout_env)))
+        end,
+        [Sem.SemViewInterleaved] = function(self, layout_env)
+            return pvm.once(Sem.SemViewInterleaved(one_expr(self.data, layout_env), self.elem, one_expr(self.len, layout_env), one_expr(self.stride, layout_env), one_expr(self.lane, layout_env)))
+        end,
+    })
+
+    resolve_place = pvm.phase("moonlift_sem_layout_resolve_place", {
+        [Sem.SemPlaceBinding] = function(self)
+            return pvm.once(self)
+        end,
+        [Sem.SemPlaceDeref] = function(self, layout_env)
+            return pvm.once(Sem.SemPlaceDeref(one_expr(self.base, layout_env), self.elem))
+        end,
+        [Sem.SemPlaceField] = function(self, layout_env)
+            local base = one_place(self.base, layout_env)
+            return pvm.once(Sem.SemPlaceField(base, one_field_ref(self.field, one_sem_place_type(base), layout_env)))
+        end,
+        [Sem.SemPlaceIndex] = function(self, layout_env)
+            return pvm.once(Sem.SemPlaceIndex(one_index_base(self.base, layout_env), one_expr(self.index, layout_env), self.ty))
+        end,
+    })
+
+    resolve_index_base = pvm.phase("moonlift_sem_layout_resolve_index_base", {
+        [Sem.SemIndexBasePlace] = function(self, layout_env)
+            return pvm.once(Sem.SemIndexBasePlace(one_place(self.base, layout_env), self.elem))
+        end,
+        [Sem.SemIndexBaseView] = function(self, layout_env)
+            return pvm.once(Sem.SemIndexBaseView(one_view(self.view, layout_env)))
         end,
     })
 
@@ -346,15 +538,15 @@ function M.Define(T)
         end,
     })
 
-    resolve_loop_binding = pvm.phase("moonlift_sem_layout_resolve_loop_binding", {
-        [Sem.SemLoopBinding] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopBinding(self.id, self.name, self.ty, one_expr(self.init, layout_env)))
+    resolve_loop_carry = pvm.phase("moonlift_sem_layout_resolve_loop_carry", {
+        [Sem.SemLoopCarryPort] = function(self, layout_env)
+            return pvm.once(Sem.SemLoopCarryPort(self.port_id, self.name, self.ty, one_expr(self.init, layout_env)))
         end,
     })
 
-    resolve_loop_next = pvm.phase("moonlift_sem_layout_resolve_loop_next", {
-        [Sem.SemLoopNext] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopNext(self.binding, one_expr(self.value, layout_env)))
+    resolve_loop_update = pvm.phase("moonlift_sem_layout_resolve_loop_update", {
+        [Sem.SemLoopUpdate] = function(self, layout_env)
+            return pvm.once(Sem.SemLoopUpdate(self.port_id, one_expr(self.value, layout_env)))
         end,
     })
 
@@ -365,11 +557,11 @@ function M.Define(T)
         [Sem.SemDomainRange2] = function(self, layout_env)
             return pvm.once(Sem.SemDomainRange2(one_expr(self.start, layout_env), one_expr(self.stop, layout_env)))
         end,
-        [Sem.SemDomainBoundedValue] = function(self, layout_env)
-            return pvm.once(Sem.SemDomainBoundedValue(one_expr(self.value, layout_env)))
+        [Sem.SemDomainView] = function(self, layout_env)
+            return pvm.once(Sem.SemDomainView(one_view(self.view, layout_env)))
         end,
         [Sem.SemDomainZipEq] = function(self, layout_env)
-            return pvm.once(Sem.SemDomainZipEq(resolve_expr_list(self.values, layout_env)))
+            return pvm.once(Sem.SemDomainZipEq(resolve_view_list(self.views, layout_env)))
         end,
     })
 
@@ -398,8 +590,8 @@ function M.Define(T)
         [Sem.SemExprBNot] = function(self, layout_env)
             return pvm.once(Sem.SemExprBNot(self.ty, one_expr(self.value, layout_env)))
         end,
-        [Sem.SemExprRef] = function(self, layout_env)
-            return pvm.once(Sem.SemExprRef(self.ty, one_expr(self.value, layout_env)))
+        [Sem.SemExprAddrOf] = function(self, layout_env)
+            return pvm.once(Sem.SemExprAddrOf(one_place(self.place, layout_env), self.ty))
         end,
         [Sem.SemExprDeref] = function(self, layout_env)
             return pvm.once(Sem.SemExprDeref(self.ty, one_expr(self.value, layout_env)))
@@ -483,18 +675,11 @@ function M.Define(T)
             return pvm.once(Sem.SemExprSelect(one_expr(self.cond, layout_env), one_expr(self.then_value, layout_env), one_expr(self.else_value, layout_env), self.ty))
         end,
         [Sem.SemExprIndex] = function(self, layout_env)
-            return pvm.once(Sem.SemExprIndex(one_expr(self.base, layout_env), one_expr(self.index, layout_env), self.ty))
+            return pvm.once(Sem.SemExprIndex(one_index_base(self.base, layout_env), one_expr(self.index, layout_env), self.ty))
         end,
         [Sem.SemExprField] = function(self, layout_env)
             local base = one_expr(self.base, layout_env)
             return pvm.once(Sem.SemExprField(base, one_field_ref(self.field, one_sem_expr_type(base), layout_env)))
-        end,
-        [Sem.SemExprIndexAddr] = function(self, layout_env)
-            return pvm.once(Sem.SemExprIndexAddr(one_index_base(self.base, layout_env), one_expr(self.index, layout_env), self.elem_size))
-        end,
-        [Sem.SemExprFieldAddr] = function(self, layout_env)
-            local base = one_expr(self.base, layout_env)
-            return pvm.once(Sem.SemExprFieldAddr(base, one_field_ref(self.field, one_sem_expr_type(base), layout_env)))
         end,
         [Sem.SemExprLoad] = function(self, layout_env)
             return pvm.once(Sem.SemExprLoad(self.ty, one_expr(self.addr, layout_env)))
@@ -533,10 +718,7 @@ function M.Define(T)
             return pvm.once(Sem.SemStmtVar(self.id, self.name, self.ty, one_expr(self.init, layout_env)))
         end,
         [Sem.SemStmtSet] = function(self, layout_env)
-            return pvm.once(Sem.SemStmtSet(self.binding, one_expr(self.value, layout_env)))
-        end,
-        [Sem.SemStmtStore] = function(self, layout_env)
-            return pvm.once(Sem.SemStmtStore(self.ty, one_expr(self.addr, layout_env), one_expr(self.value, layout_env)))
+            return pvm.once(Sem.SemStmtSet(one_place(self.place, layout_env), one_expr(self.value, layout_env)))
         end,
         [Sem.SemStmtExpr] = function(self, layout_env)
             return pvm.once(Sem.SemStmtExpr(one_expr(self.expr, layout_env)))
@@ -559,6 +741,9 @@ function M.Define(T)
         [Sem.SemStmtBreak] = function(self)
             return pvm.once(self)
         end,
+        [Sem.SemStmtBreakValue] = function(self, layout_env)
+            return pvm.once(Sem.SemStmtBreakValue(one_expr(self.value, layout_env)))
+        end,
         [Sem.SemStmtContinue] = function(self)
             return pvm.once(self)
         end,
@@ -569,16 +754,16 @@ function M.Define(T)
 
     resolve_loop = pvm.phase("moonlift_sem_layout_resolve_loop", {
         [Sem.SemLoopWhileStmt] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopWhileStmt(resolve_loop_binding_list(self.vars, layout_env), one_expr(self.cond, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_next_list(self.next, layout_env)))
+            return pvm.once(Sem.SemLoopWhileStmt(self.loop_id, resolve_loop_carry_list(self.carries, layout_env), one_expr(self.cond, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env)))
         end,
         [Sem.SemLoopOverStmt] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopOverStmt(self.index_binding, one_domain(self.domain, layout_env), resolve_loop_binding_list(self.carries, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_next_list(self.next, layout_env)))
+            return pvm.once(Sem.SemLoopOverStmt(self.loop_id, self.index_port, one_domain(self.domain, layout_env), resolve_loop_carry_list(self.carries, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env)))
         end,
         [Sem.SemLoopWhileExpr] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopWhileExpr(resolve_loop_binding_list(self.vars, layout_env), one_expr(self.cond, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_next_list(self.next, layout_env), one_expr(self.result, layout_env)))
+            return pvm.once(Sem.SemLoopWhileExpr(self.loop_id, resolve_loop_carry_list(self.carries, layout_env), one_expr(self.cond, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env), one_expr(self.result, layout_env)))
         end,
         [Sem.SemLoopOverExpr] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopOverExpr(self.index_binding, one_domain(self.domain, layout_env), resolve_loop_binding_list(self.carries, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_next_list(self.next, layout_env), one_expr(self.result, layout_env)))
+            return pvm.once(Sem.SemLoopOverExpr(self.loop_id, self.index_port, one_domain(self.domain, layout_env), resolve_loop_carry_list(self.carries, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env), one_expr(self.result, layout_env)))
         end,
     })
 
@@ -597,6 +782,12 @@ function M.Define(T)
         end,
     })
 
+    resolve_static = pvm.phase("moonlift_sem_layout_resolve_static", {
+        [Sem.SemStatic] = function(self, layout_env)
+            return pvm.once(Sem.SemStatic(self.name, self.ty, one_expr(self.value, layout_env)))
+        end,
+    })
+
     resolve_item = pvm.phase("moonlift_sem_layout_resolve_item", {
         [Sem.SemItemFunc] = function(self, layout_env)
             return pvm.once(Sem.SemItemFunc(one_func(self.func, layout_env)))
@@ -607,28 +798,43 @@ function M.Define(T)
         [Sem.SemItemConst] = function(self, layout_env)
             return pvm.once(Sem.SemItemConst(one_const(self.c, layout_env)))
         end,
+        [Sem.SemItemStatic] = function(self, layout_env)
+            return pvm.once(Sem.SemItemStatic(one_static(self.s, layout_env)))
+        end,
+        [Sem.SemItemImport] = function(self)
+            return pvm.once(self)
+        end,
+        [Sem.SemItemType] = function(self)
+            return pvm.once(self)
+        end,
     })
 
     resolve_module = pvm.phase("moonlift_sem_layout_resolve_module", {
         [Sem.SemModule] = function(self, layout_env)
+            local use_layout_env = one_synthesized_layout_env(self, layout_env)
             local items = {}
             for i = 1, #self.items do
-                items[i] = one_item(self.items[i], layout_env)
+                items[i] = one_item(self.items[i], use_layout_env)
             end
-            return pvm.once(Sem.SemModule(items))
+            return pvm.once(Sem.SemModule(self.module_name, items))
         end,
     })
 
     return {
         sem_expr_type = sem_expr_type,
+        sem_place_type = sem_place_type,
+        synthesize_layout_env = synthesize_layout_env,
         resolve_type_layout = resolve_type_layout,
         resolve_field_ref = resolve_field_ref,
+        resolve_view = resolve_view,
+        resolve_place = resolve_place,
         resolve_expr = resolve_expr,
         resolve_stmt = resolve_stmt,
         resolve_loop = resolve_loop,
         resolve_domain = resolve_domain,
         resolve_func = resolve_func,
         resolve_const = resolve_const,
+        resolve_static = resolve_static,
         resolve_item = resolve_item,
         resolve_module = resolve_module,
     }

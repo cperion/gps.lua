@@ -11,7 +11,7 @@ local L = Lower.Define(T)
 local Elab = T.MoonliftElab
 local Sem = T.MoonliftSem
 
-local module_node = Elab.ElabModule({
+local module_node = Elab.ElabModule("", {
     Elab.ElabItemExtern(Elab.ElabExternFunc(
         "ext",
         "ext",
@@ -45,15 +45,15 @@ local module_node = Elab.ElabModule({
                 "y",
                 Elab.ElabTI32,
                 Elab.ElabCall(
-                    Elab.ElabBindingExpr(Elab.ElabGlobal("", "helper", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
+                    Elab.ElabBindingExpr(Elab.ElabGlobalFunc("", "helper", Elab.ElabTFunc({ Elab.ElabTI32 }, Elab.ElabTI32))),
                     Elab.ElabTI32,
                     { Elab.ElabBindingExpr(Elab.ElabArg(0, "x", Elab.ElabTI32)) }
                 )
             ),
             Elab.ElabReturnValue(Elab.ElabExprAdd(
                 Elab.ElabTI32,
-                Elab.ElabBindingExpr(Elab.ElabLocalStoredValue("func.main.stmt.1", "y", Elab.ElabTI32)),
-                Elab.ElabBindingExpr(Elab.ElabGlobal("", "K", Elab.ElabTI32))
+                Elab.ElabBindingExpr(Elab.ElabLocalValue("func.main.stmt.1", "y", Elab.ElabTI32)),
+                Elab.ElabBindingExpr(Elab.ElabGlobalConst("", "K", Elab.ElabTI32))
             )),
         }
     )),
@@ -61,7 +61,7 @@ local module_node = Elab.ElabModule({
 
 local lowered = pvm.one(L.lower_module(module_node))
 
-assert(lowered == Sem.SemModule({
+assert(lowered == Sem.SemModule("", {
     Sem.SemItemExtern(Sem.SemExternFunc(
         "ext",
         "ext",
@@ -102,14 +102,14 @@ assert(lowered == Sem.SemModule({
             ),
             Sem.SemStmtReturnValue(Sem.SemExprAdd(
                 Sem.SemTI32,
-                Sem.SemExprBinding(Sem.SemBindLocalStoredValue("func.main.stmt.1", "y", Sem.SemTI32)),
-                Sem.SemExprBinding(Sem.SemBindGlobal("", "K", Sem.SemTI32))
+                Sem.SemExprBinding(Sem.SemBindLocalValue("func.main.stmt.1", "y", Sem.SemTI32)),
+                Sem.SemExprBinding(Sem.SemBindGlobalConst("", "K", Sem.SemTI32))
             )),
         }
     )),
 }))
 
-local count_module = Elab.ElabModule({
+local count_module = Elab.ElabModule("", {
     Elab.ElabItemConst(Elab.ElabConst(
         "N",
         Elab.ElabTIndex,
@@ -120,19 +120,19 @@ local count_module = Elab.ElabModule({
         Elab.ElabTIndex,
         Elab.ElabExprAdd(
             Elab.ElabTIndex,
-            Elab.ElabBindingExpr(Elab.ElabGlobal("", "N", Elab.ElabTIndex)),
+            Elab.ElabBindingExpr(Elab.ElabGlobalConst("", "N", Elab.ElabTIndex)),
             Elab.ElabInt("2", Elab.ElabTIndex)
         )
     )),
     Elab.ElabItemFunc(Elab.ElabFunc(
         "use_count",
-        { Elab.ElabParam("xs", Elab.ElabTArray(Elab.ElabBindingExpr(Elab.ElabGlobal("", "M", Elab.ElabTIndex)), Elab.ElabTI32)) },
+        { Elab.ElabParam("xs", Elab.ElabTArray(Elab.ElabBindingExpr(Elab.ElabGlobalConst("", "M", Elab.ElabTIndex)), Elab.ElabTI32)) },
         Elab.ElabTVoid,
         { Elab.ElabReturnVoid }
     )),
 })
 
-assert(pvm.one(L.lower_module(count_module)) == Sem.SemModule({
+assert(pvm.one(L.lower_module(count_module)) == Sem.SemModule("", {
     Sem.SemItemConst(Sem.SemConst(
         "N",
         Sem.SemTIndex,
@@ -143,7 +143,7 @@ assert(pvm.one(L.lower_module(count_module)) == Sem.SemModule({
         Sem.SemTIndex,
         Sem.SemExprAdd(
             Sem.SemTIndex,
-            Sem.SemExprBinding(Sem.SemBindGlobal("", "N", Sem.SemTIndex)),
+            Sem.SemExprBinding(Sem.SemBindGlobalConst("", "N", Sem.SemTIndex)),
             Sem.SemExprConstInt(Sem.SemTIndex, "2")
         )
     )),
@@ -153,6 +153,65 @@ assert(pvm.one(L.lower_module(count_module)) == Sem.SemModule({
         Sem.SemTVoid,
         { Sem.SemStmtReturnVoid }
     )),
+}))
+
+local type_module = Elab.ElabModule("", {
+    Elab.ElabItemType(Elab.ElabStruct("Pair", {
+        Elab.ElabFieldType("left", Elab.ElabTI32),
+        Elab.ElabFieldType("right", Elab.ElabTI32),
+    })),
+    Elab.ElabItemFunc(Elab.ElabFunc(
+        "get_left",
+        {},
+        Elab.ElabTI32,
+        {
+            Elab.ElabReturnValue(Elab.ElabField(
+                Elab.ElabAgg(
+                    Elab.ElabTNamed("", "Pair"),
+                    {
+                        Elab.ElabFieldInit("left", Elab.ElabInt("1", Elab.ElabTI32)),
+                        Elab.ElabFieldInit("right", Elab.ElabInt("2", Elab.ElabTI32)),
+                    }
+                ),
+                "left",
+                Elab.ElabTI32
+            )),
+        }
+    )),
+})
+
+assert(pvm.one(L.lower_module(type_module)) == Sem.SemModule("", {
+    Sem.SemItemType(Sem.SemStruct("Pair", {
+        Sem.SemFieldType("left", Sem.SemTI32),
+        Sem.SemFieldType("right", Sem.SemTI32),
+    })),
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "get_left",
+        {},
+        Sem.SemTI32,
+        {
+            Sem.SemStmtReturnValue(Sem.SemExprField(
+                Sem.SemExprAgg(
+                    Sem.SemTNamed("", "Pair"),
+                    {
+                        Sem.SemFieldInit("left", Sem.SemExprConstInt(Sem.SemTI32, "1")),
+                        Sem.SemFieldInit("right", Sem.SemExprConstInt(Sem.SemTI32, "2")),
+                    }
+                ),
+                Sem.SemFieldByName("left", Sem.SemTI32)
+            )),
+        }
+    )),
+}))
+
+local import_module = Elab.ElabModule("", {
+    Elab.ElabItemImport(Elab.ElabImport("Demo")),
+    Elab.ElabItemFunc(Elab.ElabFunc("main", {}, Elab.ElabTVoid, { Elab.ElabReturnVoid })),
+})
+
+assert(pvm.one(L.lower_module(import_module)) == Sem.SemModule("", {
+    Sem.SemItemImport(Sem.SemImport("Demo")),
+    Sem.SemItemFunc(Sem.SemFuncExport("main", {}, Sem.SemTVoid, { Sem.SemStmtReturnVoid })),
 }))
 
 print("moonlift elab->sem top lowering ok")

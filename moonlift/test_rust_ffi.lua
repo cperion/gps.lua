@@ -4,6 +4,7 @@ local ffi = require("ffi")
 local pvm = require("pvm")
 local A = require("moonlift.asdl")
 local J = require("moonlift.jit")
+local Source = require("moonlift.source")
 local LowerBack = require("moonlift.lower_sem_to_back")
 
 local T = pvm.context()
@@ -12,6 +13,7 @@ A.Define(T)
 local Sem = T.MoonliftSem
 local Back = T.MoonliftBack
 local api = J.Define(T)
+local source = Source.Define(T)
 local lower = LowerBack.Define(T)
 local jit = api.jit()
 
@@ -101,7 +103,7 @@ local fma1 = ffi.cast("float (*)(float, float, float)", fma_ptr)
 assert(tonumber(fma1(2, 3, 4)) == 10)
 intrinsic_artifact:free()
 
-local fib_module = lower_sem_module(Sem.SemModule({
+local fib_module = lower_sem_module(Sem.SemModule("", {
     Sem.SemItemFunc(Sem.SemFuncExport(
         "fib",
         { Sem.SemParam("n", Sem.SemTI32) },
@@ -152,7 +154,7 @@ local fib = ffi.cast("int32_t (*)(int32_t)", fib_ptr)
 assert(fib(10) == 55)
 fib_artifact:free()
 
-local sum_to_module = lower_sem_module(Sem.SemModule({
+local sum_to_module = lower_sem_module(Sem.SemModule("", {
     Sem.SemItemFunc(Sem.SemFuncExport(
         "sum_to",
         { Sem.SemParam("n", Sem.SemTI32) },
@@ -161,35 +163,36 @@ local sum_to_module = lower_sem_module(Sem.SemModule({
             Sem.SemStmtReturnValue(
                 Sem.SemExprLoop(
                     Sem.SemLoopWhileExpr(
+                        "sum.loop",
                         {
-                            Sem.SemLoopBinding("sum.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
-                            Sem.SemLoopBinding("sum.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                            Sem.SemLoopCarryPort("sum.i", "i", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
+                            Sem.SemLoopCarryPort("sum.acc", "acc", Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "0")),
                         },
                         Sem.SemExprLt(
                             Sem.SemTBool,
-                            Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32)),
+                            Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.loop", "sum.i", "i", Sem.SemTI32)),
                             Sem.SemExprBinding(Sem.SemBindArg(0, "n", Sem.SemTI32))
                         ),
                         {},
                         {
-                            Sem.SemLoopNext(
-                                Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32),
+                            Sem.SemLoopUpdate(
+                                "sum.i",
                                 Sem.SemExprAdd(
                                     Sem.SemTI32,
-                                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32)),
+                                    Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.loop", "sum.i", "i", Sem.SemTI32)),
                                     Sem.SemExprConstInt(Sem.SemTI32, "1")
                                 )
                             ),
-                            Sem.SemLoopNext(
-                                Sem.SemBindLocalStoredValue("sum.acc", "acc", Sem.SemTI32),
+                            Sem.SemLoopUpdate(
+                                "sum.acc",
                                 Sem.SemExprAdd(
                                     Sem.SemTI32,
-                                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.acc", "acc", Sem.SemTI32)),
-                                    Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.i", "i", Sem.SemTI32))
+                                    Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.loop", "sum.acc", "acc", Sem.SemTI32)),
+                                    Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.loop", "sum.i", "i", Sem.SemTI32))
                                 )
                             ),
                         },
-                        Sem.SemExprBinding(Sem.SemBindLocalStoredValue("sum.acc", "acc", Sem.SemTI32))
+                        Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.loop", "sum.acc", "acc", Sem.SemTI32))
                     ),
                     Sem.SemTI32
                 )
@@ -202,6 +205,41 @@ local sum_to_ptr = sum_to_artifact:getpointer(Back.BackFuncId("sum_to"))
 local sum_to = ffi.cast("int32_t (*)(int32_t)", sum_to_ptr)
 assert(sum_to(10) == 45)
 sum_to_artifact:free()
+
+local typed_artifact = source.compile_module([[
+type Pair = struct { left: i32, right: i32 }
+func get_left() -> i32
+    return Pair { left = 1, right = 2 }.left
+end
+]], nil, nil, nil, jit)
+local typed_ptr = typed_artifact:getpointer(Back.BackFuncId("get_left"))
+local get_left = ffi.cast("int32_t (*)()", typed_ptr)
+assert(get_left() == 1)
+typed_artifact:free()
+
+local package_artifact = source.compile_package({
+    {
+        name = "Demo",
+        text = [[
+func inc(x: i32) -> i32
+    return x + 7
+end
+]],
+    },
+    {
+        name = "Main",
+        text = [[
+import Demo
+func main(x: i32) -> i32
+    return Demo.inc(x)
+end
+]],
+    },
+}, nil, nil, nil, jit)
+local package_ptr = package_artifact:getpointer(Back.BackFuncId("Main::main"))
+local package_main = ffi.cast("int32_t (*)(int32_t)", package_ptr)
+assert(package_main(5) == 12)
+package_artifact:free()
 
 jit:free()
 
