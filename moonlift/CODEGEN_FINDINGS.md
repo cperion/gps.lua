@@ -914,10 +914,25 @@ The good parts are clear:
 - three-tap neighborhood access is visible and honest
 - scalar floating arithmetic is straightforward
 
-But there is also a very important missed opportunity:
+This probe originally exposed an important missed opportunity:
 
-- the typed index constants like `ONE` are materialized as data loads from RIP-relative
-  constant objects, not folded into immediate arithmetic at codegen time
+- the typed index constants like `ONE` were being materialized as data loads from RIP-relative
+  constant objects instead of folded into immediate arithmetic at codegen time
+
+That specific constant-folding issue has now been fixed for typed numeric / `index` const globals and pure derived scalar const expressions. A current probe like:
+
+```text
+const ONE: index = 1
+const TWO: index = ONE + ONE
+bump_index(i) = i + TWO
+```
+
+now lowers to:
+
+```text
+v1 = iconst.i64 2
+v2 = iadd v0, v1
+```
 
 ### `fir4_f64` observed shape
 
@@ -940,7 +955,7 @@ Again, addressing is structurally good, but:
 - there is no unrolling
 - there is no vectorization
 - there is no fused multiply-add
-- index-offset constants are still loaded via data objects instead of folded immediates
+- older stencil/FIR probes showed index-offset constants loaded via data objects instead of folded immediates; the simple typed-const-global case is now fixed, but larger kernels should be re-probed to see how much of the old finding remains after the new `Sem -> Sem` const-scalar normalization
 
 ### Finding
 
@@ -954,7 +969,7 @@ Good:
 
 Missing / weak:
 
-- top-level typed index constants are not being folded aggressively enough
+- larger stencil/FIR kernels should be re-checked now that typed numeric / `index` const globals are folded earlier
 - hot signal-processing kernels remain purely scalar
 - multiply-add chains are not fused
 

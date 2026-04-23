@@ -66,12 +66,12 @@ function M.Define(T)
         return pvm.one(lower_loop_update(node, env, loop_bindings))
     end
 
-    local function one_switch_stmt_arm(node, env, path, allow_bare_break, break_value_ty)
-        return pvm.one(lower_switch_stmt_arm(node, env, path, allow_bare_break, break_value_ty))
+    local function one_switch_stmt_arm(node, env, path, key_expected_ty, allow_bare_break, break_value_ty)
+        return pvm.one(lower_switch_stmt_arm(node, env, path, key_expected_ty, allow_bare_break, break_value_ty))
     end
 
-    local function one_switch_expr_arm(node, env, path, expected_ty, allow_bare_break, break_value_ty)
-        return pvm.one(lower_switch_expr_arm(node, env, path, expected_ty, allow_bare_break, break_value_ty))
+    local function one_switch_expr_arm(node, env, path, key_expected_ty, expected_ty, allow_bare_break, break_value_ty)
+        return pvm.one(lower_switch_expr_arm(node, env, path, key_expected_ty, expected_ty, allow_bare_break, break_value_ty))
     end
 
     local function one_stmt_effect(node)
@@ -453,9 +453,9 @@ function M.Define(T)
     })
 
     lower_switch_stmt_arm = pvm.phase("surface_to_elab_switch_stmt_arm", {
-        [Surf.SurfSwitchStmtArm] = function(self, env, path, allow_bare_break, break_value_ty)
+        [Surf.SurfSwitchStmtArm] = function(self, env, path, key_expected_ty, allow_bare_break, break_value_ty)
             local key = with_path(path, function()
-                return one_expr(self.key, env, nil, allow_bare_break, break_value_ty)
+                return one_expr(self.key, env, key_expected_ty, allow_bare_break, break_value_ty)
             end)
             local body, _ = lower_stmt_list(self.body, env, scoped_path(path, "body"), allow_bare_break, break_value_ty)
             return pvm.once(Elab.ElabSwitchStmtArm(key, body))
@@ -463,9 +463,9 @@ function M.Define(T)
     })
 
     lower_switch_expr_arm = pvm.phase("surface_to_elab_switch_expr_arm", {
-        [Surf.SurfSwitchExprArm] = function(self, env, path, expected_ty, allow_bare_break, break_value_ty)
+        [Surf.SurfSwitchExprArm] = function(self, env, path, key_expected_ty, expected_ty, allow_bare_break, break_value_ty)
             local key = with_path(path, function()
-                return one_expr(self.key, env, nil, allow_bare_break, break_value_ty)
+                return one_expr(self.key, env, key_expected_ty, allow_bare_break, break_value_ty)
             end)
             local body, body_env = lower_stmt_list(self.body, env, scoped_path(path, "body"), allow_bare_break, break_value_ty)
             local result = with_path(scoped_path(path, "result"), function()
@@ -699,7 +699,7 @@ function M.Define(T)
             local result_ty = pvm.one(expr_api.expr_type(default_expr))
             local arms = {}
             for i = 1, #self.arms do
-                local arm = one_switch_expr_arm(self.arms[i], env, scoped_path(base, "arm." .. i), result_ty, allow_bare_break, break_value_ty)
+                local arm = one_switch_expr_arm(self.arms[i], env, scoped_path(base, "arm." .. i), value_ty, result_ty, allow_bare_break, break_value_ty)
                 local key_ty = pvm.one(expr_api.expr_type(arm.key))
                 local arm_result_ty = pvm.one(expr_api.expr_type(arm.result))
                 if key_ty ~= value_ty then
@@ -778,7 +778,7 @@ function M.Define(T)
             local value_ty = pvm.one(expr_api.expr_type(value))
             local arms = {}
             for i = 1, #self.arms do
-                local arm = one_switch_stmt_arm(self.arms[i], env, scoped_path(base, "arm." .. i), allow_bare_break, break_value_ty)
+                local arm = one_switch_stmt_arm(self.arms[i], env, scoped_path(base, "arm." .. i), value_ty, allow_bare_break, break_value_ty)
                 local key_ty = pvm.one(expr_api.expr_type(arm.key))
                 if key_ty ~= value_ty then
                     error("surface_to_elab_stmt: switch arm key must currently have the same elaborated type as the switch value")

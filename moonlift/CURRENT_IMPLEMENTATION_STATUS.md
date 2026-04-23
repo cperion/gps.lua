@@ -88,6 +88,8 @@ And the current implementation already contains a real middle/back-end path for 
 - explicit function-scoped storage/addressability planning through `SemResidencePlan`
 - explicit machine-facing `SemBinding -> SemBackBinding` classification before backend lowering
 - explicit machine-facing switch-arm classification (`SemBackSwitchKey`, `SemBackSwitchStmtArms`, `SemBackSwitchExprArms`) before choosing preserved `BackCmdSwitchInt` vs compare fallback lowering
+- authored/source `switch` key support for all currently intended scalar kinds: `bool`, integral scalars, and `index`
+- explicit `Sem -> Sem` const-scalar normalization before backend lowering so typed numeric / `index` const globals and pure derived scalar const expressions become immediate `SemExprConst*` / `SemExprNil` nodes instead of surviving as runtime const reads
 - top-level `Surface -> Elab` lowering for params/funcs/externs/consts/statics/imports/type-items/modules
 - top-level `Elab -> Sem` lowering for params/funcs/externs/consts/statics/imports/type-items/modules
 - function-arg env synthesis from params
@@ -993,12 +995,13 @@ What is still missing here is not the existence of a compile facade, but its fin
 Recent direct machine-code inspection of small benchmark kernels shows several real remaining design/codegen gaps:
 
 - constant-key `switch` on `bool` / integral scalars / `index` now lowers through preserved `BackCmdSwitchInt` structure; dense cases can become `br_table`/jump-table-style code, while sparse cases stay preserved long enough for Cranelift to choose a sparse compare tree instead of Moonlift pre-collapsing them
+- source elaboration now threads the switch-value type into arm-key elaboration, so authored integer literals in `u*` / `i*` / `index` switches are typed as the intended scalar key kind instead of defaulting through unrelated literal fallback
 - switch-arm classification is now explicit at the backend boundary (`SemBackSwitch*`), so `Sem -> Back` no longer rediscovers const-vs-expr switch shape by probing raw `SemSwitch*Arm` expressions during lowering
 - plain scalar `if` chooses currently lower as branch CFG, not as an explicit select/branchless choice form
 - scalar function arguments now stay as backend entry values by default, and function-scoped residence planning plus explicit `SemBackBinding` classification materialize storage only when addressability requires it; the same policy now also covers pure scalar loop carries/indices, while general-place/non-scalar cases are still less complete
-- authored unsigned / `index` benchmarking is still awkward because type-directed integer literal elaboration is not yet strong enough
+- authored unsigned / `index` benchmarking is still somewhat awkward in places because type-directed integer literal elaboration is still not uniformly strong enough across every source context, though typed const globals now fold cleanly to immediates through the current backend path
 
-So the current backend is already useful for real codegen observation, and the switch-preservation situation is materially better than before, but some important machine-shape outcomes are still limited by implementation gaps relative to the now-frozen closed-language semantics—especially fully explicit constant-key switch classification, explicit `select` preservation, and the still-incomplete storage/addressability/value-model work.
+So the current backend is already useful for real codegen observation, and the switch-preservation situation is materially better than before. Recent const-folding cleanup also means typed numeric / `index` const globals no longer have to survive as backend-visible const-object loads in simple scalar kernels. Important machine-shape outcomes are still limited by implementation gaps relative to the now-frozen closed-language semantics—especially explicit `select` preservation and the still-incomplete storage/addressability/value-model work.
 
 One recently-fixed backend-host issue is worth calling out explicitly:
 

@@ -670,6 +670,56 @@ assert(lacks_cmd(static_module, Back.BackCmdDeclareData(Back.BackDataId("data:co
 assert(contains_cmd(static_module, Back.BackCmdDataAddr(Back.BackValId("func:get_s.stmt.1.value.addr"), Back.BackDataId("data:static:S"))))
 assert(static_module.cmds[#static_module.cmds] == Back.BackCmdFinalizeModule)
 
+local folded_const_module = one_module(Sem.SemModule("", {
+    Sem.SemItemConst(Sem.SemConst(
+        "ONE",
+        Sem.SemTIndex,
+        Sem.SemExprConstInt(Sem.SemTIndex, "1")
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "TWO",
+        Sem.SemTIndex,
+        Sem.SemExprAdd(
+            Sem.SemTIndex,
+            Sem.SemExprBinding(Sem.SemBindGlobalConst("", "ONE", Sem.SemTIndex)),
+            Sem.SemExprBinding(Sem.SemBindGlobalConst("", "ONE", Sem.SemTIndex))
+        )
+    )),
+    Sem.SemItemConst(Sem.SemConst(
+        "HALF",
+        Sem.SemTF64,
+        Sem.SemExprConstFloat(Sem.SemTF64, "0.5")
+    )),
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "bump_index",
+        { Sem.SemParam("i", Sem.SemTIndex) },
+        Sem.SemTIndex,
+        {
+            Sem.SemStmtReturnValue(Sem.SemExprAdd(
+                Sem.SemTIndex,
+                Sem.SemExprBinding(Sem.SemBindArg(0, "i", Sem.SemTIndex)),
+                Sem.SemExprBinding(Sem.SemBindGlobalConst("", "TWO", Sem.SemTIndex))
+            )),
+        }
+    )),
+    Sem.SemItemFunc(Sem.SemFuncExport(
+        "add_half",
+        { Sem.SemParam("x", Sem.SemTF64) },
+        Sem.SemTF64,
+        {
+            Sem.SemStmtReturnValue(Sem.SemExprAdd(
+                Sem.SemTF64,
+                Sem.SemExprBinding(Sem.SemBindArg(0, "x", Sem.SemTF64)),
+                Sem.SemExprBinding(Sem.SemBindGlobalConst("", "HALF", Sem.SemTF64))
+            )),
+        }
+    )),
+}))
+assert(contains_cmd(folded_const_module, Back.BackCmdConstInt(Back.BackValId("func:bump_index.stmt.1.value.rhs"), Back.BackIndex, "2")))
+assert(contains_cmd(folded_const_module, Back.BackCmdConstFloat(Back.BackValId("func:add_half.stmt.1.value.rhs"), Back.BackF64, "0.5")))
+assert(lacks_cmd(folded_const_module, Back.BackCmdDataAddr(Back.BackValId("func:bump_index.stmt.1.value.rhs.addr"), Back.BackDataId("data:const:TWO"))))
+assert(lacks_cmd(folded_const_module, Back.BackCmdDataAddr(Back.BackValId("func:add_half.stmt.1.value.rhs.addr"), Back.BackDataId("data:const:HALF"))))
+
 local arg_residence_module = one_module(Sem.SemModule("", {
     Sem.SemItemFunc(Sem.SemFuncExport(
         "arg_residence",

@@ -1826,6 +1826,11 @@ function M.Define(T)
     sem_const_eval = const_eval.sem_const_eval
     sem_const_stmt_eval = const_eval.sem_const_stmt_eval
     local const_ops = const_eval.const_ops
+    aux.const_scalars = require("moonlift.fold_sem_const_scalars").Define(T, {
+        one_const_eval = function(node, const_env, local_env, visiting)
+            return one_const_eval(node, const_env, local_env, visiting)
+        end,
+    })
 
     local function switch_value_supports_int_cmd(value_ty)
         return one_type_is_bool(value_ty) or one_type_is_integral_scalar(value_ty) or one_type_is_index(value_ty)
@@ -5094,9 +5099,10 @@ function M.Define(T)
                 end
             end
             local module_const_env = Sem.SemConstEnv(entries)
+            local folded = pvm.one(aux.const_scalars.fold_module(self, module_const_env))
             local cmds = {}
-            for i = 1, #self.items do
-                copy_cmds(one_item(self.items[i], self.module_name, layout_env, module_const_env).cmds, cmds)
+            for i = 1, #folded.items do
+                copy_cmds(one_item(folded.items[i], folded.module_name, layout_env, module_const_env).cmds, cmds)
             end
             return pvm.once(Back.BackItemPlan(cmds))
         end,

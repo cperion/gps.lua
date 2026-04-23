@@ -203,6 +203,119 @@ for i = 1, #select_back_mod.cmds do
 end
 assert(saw_select)
 
+local switch_bool_sem_mod = S.sem_module([[
+func switch_bool(flag: bool) -> i32
+    return switch flag do
+    case true then
+        11
+    default then
+        22
+    end
+end
+]])
+assert(switch_bool_sem_mod.items[1].func.body[1] == Sem.SemStmtReturnValue(
+    Sem.SemExprSwitch(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "flag", Sem.SemTBool)),
+        {
+            Sem.SemSwitchExprArm(
+                Sem.SemExprConstBool(true),
+                {},
+                Sem.SemExprConstInt(Sem.SemTI32, "11")
+            ),
+        },
+        Sem.SemExprConstInt(Sem.SemTI32, "22"),
+        Sem.SemTI32
+    )
+))
+
+local switch_u32_back_mod = S.back_module([[
+func switch_u32(x: u32) -> i32
+    return switch x do
+    case 0 then
+        10
+    case 5 then
+        50
+    default then
+        99
+    end
+end
+]])
+local saw_switch_u32 = false
+for i = 1, #switch_u32_back_mod.cmds do
+    if switch_u32_back_mod.cmds[i] == Back.BackCmdSwitchInt(
+        Back.BackValId("arg:0:x"),
+        Back.BackU32,
+        {
+            Back.BackSwitchCase("0", Back.BackBlockId("func:switch_u32.stmt.1.value.arm.1.block")),
+            Back.BackSwitchCase("5", Back.BackBlockId("func:switch_u32.stmt.1.value.arm.2.block")),
+        },
+        Back.BackBlockId("func:switch_u32.stmt.1.value.default.block")
+    ) then
+        saw_switch_u32 = true
+    end
+end
+assert(saw_switch_u32)
+
+local switch_index_back_mod = S.back_module([[
+func switch_index(i: index) -> i32
+    return switch i do
+    case 0 then
+        10
+    case 3 then
+        30
+    default then
+        99
+    end
+end
+]])
+local saw_switch_index = false
+for i = 1, #switch_index_back_mod.cmds do
+    if switch_index_back_mod.cmds[i] == Back.BackCmdSwitchInt(
+        Back.BackValId("arg:0:i"),
+        Back.BackIndex,
+        {
+            Back.BackSwitchCase("0", Back.BackBlockId("func:switch_index.stmt.1.value.arm.1.block")),
+            Back.BackSwitchCase("3", Back.BackBlockId("func:switch_index.stmt.1.value.arm.2.block")),
+        },
+        Back.BackBlockId("func:switch_index.stmt.1.value.default.block")
+    ) then
+        saw_switch_index = true
+    end
+end
+assert(saw_switch_index)
+
+local const_fold_back_mod = S.back_module([[
+const ONE: index = 1
+const TWO: index = ONE + ONE
+const HALF: f64 = 0.5
+func bump_index(i: index) -> index
+    return i + TWO
+end
+func add_half(x: f64) -> f64
+    return x + HALF
+end
+]])
+local saw_folded_two = false
+local saw_folded_half = false
+for i = 1, #const_fold_back_mod.cmds do
+    if const_fold_back_mod.cmds[i] == Back.BackCmdConstInt(
+        Back.BackValId("func:bump_index.stmt.1.value.rhs"),
+        Back.BackIndex,
+        "2"
+    ) then
+        saw_folded_two = true
+    end
+    if const_fold_back_mod.cmds[i] == Back.BackCmdConstFloat(
+        Back.BackValId("func:add_half.stmt.1.value.rhs"),
+        Back.BackF64,
+        "0.5"
+    ) then
+        saw_folded_half = true
+    end
+end
+assert(saw_folded_two)
+assert(saw_folded_half)
+
 local typed_stages = S.pipeline_module_with_spans([[
 type Pair = struct { left: i32, right: i32 }
 func get_left() -> i32

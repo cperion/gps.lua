@@ -280,7 +280,7 @@ This depends on the intended reboot language surface.
 ## 3.7 Switch and block completion
 
 - [x] finalize switch-key type rules
-- [ ] implement all currently intended scalar key kinds (`bool`, integral scalars, `index`)
+- [x] implement all currently intended scalar key kinds (`bool`, integral scalars, `index`)
 - [x] decide whether non-scalar switch values are part of the language
 - [x] preserve dense switch structure late enough in lowering to allow jump-table-like backend codegen when intended
 - [x] preserve first-class switch structure through hot loop bodies / interpreter-style dispatch instead of collapsing it early into compare CFG
@@ -300,7 +300,7 @@ This depends on the intended reboot language surface.
 - [x] define whether calls/intrinsics can appear in const eval
 - [ ] support const references between sibling consts/modules in the general const-eval system if intended
 - [x] split pure compile-time const items from addressable static data items if the language intends both
-- [ ] strengthen propagation/immediate folding for typed numeric and `index` consts so codegen-sensitive kernels do not route trivial constants through data objects unnecessarily
+- [x] strengthen propagation/immediate folding for typed numeric and `index` consts so codegen-sensitive kernels do not route trivial constants through data objects unnecessarily
 
 ## 3.9 Intrinsics completion
 
@@ -382,7 +382,7 @@ Goal:
 - [x] keep params as pure backend values until an explicit addressability requirement forces materialization to storage
 - [x] keep loop-carried/index values as pure backend/block-param values until an explicit addressability requirement forces materialization to storage
 - [x] keep pure immutable locals/invariants as backend values unless an explicit addressability requirement forces storage
-- [ ] fix terminated/block-fill handling for branchy loop bodies and body-local shared values
+- [x] fix terminated/block-fill handling for branchy loop bodies and body-local shared values
 - [ ] complete `SemExprCastTo` value lowering in the canonical expr path
 - [ ] complete non-scalar load lowering where intended
 - [ ] complete non-scalar call result lowering where intended

@@ -377,6 +377,25 @@ local get_left = ffi.cast("int32_t (*)()", typed_ptr)
 assert(get_left() == 1)
 typed_artifact:free()
 
+local folded_const_artifact = source.compile_module([[
+const ONE: index = 1
+const TWO: index = ONE + ONE
+const HALF: f64 = 0.5
+func bump_index(i: index) -> index
+    return i + TWO
+end
+func add_half(x: f64) -> f64
+    return x + HALF
+end
+]], nil, nil, nil, jit)
+local bump_index_ptr = folded_const_artifact:getpointer(Back.BackFuncId("bump_index"))
+local bump_index = ffi.cast("intptr_t (*)(intptr_t)", bump_index_ptr)
+assert(tonumber(bump_index(5)) == 7)
+local add_half_ptr = folded_const_artifact:getpointer(Back.BackFuncId("add_half"))
+local add_half = ffi.cast("double (*)(double)", add_half_ptr)
+assert(tonumber(add_half(2.0)) == 2.5)
+folded_const_artifact:free()
+
 local package_artifact = source.compile_package({
     {
         name = "Demo",
@@ -444,6 +463,37 @@ func switch_expr(x: i32) -> i32
         11
     case 2 then
         12
+    default then
+        99
+    end
+end
+
+func switch_bool(flag: bool) -> i32
+    return switch flag do
+    case true then
+        11
+    default then
+        22
+    end
+end
+
+func switch_u32(x: u32) -> i32
+    return switch x do
+    case 0 then
+        10
+    case 5 then
+        50
+    default then
+        99
+    end
+end
+
+func switch_index(i: index) -> i32
+    return switch i do
+    case 0 then
+        10
+    case 3 then
+        30
     default then
         99
     end
@@ -528,6 +578,20 @@ local switch_expr = ffi.cast("int32_t (*)(int32_t)", switch_expr_ptr)
 assert(switch_expr(0) == 10)
 assert(switch_expr(2) == 12)
 assert(switch_expr(9) == 99)
+local switch_bool_ptr = cfg_artifact:getpointer(Back.BackFuncId("switch_bool"))
+local switch_bool = ffi.cast("int32_t (*)(bool)", switch_bool_ptr)
+assert(switch_bool(true) == 11)
+assert(switch_bool(false) == 22)
+local switch_u32_ptr = cfg_artifact:getpointer(Back.BackFuncId("switch_u32"))
+local switch_u32 = ffi.cast("int32_t (*)(uint32_t)", switch_u32_ptr)
+assert(switch_u32(0) == 10)
+assert(switch_u32(5) == 50)
+assert(switch_u32(9) == 99)
+local switch_index_ptr = cfg_artifact:getpointer(Back.BackFuncId("switch_index"))
+local switch_index = ffi.cast("int32_t (*)(intptr_t)", switch_index_ptr)
+assert(switch_index(0) == 10)
+assert(switch_index(3) == 30)
+assert(switch_index(9) == 99)
 local dispatch_pair_ptr = cfg_artifact:getpointer(Back.BackFuncId("dispatch_pair"))
 local dispatch_pair = ffi.cast("int32_t (*)(int32_t, int32_t)", dispatch_pair_ptr)
 assert(dispatch_pair(0, 1) == 30)
