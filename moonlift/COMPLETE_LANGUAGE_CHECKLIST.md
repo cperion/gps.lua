@@ -377,6 +377,7 @@ Goal:
 - [x] stop redeclaring direct/extern callees from call sites during `Sem -> Back`
 - [x] make loop-carried/index lowering use backend-valid value naming without duplicate bound ids
 - [x] lower explicit binding storage class distinctions through an explicit `SemBackBinding` ASDL result instead of leaving them as ad hoc residence checks inside backend lowering
+- [x] lower explicit machine-facing switch-arm key distinctions through `SemBackSwitch*` ASDL results instead of re-probing raw switch expressions inside backend lowering
 - [ ] lower explicit `SemPlace`-style addressable forms directly instead of inferring addressability from generic exprs late in the backend
 - [x] keep params as pure backend values until an explicit addressability requirement forces materialization to storage
 - [x] keep loop-carried/index values as pure backend/block-param values until an explicit addressability requirement forces materialization to storage

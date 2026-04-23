@@ -308,6 +308,61 @@ local switch_expr_dynamic = one_expr(
     "expr.switch_dynamic"
 )
 assert(contains_cmd(switch_expr_dynamic, Back.BackCmdCreateBlock(Back.BackBlockId("expr.switch_dynamic.test.2.block"))))
+assert(lacks_cmd(switch_expr_dynamic, Back.BackCmdSwitchInt(
+    Back.BackValId("arg:0:x"),
+    Back.BackI32,
+    {
+        Back.BackSwitchCase("0", Back.BackBlockId("expr.switch_dynamic.arm.1.block")),
+    },
+    Back.BackBlockId("expr.switch_dynamic.default.block")
+)))
+
+local switch_expr_const_key = one_expr(
+    Sem.SemExprSwitch(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "x", Sem.SemTI32)),
+        {
+            Sem.SemSwitchExprArm(
+                Sem.SemExprAdd(Sem.SemTI32, Sem.SemExprConstInt(Sem.SemTI32, "1"), Sem.SemExprConstInt(Sem.SemTI32, "1")),
+                {},
+                Sem.SemExprConstInt(Sem.SemTI32, "12")
+            ),
+        },
+        Sem.SemExprConstInt(Sem.SemTI32, "99"),
+        Sem.SemTI32
+    ),
+    "expr.switch_const_key"
+)
+assert(contains_cmd(switch_expr_const_key, Back.BackCmdSwitchInt(
+    Back.BackValId("arg:0:x"),
+    Back.BackI32,
+    {
+        Back.BackSwitchCase("2", Back.BackBlockId("expr.switch_const_key.arm.1.block")),
+    },
+    Back.BackBlockId("expr.switch_const_key.default.block")
+)))
+
+local switch_expr_duplicate = one_expr(
+    Sem.SemExprSwitch(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "x", Sem.SemTI32)),
+        {
+            Sem.SemSwitchExprArm(Sem.SemExprConstInt(Sem.SemTI32, "0"), {}, Sem.SemExprConstInt(Sem.SemTI32, "10")),
+            Sem.SemSwitchExprArm(Sem.SemExprConstInt(Sem.SemTI32, "0"), {}, Sem.SemExprConstInt(Sem.SemTI32, "11")),
+        },
+        Sem.SemExprConstInt(Sem.SemTI32, "99"),
+        Sem.SemTI32
+    ),
+    "expr.switch_duplicate"
+)
+assert(contains_cmd(switch_expr_duplicate, Back.BackCmdCreateBlock(Back.BackBlockId("expr.switch_duplicate.test.2.block"))))
+assert(lacks_cmd(switch_expr_duplicate, Back.BackCmdSwitchInt(
+    Back.BackValId("arg:0:x"),
+    Back.BackI32,
+    {
+        Back.BackSwitchCase("0", Back.BackBlockId("expr.switch_duplicate.arm.1.block")),
+        Back.BackSwitchCase("0", Back.BackBlockId("expr.switch_duplicate.arm.2.block")),
+    },
+    Back.BackBlockId("expr.switch_duplicate.default.block")
+)))
 
 local switch_stmt_bool = one_stmt(
     Sem.SemStmtSwitch(

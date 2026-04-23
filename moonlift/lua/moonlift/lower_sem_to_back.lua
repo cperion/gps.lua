@@ -636,8 +636,17 @@ function M.Define(T)
         addr_terminates = addr_terminates,
         addr_writes = addr_writes,
         lower_stmt_list = lower_stmt_list,
-        switch_int_case_raws = function(value_ty, arms)
-            return aux.switch_int_case_raws(value_ty, arms)
+        one_back_switch_expr_arms = function(arms, value_ty)
+            return aux.lower_back_switch_expr_arms(arms, value_ty)
+        end,
+        back_switch_expr_arms_is_const = function(node)
+            return pvm.one(aux.back_switch_expr_arms_is_const(node))
+        end,
+        one_back_switch_key_raw = function(node)
+            return pvm.one(aux.back_switch_key_raw(node))
+        end,
+        one_back_switch_key_expr = function(node, value_ty, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            return pvm.one(aux.lower_back_switch_key_expr(node, value_ty, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan))
         end,
     })
 
@@ -1857,22 +1866,120 @@ function M.Define(T)
         return pvm.one(lower_switch_const_case_raw(const_value, value_ty))
     end
 
-    aux.switch_int_case_raws = function(value_ty, arms)
-        if not switch_value_supports_int_cmd(value_ty) then
-            return nil
+    aux.lower_back_switch_key = function(key, value_ty)
+        local raw = switch_case_const_raw(key, value_ty)
+        if raw ~= nil then
+            return Sem.SemBackSwitchKeyConst(raw)
         end
-        local raws = {}
+        return Sem.SemBackSwitchKeyExpr(key)
+    end
+
+    aux.back_switch_key_is_const = pvm.phase("sem_to_back_back_switch_key_is_const", {
+        [Sem.SemBackSwitchKeyConst] = function()
+            return pvm.once(true)
+        end,
+        [Sem.SemBackSwitchKeyExpr] = function()
+            return pvm.once(false)
+        end,
+    })
+
+    aux.back_switch_key_raw = pvm.phase("sem_to_back_back_switch_key_raw", {
+        [Sem.SemBackSwitchKeyConst] = function(self)
+            return pvm.once(self.raw)
+        end,
+        [Sem.SemBackSwitchKeyExpr] = function()
+            error("sem_to_back_back_switch_key_raw: expected constant switch key")
+        end,
+    })
+
+    aux.lower_back_switch_stmt_arm = pvm.phase("sem_to_back_back_switch_stmt_arm", {
+        [Sem.SemSwitchStmtArm] = function(self, value_ty)
+            return pvm.once(Sem.SemBackSwitchStmtArm(aux.lower_back_switch_key(self.key, value_ty), self.body))
+        end,
+    })
+
+    aux.lower_back_switch_expr_arm = pvm.phase("sem_to_back_back_switch_expr_arm", {
+        [Sem.SemSwitchExprArm] = function(self, value_ty)
+            return pvm.once(Sem.SemBackSwitchExprArm(aux.lower_back_switch_key(self.key, value_ty), self.body, self.result))
+        end,
+    })
+
+    aux.back_switch_stmt_arms_is_const = pvm.phase("sem_to_back_back_switch_stmt_arms_is_const", {
+        [Sem.SemBackSwitchStmtArmsConst] = function()
+            return pvm.once(true)
+        end,
+        [Sem.SemBackSwitchStmtArmsExpr] = function()
+            return pvm.once(false)
+        end,
+    })
+
+    aux.back_switch_expr_arms_is_const = pvm.phase("sem_to_back_back_switch_expr_arms_is_const", {
+        [Sem.SemBackSwitchExprArmsConst] = function()
+            return pvm.once(true)
+        end,
+        [Sem.SemBackSwitchExprArmsExpr] = function()
+            return pvm.once(false)
+        end,
+    })
+
+    aux.lower_back_switch_stmt_arms = function(arms, value_ty)
+        local out = {}
+        local all_const = switch_value_supports_int_cmd(value_ty)
         local seen = {}
         for i = 1, #arms do
-            local raw = switch_case_const_raw(arms[i].key, value_ty)
-            if raw == nil or seen[raw] then
-                return nil
+            out[i] = pvm.one(aux.lower_back_switch_stmt_arm(arms[i], value_ty))
+            if all_const and pvm.one(aux.back_switch_key_is_const(out[i].key)) then
+                local raw = pvm.one(aux.back_switch_key_raw(out[i].key))
+                if seen[raw] then
+                    all_const = false
+                else
+                    seen[raw] = true
+                end
+            else
+                all_const = false
             end
-            seen[raw] = true
-            raws[i] = raw
         end
-        return raws
+        if all_const then
+            return Sem.SemBackSwitchStmtArmsConst(out)
+        end
+        return Sem.SemBackSwitchStmtArmsExpr(out)
     end
+
+    aux.lower_back_switch_expr_arms = function(arms, value_ty)
+        local out = {}
+        local all_const = switch_value_supports_int_cmd(value_ty)
+        local seen = {}
+        for i = 1, #arms do
+            out[i] = pvm.one(aux.lower_back_switch_expr_arm(arms[i], value_ty))
+            if all_const and pvm.one(aux.back_switch_key_is_const(out[i].key)) then
+                local raw = pvm.one(aux.back_switch_key_raw(out[i].key))
+                if seen[raw] then
+                    all_const = false
+                else
+                    seen[raw] = true
+                end
+            else
+                all_const = false
+            end
+        end
+        if all_const then
+            return Sem.SemBackSwitchExprArmsConst(out)
+        end
+        return Sem.SemBackSwitchExprArmsExpr(out)
+    end
+
+    aux.lower_back_switch_key_expr = pvm.phase("sem_to_back_back_switch_key_expr", {
+        [Sem.SemBackSwitchKeyConst] = function(self, value_ty, path)
+            local dst = Back.BackValId(path)
+            if one_type_is_bool(value_ty) then
+                return pvm.once(Back.BackExprPlan({ Back.BackCmdConstBool(dst, self.raw == "1") }, dst, Back.BackBool))
+            end
+            return pvm.once(Back.BackExprPlan({ Back.BackCmdConstInt(dst, one_scalar(value_ty), self.raw) }, dst, one_scalar(value_ty)))
+        end,
+        [Sem.SemBackSwitchKeyExpr] = function(self, value_ty, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            return pvm.once(one_expr(self.key, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan))
+        end,
+    })
 
     local function build_switch_expr_value(self, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
         local value_ty = one_sem_expr_type(self.value)
@@ -1899,16 +2006,17 @@ function M.Define(T)
             return Back.BackExprPlan(cmds, default_plan.value, result_back_ty)
         end
 
+        local back_arms = aux.lower_back_switch_expr_arms(self.arms, value_ty)
         local default_plan = one_expr(self.default_expr, path .. ".default", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
         local arm_plans = {}
         local need_join = expr_has_value(default_plan)
-        for i = 1, #self.arms do
-            local body_cmds, body_flow = lower_stmt_list(self.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+        for i = 1, #back_arms.arms do
+            local body_cmds, body_flow = lower_stmt_list(back_arms.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
             local plan_cmds = {}
             copy_cmds(body_cmds, plan_cmds)
             local plan = terminated_expr(plan_cmds)
             if body_flow == Back.BackFallsThrough then
-                local result_plan = one_expr(self.arms[i].result, path .. ".arm." .. i .. ".result", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+                local result_plan = one_expr(back_arms.arms[i].result, path .. ".arm." .. i .. ".result", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
                 append_expr_cmds(plan_cmds, result_plan)
                 if expr_has_value(result_plan) then
                     plan = Back.BackExprPlan(plan_cmds, result_plan.value, result_back_ty)
@@ -1925,13 +2033,12 @@ function M.Define(T)
         local join_block = Back.BackBlockId(path .. ".join.block")
         local default_block = Back.BackBlockId(path .. ".default.block")
         local arm_blocks = {}
-        local case_raws = aux.switch_int_case_raws(value_ty, self.arms)
-        if case_raws ~= nil then
+        if pvm.one(aux.back_switch_expr_arms_is_const(back_arms)) then
             local cases = {}
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
-                cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+                cases[i] = Back.BackSwitchCase(pvm.one(aux.back_switch_key_raw(back_arms.arms[i].key)), arm_blocks[i])
             end
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
             if need_join then
@@ -1939,7 +2046,7 @@ function M.Define(T)
                 cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(join_block, dst, result_back_ty)
             end
             cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
                 append_expr_cmds(cmds, arm_plans[i])
                 if expr_has_value(arm_plans[i]) then
@@ -1962,7 +2069,7 @@ function M.Define(T)
         end
 
         local test_blocks = {}
-        for i = 1, #self.arms do
+        for i = 1, #back_arms.arms do
             arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
             if i > 1 then
@@ -1975,13 +2082,13 @@ function M.Define(T)
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
             cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(join_block, dst, result_back_ty)
         end
-        for i = 1, #self.arms do
+        for i = 1, #back_arms.arms do
             if i > 1 then
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(test_blocks[i])
             end
-            local key = one_expr(self.arms[i].key, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            local key = pvm.one(aux.lower_back_switch_key_expr(back_arms.arms[i].key, value_ty, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan))
             append_expr_cmds(cmds, key)
-            local else_block = (i < #self.arms) and test_blocks[i + 1] or default_block
+            local else_block = (i < #back_arms.arms) and test_blocks[i + 1] or default_block
             if expr_has_value(key) then
                 local match = Back.BackValId(path .. ".arm." .. i .. ".match")
                 cmds[#cmds + 1] = one_eq_cmd(value_ty, match, Back.BackBool, value.value, key.value)
@@ -4418,15 +4525,16 @@ function M.Define(T)
                 return pvm.once(Back.BackStmtPlan(value.cmds, Back.BackTerminates))
             end
             local default_plan = one_expr_stmt(self.default_expr, path .. ".default", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            local back_arms = aux.lower_back_switch_expr_arms(self.arms, value_ty)
             local arm_plans = {}
             local need_join = default_plan.flow == Back.BackFallsThrough
-            for i = 1, #self.arms do
-                local body_cmds, body_flow = lower_stmt_list(self.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            for i = 1, #back_arms.arms do
+                local body_cmds, body_flow = lower_stmt_list(back_arms.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
                 local plan_cmds = {}
                 copy_cmds(body_cmds, plan_cmds)
                 local plan_flow = body_flow
                 if body_flow == Back.BackFallsThrough then
-                    local result_plan = one_expr_stmt(self.arms[i].result, path .. ".arm." .. i .. ".result", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+                    local result_plan = one_expr_stmt(back_arms.arms[i].result, path .. ".arm." .. i .. ".result", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
                     copy_cmds(result_plan.cmds, plan_cmds)
                     plan_flow = result_plan.flow
                 end
@@ -4435,7 +4543,7 @@ function M.Define(T)
                     need_join = true
                 end
             end
-            if #self.arms == 0 then
+            if #back_arms.arms == 0 then
                 local cmds = {}
                 append_expr_cmds(cmds, value)
                 copy_cmds(default_plan.cmds, cmds)
@@ -4444,22 +4552,21 @@ function M.Define(T)
             local join_block = Back.BackBlockId(path .. ".join.block")
             local default_block = Back.BackBlockId(path .. ".default.block")
             local arm_blocks = {}
-            local case_raws = aux.switch_int_case_raws(value_ty, self.arms)
             local cmds = {}
             append_expr_cmds(cmds, value)
-            if case_raws ~= nil then
+            if pvm.one(aux.back_switch_expr_arms_is_const(back_arms)) then
                 local cases = {}
-                for i = 1, #self.arms do
+                for i = 1, #back_arms.arms do
                     arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                     cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
-                    cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+                    cases[i] = Back.BackSwitchCase(pvm.one(aux.back_switch_key_raw(back_arms.arms[i].key)), arm_blocks[i])
                 end
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
                 if need_join then
                     cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
                 end
                 cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
-                for i = 1, #self.arms do
+                for i = 1, #back_arms.arms do
                     cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
                     copy_cmds(arm_plans[i].cmds, cmds)
                     if arm_plans[i].flow == Back.BackFallsThrough then
@@ -4481,7 +4588,7 @@ function M.Define(T)
                 return pvm.once(Back.BackStmtPlan(cmds, Back.BackTerminates))
             end
             local test_blocks = {}
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
                 if i > 1 then
@@ -4493,13 +4600,13 @@ function M.Define(T)
             if need_join then
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
             end
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 if i > 1 then
                     cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(test_blocks[i])
                 end
-                local key = one_expr(self.arms[i].key, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+                local key = pvm.one(aux.lower_back_switch_key_expr(back_arms.arms[i].key, value_ty, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan))
                 append_expr_cmds(cmds, key)
-                local else_block = (i < #self.arms) and test_blocks[i + 1] or default_block
+                local else_block = (i < #back_arms.arms) and test_blocks[i + 1] or default_block
                 if expr_has_value(key) then
                     local match = Back.BackValId(path .. ".arm." .. i .. ".match")
                     cmds[#cmds + 1] = one_eq_cmd(value_ty, match, Back.BackBool, value.value, key.value)
@@ -4649,16 +4756,17 @@ function M.Define(T)
                 return pvm.once(Back.BackStmtPlan(value.cmds, Back.BackTerminates))
             end
             local default_cmds, default_flow = lower_stmt_list(self.default_body, path .. ".default", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            local back_arms = aux.lower_back_switch_stmt_arms(self.arms, value_ty)
             local arm_cmds = {}
             local arm_flows = {}
             local need_join = default_flow == Back.BackFallsThrough
-            for i = 1, #self.arms do
-                arm_cmds[i], arm_flows[i] = lower_stmt_list(self.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            for i = 1, #back_arms.arms do
+                arm_cmds[i], arm_flows[i] = lower_stmt_list(back_arms.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
                 if arm_flows[i] == Back.BackFallsThrough then
                     need_join = true
                 end
             end
-            if #self.arms == 0 then
+            if #back_arms.arms == 0 then
                 local cmds = {}
                 append_expr_cmds(cmds, value)
                 copy_cmds(default_cmds, cmds)
@@ -4667,22 +4775,21 @@ function M.Define(T)
             local join_block = Back.BackBlockId(path .. ".join.block")
             local default_block = Back.BackBlockId(path .. ".default.block")
             local arm_blocks = {}
-            local case_raws = aux.switch_int_case_raws(value_ty, self.arms)
             local cmds = {}
             append_expr_cmds(cmds, value)
-            if case_raws ~= nil then
+            if pvm.one(aux.back_switch_stmt_arms_is_const(back_arms)) then
                 local cases = {}
-                for i = 1, #self.arms do
+                for i = 1, #back_arms.arms do
                     arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                     cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
-                    cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+                    cases[i] = Back.BackSwitchCase(pvm.one(aux.back_switch_key_raw(back_arms.arms[i].key)), arm_blocks[i])
                 end
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
                 if need_join then
                     cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
                 end
                 cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
-                for i = 1, #self.arms do
+                for i = 1, #back_arms.arms do
                     cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
                     copy_cmds(arm_cmds[i], cmds)
                     if arm_flows[i] == Back.BackFallsThrough then
@@ -4704,7 +4811,7 @@ function M.Define(T)
                 return pvm.once(Back.BackStmtPlan(cmds, Back.BackTerminates))
             end
             local test_blocks = {}
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
                 if i > 1 then
@@ -4716,23 +4823,23 @@ function M.Define(T)
             if need_join then
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
             end
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 if i > 1 then
                     cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(test_blocks[i])
                 end
-                local key = one_expr(self.arms[i].key, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+                local key = pvm.one(aux.lower_back_switch_key_expr(back_arms.arms[i].key, value_ty, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan))
                 append_expr_cmds(cmds, key)
-                local else_block = (i < #self.arms) and test_blocks[i + 1] or default_block
+                local else_block = (i < #back_arms.arms) and test_blocks[i + 1] or default_block
                 if expr_has_value(key) then
                     local match = Back.BackValId(path .. ".arm." .. i .. ".match")
                     cmds[#cmds + 1] = one_eq_cmd(value_ty, match, Back.BackBool, value.value, key.value)
                     cmds[#cmds + 1] = Back.BackCmdBrIf(match, arm_blocks[i], {}, else_block, {})
                 end
             end
-            for i = 2, #self.arms do
+            for i = 2, #back_arms.arms do
                 cmds[#cmds + 1] = Back.BackCmdSealBlock(test_blocks[i])
             end
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
                 copy_cmds(arm_cmds[i], cmds)
                 if arm_flows[i] == Back.BackFallsThrough then

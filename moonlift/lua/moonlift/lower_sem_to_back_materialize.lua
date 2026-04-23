@@ -108,8 +108,20 @@ function M.Define(T, env)
         return env.lower_stmt_list(nodes, base_path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
     end
 
-    local function switch_int_case_raws(value_ty, arms)
-        return env.switch_int_case_raws(value_ty, arms)
+    local function one_back_switch_expr_arms(arms, value_ty)
+        return env.one_back_switch_expr_arms(arms, value_ty)
+    end
+
+    local function back_switch_expr_arms_is_const(node)
+        return env.back_switch_expr_arms_is_const(node)
+    end
+
+    local function one_back_switch_key_raw(node)
+        return env.one_back_switch_key_raw(node)
+    end
+
+    local function one_back_switch_key_expr(node, value_ty, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+        return env.one_back_switch_key_expr(node, value_ty, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
     end
 
     local function addr_with_offset(base_addr, offset, path)
@@ -357,15 +369,16 @@ function M.Define(T, env)
             end
             return addr_writes(cmds)
         end
+        local back_arms = one_back_switch_expr_arms(self.arms, value_ty)
         local arm_body_cmds = {}
         local arm_result_plans = {}
         local default_plan = one_expr_into_addr(self.default_expr, addr, path .. ".default", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
         local need_join = addr_continues(default_plan)
-        for i = 1, #self.arms do
-            local body_cmds, body_flow = lower_stmt_list(self.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+        for i = 1, #back_arms.arms do
+            local body_cmds, body_flow = lower_stmt_list(back_arms.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
             arm_body_cmds[i] = body_cmds
             if body_flow == Back.BackFallsThrough then
-                arm_result_plans[i] = one_expr_into_addr(self.arms[i].result, addr, path .. ".arm." .. i .. ".result", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+                arm_result_plans[i] = one_expr_into_addr(back_arms.arms[i].result, addr, path .. ".arm." .. i .. ".result", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
             else
                 arm_result_plans[i] = terminated_addr({})
             end
@@ -376,20 +389,19 @@ function M.Define(T, env)
         local join_block = Back.BackBlockId(path .. ".join.block")
         local default_block = Back.BackBlockId(path .. ".default.block")
         local arm_blocks = {}
-        local case_raws = switch_int_case_raws(value_ty, self.arms)
-        if case_raws ~= nil then
+        if back_switch_expr_arms_is_const(back_arms) then
             local cases = {}
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
-                cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+                cases[i] = Back.BackSwitchCase(one_back_switch_key_raw(back_arms.arms[i].key), arm_blocks[i])
             end
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
             if need_join then
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
             end
             cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
-            for i = 1, #self.arms do
+            for i = 1, #back_arms.arms do
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
                 copy_cmds(arm_body_cmds[i], cmds)
                 append_addr_cmds(cmds, arm_result_plans[i])
@@ -412,7 +424,7 @@ function M.Define(T, env)
             return terminated_addr(cmds)
         end
         local test_blocks = {}
-        for i = 1, #self.arms do
+        for i = 1, #back_arms.arms do
             arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
             if i > 1 then
@@ -424,13 +436,13 @@ function M.Define(T, env)
         if need_join then
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
         end
-        for i = 1, #self.arms do
+        for i = 1, #back_arms.arms do
             if i > 1 then
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(test_blocks[i])
             end
-            local key = one_expr(self.arms[i].key, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            local key = one_back_switch_key_expr(back_arms.arms[i].key, value_ty, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
             append_expr_cmds(cmds, key)
-            local else_block = (i < #self.arms) and test_blocks[i + 1] or default_block
+            local else_block = (i < #back_arms.arms) and test_blocks[i + 1] or default_block
             if expr_has_value(key) then
                 local match = Back.BackValId(path .. ".arm." .. i .. ".match")
                 cmds[#cmds + 1] = one_eq_cmd(value_ty, match, Back.BackBool, value.value, key.value)

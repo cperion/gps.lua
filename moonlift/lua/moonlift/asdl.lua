@@ -404,6 +404,14 @@ module MoonliftSem {
     SemFieldInit = (string name, MoonliftSem.SemExpr value) unique
     SemSwitchStmtArm = (MoonliftSem.SemExpr key, MoonliftSem.SemStmt* body) unique
     SemSwitchExprArm = (MoonliftSem.SemExpr key, MoonliftSem.SemStmt* body, MoonliftSem.SemExpr result) unique
+    SemBackSwitchKey = SemBackSwitchKeyConst(string raw) unique
+                     | SemBackSwitchKeyExpr(MoonliftSem.SemExpr key) unique
+    SemBackSwitchStmtArm = (MoonliftSem.SemBackSwitchKey key, MoonliftSem.SemStmt* body) unique
+    SemBackSwitchExprArm = (MoonliftSem.SemBackSwitchKey key, MoonliftSem.SemStmt* body, MoonliftSem.SemExpr result) unique
+    SemBackSwitchStmtArms = SemBackSwitchStmtArmsConst(MoonliftSem.SemBackSwitchStmtArm* arms) unique
+                          | SemBackSwitchStmtArmsExpr(MoonliftSem.SemBackSwitchStmtArm* arms) unique
+    SemBackSwitchExprArms = SemBackSwitchExprArmsConst(MoonliftSem.SemBackSwitchExprArm* arms) unique
+                          | SemBackSwitchExprArmsExpr(MoonliftSem.SemBackSwitchExprArm* arms) unique
     SemLoopCarryPort = (string port_id, string name, MoonliftSem.SemType ty, MoonliftSem.SemExpr init) unique
     SemLoopIndexPort = (string name, MoonliftSem.SemType ty) unique
     SemLoopUpdate = (string port_id, MoonliftSem.SemExpr value) unique

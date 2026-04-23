@@ -323,9 +323,13 @@ preserved switch lowering**, not an early Moonlift collapse. Cranelift sees firs
 switch structure and chooses a sparse dispatch tree.
 
 So the remaining switch problem is narrower than before:
-Moonlift still needs a more explicit machine-facing constant-key classification for cases that
-fall back, but dense/sparse strategy selection is no longer lost prematurely for constant-key
+Moonlift now has an explicit machine-facing constant-key classification at the `Sem -> Back`
+boundary, so dense/sparse strategy selection is no longer lost prematurely for constant-key
 integer/bool/index switches.
+
+The remaining gap is no longer “hidden switch-shape rediscovery in backend lowering”.
+The remaining gap is simply that non-constant or duplicate-key cases still take the compare path,
+which is now an explicit classified fallback rather than an ad hoc probe of raw semantic arms.
 
 ---
 
