@@ -108,6 +108,10 @@ function M.Define(T, env)
         return env.lower_stmt_list(nodes, base_path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
     end
 
+    local function switch_int_case_raws(value_ty, arms)
+        return env.switch_int_case_raws(value_ty, arms)
+    end
+
     local function addr_with_offset(base_addr, offset, path)
         local dst = Back.BackValId(path)
         if offset == 0 then
@@ -372,6 +376,41 @@ function M.Define(T, env)
         local join_block = Back.BackBlockId(path .. ".join.block")
         local default_block = Back.BackBlockId(path .. ".default.block")
         local arm_blocks = {}
+        local case_raws = switch_int_case_raws(value_ty, self.arms)
+        if case_raws ~= nil then
+            local cases = {}
+            for i = 1, #self.arms do
+                arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
+                cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
+                cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+            end
+            cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
+            if need_join then
+                cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
+            end
+            cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
+            for i = 1, #self.arms do
+                cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
+                copy_cmds(arm_body_cmds[i], cmds)
+                append_addr_cmds(cmds, arm_result_plans[i])
+                if addr_continues(arm_result_plans[i]) then
+                    cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
+                end
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(arm_blocks[i])
+            end
+            cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(default_block)
+            append_addr_cmds(cmds, default_plan)
+            if addr_continues(default_plan) then
+                cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
+            end
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(default_block)
+            if need_join then
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
+                cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
+                return addr_writes(cmds)
+            end
+            return terminated_addr(cmds)
+        end
         local test_blocks = {}
         for i = 1, #self.arms do
             arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")

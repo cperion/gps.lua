@@ -9,9 +9,10 @@ This grammar is intentionally derived from the current reboot ASDL in:
 It is not a verbatim copy of `moonlift-old/`.
 It is the grammar we should use for the reboot parser unless and until the reboot ASDL changes.
 
-Companion doc:
+Companion docs:
 
 - `moonlift/REBOOT_SOURCE_SPEC.md`
+- `moonlift/TYPED_LOOP_SIGNATURE_PROPOSAL.md` — frozen future source-syntax proposal, not the current implemented grammar
 
 ---
 
@@ -429,11 +430,17 @@ The reboot source grammar centers loops on the current `Surface` loop families.
 There is currently **no separate plain `while` or `for` AST family** in `MoonliftSurface`.
 So the grammar is centered on canonical `loop` forms.
 
+Important current note:
+
+- this grammar describes the implemented reboot parser today
+- typed loop-header spellings from `moonlift/TYPED_LOOP_SIGNATURE_PROPOSAL.md` are now the only accepted authored loop syntax
+
 ### 8.1 Loop carries
 
 ```text
 loop_carry_init   ::= ident ":" type "=" expr
 loop_carry_list   ::= loop_carry_init { "," loop_carry_init }
+loop_index_port   ::= ident ":" "index" "over" domain
 loop_next_assign  ::= ident "=" expr
 loop_next_block   ::= loop_next_assign { nl loop_next_assign }
 ```
@@ -443,38 +450,38 @@ loop_next_block   ::= loop_next_assign { nl loop_next_assign }
 Statement form:
 
 ```text
-loop_while_stmt   ::= "loop" [ loop_carry_list ] "while" expr nl stmt_block "next" nl loop_next_block "end"
+loop_while_stmt   ::= "loop" "(" [ loop_carry_list ] ")" "while" expr nl stmt_block "next" nl loop_next_block "end"
 ```
 
 Expression form:
 
 ```text
-loop_while_expr   ::= "loop" [ loop_carry_list ] "while" expr nl stmt_block "next" nl loop_next_block "end" "->" expr
+loop_while_expr   ::= "loop" "(" [ loop_carry_list ] ")" "->" type "while" expr nl stmt_block "next" nl loop_next_block "end" "->" expr
 ```
 
 These map to:
 
 - `SurfLoopWhileStmt`
-- `SurfLoopWhileExpr`
+- `SurfLoopWhileExprTyped`
 
 ### 8.3 `loop ... over ...`
 
 Statement form:
 
 ```text
-loop_over_stmt    ::= "loop" ident "over" domain [ "," loop_carry_list ] nl stmt_block "next" nl loop_next_block "end"
+loop_over_stmt    ::= "loop" "(" loop_index_port [ "," loop_carry_list ] ")" nl stmt_block "next" nl loop_next_block "end"
 ```
 
 Expression form:
 
 ```text
-loop_over_expr    ::= "loop" ident "over" domain [ "," loop_carry_list ] nl stmt_block "next" nl loop_next_block "end" "->" expr
+loop_over_expr    ::= "loop" "(" loop_index_port [ "," loop_carry_list ] ")" "->" type nl stmt_block "next" nl loop_next_block "end" "->" expr
 ```
 
 These map to:
 
 - `SurfLoopOverStmt`
-- `SurfLoopOverExpr`
+- `SurfLoopOverExprTyped`
 
 ### 8.4 Domains
 

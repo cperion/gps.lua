@@ -291,6 +291,7 @@ local while_loop = one_loop(Elab.ElabLoopWhileExpr(
             )
         ),
     },
+    Elab.ElabLoopExprEndOnly,
     Elab.ElabBindingExpr(Elab.ElabLoopCarry("loop.sum", "carry.acc", "acc", Elab.ElabTI32))
 ))
 assert(while_loop == Sem.SemLoopWhileExpr(
@@ -325,6 +326,7 @@ assert(while_loop == Sem.SemLoopWhileExpr(
             )
         ),
     },
+    Sem.SemLoopExprEndOnly,
     Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.sum", "carry.acc", "acc", Sem.SemTI32))
 ))
 

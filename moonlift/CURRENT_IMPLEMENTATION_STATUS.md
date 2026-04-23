@@ -11,6 +11,10 @@ For the contribution rules that define what counts as an architecturally correct
 
 - `moonlift/CONTRIBUTING.md`
 
+For the frozen closed-language semantic target that this inventory is measured against, see:
+
+- `moonlift/CLOSED_LANGUAGE_SEMANTIC_DECISIONS.md`
+
 This is **not** a test-status document.
 It is intentionally focused on implementation coverage rather than test enumeration.
 Tests, local build prerequisites, and shared-library availability may still drift independently of this inventory; this file is about implementation coverage.
@@ -19,6 +23,7 @@ For the current reboot source-language shape, parser target, and span strategy, 
 
 - `moonlift/REBOOT_SOURCE_SPEC.md`
 - `moonlift/REBOOT_SOURCE_GRAMMAR.md`
+- `moonlift/TYPED_LOOP_SIGNATURE_PROPOSAL.md` — frozen typed loop-header/signature design note, now reflected in the canonical parser/front-end syntax
 - `moonlift/SOURCE_SPAN_STRATEGY.md`
 
 For the future open-code / metaprogramming direction, see:
@@ -78,6 +83,10 @@ And the current implementation already contains a real middle/back-end path for 
 - local expression lowering
 - local statement lowering
 - local loop and domain lowering
+- typed `while`/`over` expr loops with valued early-exit results (`break expr`) through the current backend path
+- explicit `ElabLoopExprExit` / `SemLoopExprExit` classification so breakless expr loops and valued-break expr loops are no longer conflated in backend lowering
+- explicit function-scoped storage/addressability planning through `SemResidencePlan`
+- explicit machine-facing `SemBinding -> SemBackBinding` classification before backend lowering
 - top-level `Surface -> Elab` lowering for params/funcs/externs/consts/statics/imports/type-items/modules
 - top-level `Elab -> Sem` lowering for params/funcs/externs/consts/statics/imports/type-items/modules
 - function-arg env synthesis from params
@@ -282,6 +291,8 @@ Implemented in:
 - cast / extend / reduce / promote / demote / float-int conversion command emission
 - select
 - direct / extern / indirect calls
+
+Authored `select(cond, a, b)` is already preserved distinctly through the current closed path as `SurfSelectExpr -> ElabSelectExpr -> SemExprSelect -> BackCmdSelect`, rather than being forced through generic `if`-CFG lowering.
 - direct/extern call lowering without redundant call-site redeclarations
 - block params / CFG lowering
 - explicit expr-flow lowering through `BackExprLowering`
@@ -318,6 +329,8 @@ Implemented in:
 - `moonlift/lua/moonlift/jit.lua`
 
 This currently replays the `BackCmd` stream into the Rust builder via FFI.
+That replay path now uses plain non-memoized command dispatch rather than a memoized `pvm.phase(...)` call, so identical `BackCmd` values replay every time instead of being accidentally skipped.
+That matters for real CFG shapes where both branches may emit the same join jump or other repeated command values.
 There is already a thin plain FFI-facing path today, and that FFI path is the current practical/project-priority integration route while the language is completed.
 What is still missing there is a more polished/stable final public FFI surface.
 Practical use through `moonlift.jit` still requires building the shared library with cargo and either letting the default `target/...` search path find it or passing an explicit `libpath`; that build/load requirement is separate from the backend implementation coverage described here.
@@ -670,13 +683,19 @@ This is one of the biggest backend/runtime gaps.
 - slice/view runtime copying for stack-resident values
 - runtime equal-length checks for dynamic `zip_eq` traversal
 
+Frozen target note:
+
+- slices are intended as first-class descriptor values with canonical runtime meaning `data + len`
+- views are intended as first-class descriptor values with canonical runtime meaning `data + len + stride`
+- richer contiguous/strided/windowed/interleaved view forms normalize into that descriptor-oriented story
+
 Still missing or still restricted:
 
-- a fully finished authored-language story for constructing/passing slice/view values through the current non-scalar ABI/value path
+- the finished authored-language story for constructing/passing slice/view values through the current descriptor ABI/value path
 - a complete explicit low-level slice/view bounds/checking model beyond the current bounded-view lowering shape
 - broader non-scalar load/call/result/materialization completion around slice/view values
 
-So slices/views/domains no longer stop at array-only machine lowering: the backend now lowers bounded slice/view indexing and traversal directly, but the broader non-scalar language/runtime story is still not complete.
+So slices/views/domains no longer stop at array-only machine lowering: the backend now lowers bounded slice/view indexing and traversal directly, but the broader descriptor-value language/runtime story is still not complete.
 
 ---
 
@@ -703,19 +722,22 @@ So arrays are partially real, but not fully first-class indexed values all the w
 
 Current backend/lowering is still heavily scalar-oriented.
 
+The frozen target is now explicit:
+
+- the language is single-result only
+- multiple logical results use explicit struct values rather than anonymous tuple/multi-result forms
+- slices/views are descriptor values
+- aggregates lower through hidden-pointer/materialization conventions
+- function values are intended to be first-class immutable callable values
+
 Missing or restricted:
 - non-scalar load results
-- non-scalar call results
-- non-scalar return values in the current Back ABI path
-- multi-result direct function-pointer artifact API
-- multi-result raw-pointer extern ABI path
-- full function-value storage semantics
+- non-scalar call arguments/results under that frozen aggregate/descriptor ABI
+- non-scalar return values through the hidden-pointer result path
+- full function-value read/storage/call lowering
+- slice/view descriptor argument/result completion across the current Back/FFI path
 
-So the effective callable ABI today is mostly:
-
-- scalar/pointer-ish single-result
-
-rather than full aggregate/multi-result values.
+So the effective callable ABI today is still mostly scalar/pointer single-result, while the broader frozen aggregate/descriptor/function-value target is not complete yet.
 
 ---
 
@@ -735,13 +757,14 @@ So mutable globals are not currently a real feature.
 
 ---
 
-## 5.17 Externs are not first-class runtime values
+## 5.17 Externs are semantically first-class, but implementation is still partial
 
-Extern calls work through call-target lowering.
+The frozen closed-language target treats extern function items as function values in the same immutable callable family as ordinary functions.
 
-But direct extern binding reads are not supported, and externs are not addressable as ordinary values in the current lowering model.
+Current implementation still mainly supports externs through call-target lowering.
+Direct extern binding reads and broader extern-as-value flows are not complete yet.
 
-So externs are callable, but not fully first-class values.
+So externs are intended to be first-class immutable callable values, but that semantic target is not yet fully implemented.
 
 ---
 
@@ -749,20 +772,28 @@ So externs are callable, but not fully first-class values.
 
 The address-of / place model is explicit now, but still incomplete.
 
+Frozen target note:
+
+- `let`/params/loop carries/loop indices are value bindings first
+- `var` is the explicit mutable-cell binding form
+- address-of applies to real places rooted in locals, params, loop carries/indices, statics, and projections/dereferences/indexes built from those roots
+- address-of does not apply to pure compile-time `const` values or arbitrary temporary rvalues
+
 Implemented now:
 - address of mutable locals through canonical local-cell stack slots
 - address of static globals through `SemBindGlobalStatic`
 - address of projected/deref/index places built from those addressable bases
 - a real function-scoped `SemResidencePlan` phase boundary for storage/addressability classification
+- an explicit machine-facing `SemBackBinding` ASDL result type that classifies immutable locals/params/loop carries/loop indices into pure-vs-stored forms for `Sem -> Back`
 - place-root bindings (`SemPlaceBinding(...)`) now force stack residence in that plan instead of relying only on default-by-type answers
 
 Still missing or restricted:
 - the broader not-yet-finished non-scalar/value-model path
 - address of pure const globals (`SemBindGlobalConst`)
 - address of many computed values except where explicit materialization already exists
-- a fully general addressability model across all place categories
+- a fully general implementation of the frozen place/addressability model across all intended place categories
 
-So references/places exist in the IR, storage/addressability now has an explicit function-scoped phase answer, and `Sem -> Back` now consumes that answer for pure-value locals/args/loop values, but the broader non-scalar/general-place story is still incomplete.
+So references/places exist in the IR, storage/addressability now has both an explicit function-scoped residence plan and an explicit machine-facing `SemBackBinding` classification consumed by `Sem -> Back`, but the broader non-scalar/general-place story is still incomplete.
 
 ---
 
@@ -884,6 +915,9 @@ It already constructs `MoonliftSurface` ASDL values directly for a substantial b
   - `switch` expr
   - block expr
   - canonical loop expr
+- note:
+  - typed loop headers/signatures are now the only accepted authored loop syntax in the current parser/front-end
+  - loop semantics remain the same; only the authored header contract became more explicit
 - statements:
   - `let`
   - `var`
@@ -957,12 +991,17 @@ What is still missing here is not the existence of a compile facade, but its fin
 
 Recent direct machine-code inspection of small benchmark kernels shows several real remaining design/codegen gaps:
 
-- dense integer `switch` currently lowers as a compare-chain CFG, not as a preserved switch form that could become a jump table
+- constant-key `switch` on `bool` / integral scalars / `index` now lowers through preserved `BackCmdSwitchInt` structure; dense cases can become `br_table`/jump-table-style code, while sparse cases stay preserved long enough for Cranelift to choose a sparse compare tree instead of Moonlift pre-collapsing them
+- non-constant switch-arm keys still fall back to compare CFG because `SemSwitch*Arm` still carries general key expressions rather than an explicit machine-facing constant-key split
 - plain scalar `if` chooses currently lower as branch CFG, not as an explicit select/branchless choice form
-- scalar function arguments now stay as backend entry values by default, and function-scoped residence planning materializes storage only when addressability requires it; the same policy now also covers pure scalar loop carries/indices, while general-place/non-scalar cases are still less complete
+- scalar function arguments now stay as backend entry values by default, and function-scoped residence planning plus explicit `SemBackBinding` classification materialize storage only when addressability requires it; the same policy now also covers pure scalar loop carries/indices, while general-place/non-scalar cases are still less complete
 - authored unsigned / `index` benchmarking is still awkward because type-directed integer literal elaboration is not yet strong enough
 
-So the current backend is already useful for real codegen observation, but some important machine-shape outcomes are still determined by open frontend/lowering policy decisions—especially switch preservation, select/branchless choice, and the still-incomplete storage/addressability policy—rather than by finished intended language semantics.
+So the current backend is already useful for real codegen observation, and the switch-preservation situation is materially better than before, but some important machine-shape outcomes are still limited by implementation gaps relative to the now-frozen closed-language semantics—especially fully explicit constant-key switch classification, explicit `select` preservation, and the still-incomplete storage/addressability/value-model work.
+
+One recently-fixed backend-host issue is worth calling out explicitly:
+
+- simple stmt `if`, stmt `switch`, loop-body stmt `if`, linear body-local `let ...; next ... = out`, and bounded nested `if`-expression loop updates now compile cleanly through the current LuaJIT FFI replay path instead of dropping repeated identical join jumps during replay
 
 ---
 
@@ -1047,23 +1086,25 @@ Missing/partial:
 
 ---
 
-# 7. Rust/FFI-specific explicit backend limitations
+# 7. Rust/FFI-specific explicit backend facts
 
-These are concrete, explicit limitations in the current backend layer.
+These are concrete backend facts to keep in mind when comparing the frozen semantic target to the current backend layer.
 
 ## 7.1 `BackCmdFrem` is not implemented in Rust
 
 Rust explicitly errors on it.
 
-## 7.2 Raw pointer API does not support multi-result extern ABIs
+## 7.2 Raw pointer API is intentionally single-result
 
-Rust explicitly rejects multi-result extern declarations for the raw pointer API.
+Rust rejects multi-result extern declarations for the raw pointer API.
+That now matches the frozen single-result language/ABI target and is not itself a semantic gap.
 
-## 7.3 Direct artifact API is effectively single-result oriented
+## 7.3 Direct artifact API is intentionally single-result oriented
 
 Direct function-pointer retrieval is limited to the current single-result shape.
+That now matches the frozen single-result language/ABI target; the remaining backend gap is completing aggregate/descriptor conventions around that target.
 
-These are backend limitations, separate from the frontend gaps above.
+These backend facts are separate from the frontend/value-model gaps above.
 
 ---
 

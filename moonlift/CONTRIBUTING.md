@@ -9,6 +9,7 @@ If a change does not respect that, it is not a valid contribution even if it mak
 This guide is grounded in:
 
 - `docs/COMPILER_PATTERN.md`
+- `moonlift/CLOSED_LANGUAGE_SEMANTIC_DECISIONS.md`
 - `moonlift/CURRENT_IMPLEMENTATION_STATUS.md`
 - `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md`
 
@@ -41,7 +42,12 @@ If you feel tempted to do that, stop and fix the ASDL first.
 
 # 2. The compiler pattern Moonlift follows
 
-Moonlift follows the compiler pattern described in `docs/COMPILER_PATTERN.md`:
+Moonlift follows the compiler pattern described in `docs/COMPILER_PATTERN.md`.
+The current frozen closed-language target is defined in:
+
+- `moonlift/CLOSED_LANGUAGE_SEMANTIC_DECISIONS.md`
+
+That target is implemented through the same compiler pattern:
 
 - the user authors a program in a domain language
 - the source ASDL is the architecture
@@ -129,6 +135,7 @@ These were correct architectural moves because they made distinctions explicit i
 - split stmt-switch arms vs expr-switch arms
 - split loop stmt vs loop expr
 - split local immutable values vs mutable cells
+- split machine-facing binding classification into explicit pure/stored/cell cases through `SemBackBinding`
 - split unresolved field refs vs offset-resolved field refs
 - split scalar expr lowering results into `BackExprPlan` vs `BackExprTerminated`
 - split address/materialization lowering results into `BackAddrWrites` vs `BackAddrTerminated`
@@ -462,14 +469,15 @@ Bad helper use:
 Before changing architecture-heavy code, read in this order:
 
 1. `docs/COMPILER_PATTERN.md`
-2. `moonlift/CURRENT_IMPLEMENTATION_STATUS.md`
-3. `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md`
-4. this file
+2. `moonlift/CLOSED_LANGUAGE_SEMANTIC_DECISIONS.md`
+3. `moonlift/CURRENT_IMPLEMENTATION_STATUS.md`
+4. `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md`
+5. this file
 
 And if you are touching future-design areas:
 
-5. `moonlift/QUOTING_SYSTEM_DESIGN.md`
-6. `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
+6. `moonlift/QUOTING_SYSTEM_DESIGN.md`
+7. `moonlift/LUAJIT_HOSTED_INTEGRATION.md`
 
 ---
 

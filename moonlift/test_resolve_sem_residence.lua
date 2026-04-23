@@ -30,6 +30,9 @@ assert(pvm.one(R.lower_binding_residence(Sem.SemBindArg(0, "x", Sem.SemTI32))) =
 assert(pvm.one(R.lower_binding_residence(Sem.SemBindArg(1, "arr", Sem.SemTArray(Sem.SemTI32, 4)))) == Sem.SemResidenceStack)
 assert(pvm.one(R.lower_binding_residence(Sem.SemBindLoopCarry("loop", "carry.acc", "acc", Sem.SemTI32))) == Sem.SemResidenceValue)
 assert(pvm.one(R.lower_binding_residence(Sem.SemBindLoopIndex("loop", "i", Sem.SemTIndex))) == Sem.SemResidenceValue)
+assert(pvm.one(R.lower_back_binding(Sem.SemBindLocalValue("x", "x", Sem.SemTI32))) == Sem.SemBackLocalValue("x", "x", Sem.SemTI32))
+assert(pvm.one(R.lower_back_binding(Sem.SemBindArg(1, "arr", Sem.SemTArray(Sem.SemTI32, 4)))) == Sem.SemBackArgStored(1, "arr", Sem.SemTArray(Sem.SemTI32, 4)))
+assert(pvm.one(R.lower_back_binding(Sem.SemBindLoopCarry("loop", "carry.acc", "acc", Sem.SemTI32))) == Sem.SemBackLoopCarryValue("loop", "carry.acc", "acc", Sem.SemTI32))
 
 local func = Sem.SemFuncExport(
     "demo",
@@ -80,6 +83,7 @@ local func = Sem.SemFuncExport(
                         )
                     ),
                 },
+                Sem.SemLoopExprEndOrBreakValue,
                 Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.sum", "carry.acc", "acc", Sem.SemTI32))
             ),
             Sem.SemTI32
@@ -95,6 +99,9 @@ assert(find_residence(plan, Sem.SemBindLocalValue("ly", "y", Sem.SemTI32)) == Se
 assert(find_residence(plan, Sem.SemBindLocalCell("vz", "z", Sem.SemTI32)) == Sem.SemResidenceStack)
 assert(find_residence(plan, Sem.SemBindLoopIndex("loop.sum", "i", Sem.SemTIndex)) == Sem.SemResidenceValue)
 assert(find_residence(plan, Sem.SemBindLoopCarry("loop.sum", "carry.acc", "acc", Sem.SemTI32)) == Sem.SemResidenceValue)
+assert(pvm.one(R.lower_back_binding(Sem.SemBindArg(0, "x", Sem.SemTI32), plan)) == Sem.SemBackArgStored(0, "x", Sem.SemTI32))
+assert(pvm.one(R.lower_back_binding(Sem.SemBindLocalValue("ly", "y", Sem.SemTI32), plan)) == Sem.SemBackLocalStored("ly", "y", Sem.SemTI32))
+assert(pvm.one(R.lower_back_binding(Sem.SemBindLoopCarry("loop.sum", "carry.acc", "acc", Sem.SemTI32), plan)) == Sem.SemBackLoopCarryValue("loop.sum", "carry.acc", "acc", Sem.SemTI32))
 
 local addr_taken_loop_func = Sem.SemFuncExport(
     "addr_loop_demo",
@@ -131,5 +138,7 @@ local addr_taken_loop_func = Sem.SemFuncExport(
 local addr_taken_loop_plan = pvm.one(R.lower_func_residence_plan(addr_taken_loop_func))
 assert(find_residence(addr_taken_loop_plan, Sem.SemBindLoopIndex("loop.addr", "i", Sem.SemTIndex)) == Sem.SemResidenceStack)
 assert(find_residence(addr_taken_loop_plan, Sem.SemBindLoopCarry("loop.addr", "carry.acc", "acc", Sem.SemTI32)) == Sem.SemResidenceStack)
+assert(pvm.one(R.lower_back_binding(Sem.SemBindLoopIndex("loop.addr", "i", Sem.SemTIndex), addr_taken_loop_plan)) == Sem.SemBackLoopIndexStored("loop.addr", "i", Sem.SemTIndex))
+assert(pvm.one(R.lower_back_binding(Sem.SemBindLoopCarry("loop.addr", "carry.acc", "acc", Sem.SemTI32), addr_taken_loop_plan)) == Sem.SemBackLoopCarryStored("loop.addr", "carry.acc", "acc", Sem.SemTI32))
 
 print("moonlift sem residence ok")

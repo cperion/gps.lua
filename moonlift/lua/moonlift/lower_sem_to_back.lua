@@ -30,6 +30,10 @@ function M.Define(T)
     local lower_binding_expr
     local lower_binding_addr
     local lower_binding_store_addr
+    local lower_back_binding_value
+    local lower_back_binding_expr
+    local lower_back_binding_addr
+    local lower_back_binding_store_addr
     local lower_place_type
     local lower_type_mem_size
     local lower_field_ref_type
@@ -74,6 +78,10 @@ function M.Define(T)
             end
         end
         return pvm.one(aux.residence.lower_binding_residence(binding))
+    end
+
+    local function one_back_binding(node, residence_plan)
+        return pvm.one(aux.residence.lower_back_binding(node, residence_plan))
     end
 
     local function one_scalar(node)
@@ -122,6 +130,22 @@ function M.Define(T)
 
     local function one_binding_store_addr(node, path, residence_plan)
         return pvm.one(lower_binding_store_addr(node, path, residence_plan))
+    end
+
+    local function one_back_binding_value(node)
+        return pvm.one(lower_back_binding_value(node))
+    end
+
+    local function one_back_binding_expr(node, path)
+        return pvm.one(lower_back_binding_expr(node, path))
+    end
+
+    local function one_back_binding_addr(node, path)
+        return pvm.one(lower_back_binding_addr(node, path))
+    end
+
+    local function one_back_binding_store_addr(node, path)
+        return pvm.one(lower_back_binding_store_addr(node, path))
     end
 
     local function one_place_type(node)
@@ -612,6 +636,9 @@ function M.Define(T)
         addr_terminates = addr_terminates,
         addr_writes = addr_writes,
         lower_stmt_list = lower_stmt_list,
+        switch_int_case_raws = function(value_ty, arms)
+            return aux.switch_int_case_raws(value_ty, arms)
+        end,
     })
 
     local function loop_carry_binding(loop_id, carry)
@@ -933,85 +960,120 @@ function M.Define(T)
         end,
     })
 
-    lower_binding_value = pvm.phase("sem_to_back_binding_value", {
-        [Sem.SemBindLocalValue] = function(self)
+    lower_back_binding_value = pvm.phase("sem_to_back_binding_value", {
+        [Sem.SemBackLocalValue] = function(self)
             return pvm.once(local_value_id(self.id))
         end,
-        [Sem.SemBindArg] = function(self)
+        [Sem.SemBackArgValue] = function(self)
             return pvm.once(Back.BackValId("arg:" .. self.index .. ":" .. self.name))
         end,
-        [Sem.SemBindLoopCarry] = function(self)
+        [Sem.SemBackLoopCarryValue] = function(self)
             error("sem_to_back_binding_value: loop carry '" .. self.name .. "' has no raw direct value id in Sem->Back; use expression lowering so storage is made explicit")
         end,
-        [Sem.SemBindLoopIndex] = function(self)
+        [Sem.SemBackLoopIndexValue] = function(self)
             error("sem_to_back_binding_value: loop index '" .. self.name .. "' has no raw direct value id in Sem->Back; use expression lowering so storage is made explicit")
+        end,
+        [Sem.SemBackLocalStored] = function(self)
+            error("sem_to_back_binding_value: stored immutable local '" .. self.name .. "' has no raw direct value id in Sem->Back")
+        end,
+        [Sem.SemBackArgStored] = function(self)
+            error("sem_to_back_binding_value: stored argument '" .. self.name .. "' has no raw direct value id in Sem->Back")
+        end,
+        [Sem.SemBackLoopCarryStored] = function(self)
+            error("sem_to_back_binding_value: stored loop carry '" .. self.name .. "' has no raw direct value id in Sem->Back")
+        end,
+        [Sem.SemBackLoopIndexStored] = function(self)
+            error("sem_to_back_binding_value: stored loop index '" .. self.name .. "' has no raw direct value id in Sem->Back")
+        end,
+        [Sem.SemBackLocalCell] = function(self)
+            error("sem_to_back_binding_value: mutable local cell '" .. self.name .. "' has no raw direct value id in Sem->Back")
+        end,
+        [Sem.SemBackGlobalFunc] = function(self)
+            error("sem_to_back_binding_value: direct function binding reads are not yet supported ('" .. self.item_name .. "')")
+        end,
+        [Sem.SemBackGlobalConst] = function(self)
+            error("sem_to_back_binding_value: pure const globals should be folded/lowered before direct runtime binding reads ('" .. self.item_name .. "')")
+        end,
+        [Sem.SemBackGlobalStatic] = function(self)
+            error("sem_to_back_binding_value: static global '" .. self.item_name .. "' must be loaded through expression/address lowering")
+        end,
+        [Sem.SemBackExtern] = function(self)
+            error("sem_to_back_binding_value: direct extern binding reads are not yet supported ('" .. self.symbol .. "')")
         end,
     })
 
-    lower_binding_expr = pvm.phase("sem_to_back_binding_expr", {
-        [Sem.SemBindLocalValue] = function(self, path, residence_plan)
+    lower_back_binding_expr = pvm.phase("sem_to_back_binding_expr", {
+        [Sem.SemBackLocalValue] = function(self, path)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar immutable local '" .. self.name .. "' has no direct value form in Sem->Back; use address-based access")
             end
-            local ty = one_scalar(self.ty)
-            if binding_residence(self, residence_plan) == Sem.SemResidenceValue then
-                local value = local_value_id(self.id)
-                return pvm.once(Back.BackExprPlan({}, value, ty))
+            return pvm.once(Back.BackExprPlan({}, local_value_id(self.id), one_scalar(self.ty)))
+        end,
+        [Sem.SemBackLocalStored] = function(self, path)
+            if not one_type_is_scalar(self.ty) then
+                error("sem_to_back_binding_expr: non-scalar stored immutable local '" .. self.name .. "' has no direct value form in Sem->Back; use address-based access")
             end
             local addr = Back.BackValId(path .. ".addr")
             local dst = Back.BackValId(path)
+            local ty = one_scalar(self.ty)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, local_value_slot_id(self.id)),
                 Back.BackCmdLoad(dst, ty, addr),
             }, dst, ty))
         end,
-        [Sem.SemBindArg] = function(self, path, residence_plan)
-            if not one_type_is_scalar(self.ty) then
-                error("sem_to_back_binding_expr: non-scalar argument '" .. self.name .. "' has no direct value form in Sem->Back")
-            end
+        [Sem.SemBackArgValue] = function(self)
             local ty = one_scalar(self.ty)
-            if binding_residence(self, residence_plan) == Sem.SemResidenceValue then
-                local value = Back.BackValId("arg:" .. self.index .. ":" .. self.name)
-                return pvm.once(Back.BackExprPlan({}, value, ty))
+            return pvm.once(Back.BackExprPlan({}, Back.BackValId("arg:" .. self.index .. ":" .. self.name), ty))
+        end,
+        [Sem.SemBackArgStored] = function(self, path)
+            if not one_type_is_scalar(self.ty) then
+                error("sem_to_back_binding_expr: non-scalar stored argument '" .. self.name .. "' has no direct value form in Sem->Back")
             end
             local addr = Back.BackValId(path .. ".addr")
             local dst = Back.BackValId(path)
+            local ty = one_scalar(self.ty)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, arg_slot_id(self.index, self.name)),
                 Back.BackCmdLoad(dst, ty, addr),
             }, dst, ty))
         end,
-        [Sem.SemBindLoopCarry] = function(self, path, residence_plan)
+        [Sem.SemBackLoopCarryValue] = function(self)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar loop carry '" .. self.name .. "' has no direct value form in Sem->Back")
             end
-            local ty = one_scalar(self.ty)
-            if binding_residence(self, residence_plan) == Sem.SemResidenceValue then
-                return pvm.once(Back.BackExprPlan({}, loop_carry_value_id(self.loop_id, self.port_id), ty))
+            return pvm.once(Back.BackExprPlan({}, loop_carry_value_id(self.loop_id, self.port_id), one_scalar(self.ty)))
+        end,
+        [Sem.SemBackLoopCarryStored] = function(self, path)
+            if not one_type_is_scalar(self.ty) then
+                error("sem_to_back_binding_expr: non-scalar stored loop carry '" .. self.name .. "' has no direct value form in Sem->Back")
             end
             local addr = Back.BackValId(path .. ".addr")
             local dst = Back.BackValId(path)
+            local ty = one_scalar(self.ty)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, loop_carry_slot_id(self.loop_id, self.port_id)),
                 Back.BackCmdLoad(dst, ty, addr),
             }, dst, ty))
         end,
-        [Sem.SemBindLoopIndex] = function(self, path, residence_plan)
+        [Sem.SemBackLoopIndexValue] = function(self)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar loop index '" .. self.name .. "' has no direct value form in Sem->Back")
             end
-            local ty = one_scalar(self.ty)
-            if binding_residence(self, residence_plan) == Sem.SemResidenceValue then
-                return pvm.once(Back.BackExprPlan({}, loop_index_value_id(self.loop_id, self.name), ty))
+            return pvm.once(Back.BackExprPlan({}, loop_index_value_id(self.loop_id, self.name), one_scalar(self.ty)))
+        end,
+        [Sem.SemBackLoopIndexStored] = function(self, path)
+            if not one_type_is_scalar(self.ty) then
+                error("sem_to_back_binding_expr: non-scalar stored loop index '" .. self.name .. "' has no direct value form in Sem->Back")
             end
             local addr = Back.BackValId(path .. ".addr")
             local dst = Back.BackValId(path)
+            local ty = one_scalar(self.ty)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, loop_index_slot_id(self.loop_id, self.name)),
                 Back.BackCmdLoad(dst, ty, addr),
             }, dst, ty))
         end,
-        [Sem.SemBindLocalCell] = function(self, path)
+        [Sem.SemBackLocalCell] = function(self, path)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar mutable local '" .. self.name .. "' has no direct value form in Sem->Back; use address-based access")
             end
@@ -1023,13 +1085,13 @@ function M.Define(T)
                 Back.BackCmdLoad(dst, ty, addr),
             }, dst, ty))
         end,
-        [Sem.SemBindGlobalConst] = function(self)
+        [Sem.SemBackGlobalConst] = function(self)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar const global '" .. self.item_name .. "' has no direct value form in Sem->Back")
             end
             error("sem_to_back_binding_expr: pure const globals should be folded/lowered before direct runtime binding reads ('" .. self.item_name .. "')")
         end,
-        [Sem.SemBindGlobalStatic] = function(self, path)
+        [Sem.SemBackGlobalStatic] = function(self, path)
             if not one_type_is_scalar(self.ty) then
                 error("sem_to_back_binding_expr: non-scalar static global '" .. self.item_name .. "' has no direct value form in Sem->Back; use address-based access")
             end
@@ -1042,106 +1104,181 @@ function M.Define(T)
                 Back.BackCmdLoad(dst, ty, addr),
             }, dst, ty))
         end,
-        [Sem.SemBindGlobalFunc] = function(self)
+        [Sem.SemBackGlobalFunc] = function(self)
             error("sem_to_back_binding_expr: direct function binding reads are not yet supported ('" .. self.item_name .. "')")
         end,
-        [Sem.SemBindExtern] = function(self)
+        [Sem.SemBackExtern] = function(self)
             error("sem_to_back_binding_expr: direct extern binding reads are not yet supported ('" .. self.symbol .. "')")
         end,
     })
 
-    lower_binding_addr = pvm.phase("sem_to_back_binding_addr", {
-        [Sem.SemBindLocalCell] = function(self, path)
+    lower_back_binding_addr = pvm.phase("sem_to_back_binding_addr", {
+        [Sem.SemBackLocalCell] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, local_cell_slot_id(self.id)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindGlobalStatic] = function(self, path)
+        [Sem.SemBackGlobalStatic] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdDataAddr(addr, static_data_id(self.module_name, self.item_name)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindLocalValue] = function(self, path, residence_plan)
-            if binding_residence(self, residence_plan) ~= Sem.SemResidenceStack then
-                error("sem_to_back_binding_addr: pure immutable local '" .. self.name .. "' has no canonical storage in Sem->Back")
-            end
+        [Sem.SemBackLocalStored] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, local_value_slot_id(self.id)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindArg] = function(self, path, residence_plan)
-            local residence = binding_residence(self, residence_plan)
-            if residence ~= Sem.SemResidenceStack then
-                error("sem_to_back_binding_addr: pure value argument '" .. self.name .. "' has no canonical storage in Sem->Back yet")
-            end
+        [Sem.SemBackArgStored] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, arg_slot_id(self.index, self.name)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindLoopCarry] = function(self, path, residence_plan)
-            if binding_residence(self, residence_plan) ~= Sem.SemResidenceStack then
-                error("sem_to_back_binding_addr: pure value loop carry '" .. self.name .. "' has no canonical storage in Sem->Back")
-            end
+        [Sem.SemBackLoopCarryStored] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, loop_carry_slot_id(self.loop_id, self.port_id)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindLoopIndex] = function(self, path, residence_plan)
-            if binding_residence(self, residence_plan) ~= Sem.SemResidenceStack then
-                error("sem_to_back_binding_addr: pure value loop index '" .. self.name .. "' has no canonical storage in Sem->Back")
-            end
+        [Sem.SemBackLoopIndexStored] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, loop_index_slot_id(self.loop_id, self.name)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindGlobalConst] = function(self)
+        [Sem.SemBackLocalValue] = function(self)
+            error("sem_to_back_binding_addr: pure immutable local '" .. self.name .. "' has no canonical storage in Sem->Back")
+        end,
+        [Sem.SemBackArgValue] = function(self)
+            error("sem_to_back_binding_addr: pure value argument '" .. self.name .. "' has no canonical storage in Sem->Back yet")
+        end,
+        [Sem.SemBackLoopCarryValue] = function(self)
+            error("sem_to_back_binding_addr: pure value loop carry '" .. self.name .. "' has no canonical storage in Sem->Back")
+        end,
+        [Sem.SemBackLoopIndexValue] = function(self)
+            error("sem_to_back_binding_addr: pure value loop index '" .. self.name .. "' has no canonical storage in Sem->Back")
+        end,
+        [Sem.SemBackGlobalConst] = function(self)
             error("sem_to_back_binding_addr: pure const global '" .. self.item_name .. "' has no addressable storage in Sem->Back; use static items for addressable globals")
         end,
-        [Sem.SemBindGlobalFunc] = function(self)
+        [Sem.SemBackGlobalFunc] = function(self)
             error("sem_to_back_binding_addr: function '" .. self.item_name .. "' has no addressable storage in Sem->Back")
         end,
-        [Sem.SemBindExtern] = function(self)
+        [Sem.SemBackExtern] = function(self)
             error("sem_to_back_binding_addr: extern '" .. self.symbol .. "' has no addressable storage in Sem->Back")
         end,
     })
 
-    lower_binding_store_addr = pvm.phase("sem_to_back_binding_store_addr", {
-        [Sem.SemBindLocalCell] = function(self, path)
+    lower_back_binding_store_addr = pvm.phase("sem_to_back_binding_store_addr", {
+        [Sem.SemBackLocalCell] = function(self, path)
             local addr = Back.BackValId(path)
             return pvm.once(Back.BackExprPlan({
                 Back.BackCmdStackAddr(addr, local_cell_slot_id(self.id)),
             }, addr, Back.BackPtr))
         end,
-        [Sem.SemBindLocalValue] = function(self)
+        [Sem.SemBackLocalValue] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to immutable local '" .. self.name .. "'")
         end,
-        [Sem.SemBindArg] = function(self)
+        [Sem.SemBackLocalStored] = function(self)
+            error("sem_to_back_binding_store_addr: cannot assign to immutable local '" .. self.name .. "'")
+        end,
+        [Sem.SemBackArgValue] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to argument '" .. self.name .. "'")
         end,
-        [Sem.SemBindLoopCarry] = function(self)
+        [Sem.SemBackArgStored] = function(self)
+            error("sem_to_back_binding_store_addr: cannot assign to argument '" .. self.name .. "'")
+        end,
+        [Sem.SemBackLoopCarryValue] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to immutable loop carry '" .. self.name .. "'")
         end,
-        [Sem.SemBindLoopIndex] = function(self)
+        [Sem.SemBackLoopCarryStored] = function(self)
+            error("sem_to_back_binding_store_addr: cannot assign to immutable loop carry '" .. self.name .. "'")
+        end,
+        [Sem.SemBackLoopIndexValue] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to loop index '" .. self.name .. "'")
         end,
-        [Sem.SemBindGlobalConst] = function(self)
+        [Sem.SemBackLoopIndexStored] = function(self)
+            error("sem_to_back_binding_store_addr: cannot assign to loop index '" .. self.name .. "'")
+        end,
+        [Sem.SemBackGlobalConst] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to const global '" .. self.item_name .. "'")
         end,
-        [Sem.SemBindGlobalStatic] = function(self)
+        [Sem.SemBackGlobalStatic] = function(self)
             error("sem_to_back_binding_store_addr: global set lowering is not yet supported ('" .. self.item_name .. "')")
         end,
-        [Sem.SemBindGlobalFunc] = function(self)
+        [Sem.SemBackGlobalFunc] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to function '" .. self.item_name .. "'")
         end,
-        [Sem.SemBindExtern] = function(self)
+        [Sem.SemBackExtern] = function(self)
             error("sem_to_back_binding_store_addr: cannot assign to extern '" .. self.symbol .. "'")
         end,
+    })
+
+    local function delegate_binding_value(self, residence_plan)
+        return pvm.once(one_back_binding_value(one_back_binding(self, residence_plan)))
+    end
+
+    local function delegate_binding_expr(self, path, residence_plan)
+        return pvm.once(one_back_binding_expr(one_back_binding(self, residence_plan), path))
+    end
+
+    local function delegate_binding_addr(self, path, residence_plan)
+        return pvm.once(one_back_binding_addr(one_back_binding(self, residence_plan), path))
+    end
+
+    local function delegate_binding_store_addr(self, path, residence_plan)
+        return pvm.once(one_back_binding_store_addr(one_back_binding(self, residence_plan), path))
+    end
+
+    lower_binding_value = pvm.phase("sem_to_back_binding_value", {
+        [Sem.SemBindLocalValue] = delegate_binding_value,
+        [Sem.SemBindLocalCell] = delegate_binding_value,
+        [Sem.SemBindArg] = delegate_binding_value,
+        [Sem.SemBindLoopCarry] = delegate_binding_value,
+        [Sem.SemBindLoopIndex] = delegate_binding_value,
+        [Sem.SemBindGlobalFunc] = delegate_binding_value,
+        [Sem.SemBindGlobalConst] = delegate_binding_value,
+        [Sem.SemBindGlobalStatic] = delegate_binding_value,
+        [Sem.SemBindExtern] = delegate_binding_value,
+    })
+
+    lower_binding_expr = pvm.phase("sem_to_back_binding_expr", {
+        [Sem.SemBindLocalValue] = delegate_binding_expr,
+        [Sem.SemBindLocalCell] = delegate_binding_expr,
+        [Sem.SemBindArg] = delegate_binding_expr,
+        [Sem.SemBindLoopCarry] = delegate_binding_expr,
+        [Sem.SemBindLoopIndex] = delegate_binding_expr,
+        [Sem.SemBindGlobalFunc] = delegate_binding_expr,
+        [Sem.SemBindGlobalConst] = delegate_binding_expr,
+        [Sem.SemBindGlobalStatic] = delegate_binding_expr,
+        [Sem.SemBindExtern] = delegate_binding_expr,
+    })
+
+    lower_binding_addr = pvm.phase("sem_to_back_binding_addr", {
+        [Sem.SemBindLocalValue] = delegate_binding_addr,
+        [Sem.SemBindLocalCell] = delegate_binding_addr,
+        [Sem.SemBindArg] = delegate_binding_addr,
+        [Sem.SemBindLoopCarry] = delegate_binding_addr,
+        [Sem.SemBindLoopIndex] = delegate_binding_addr,
+        [Sem.SemBindGlobalFunc] = delegate_binding_addr,
+        [Sem.SemBindGlobalConst] = delegate_binding_addr,
+        [Sem.SemBindGlobalStatic] = delegate_binding_addr,
+        [Sem.SemBindExtern] = delegate_binding_addr,
+    })
+
+    lower_binding_store_addr = pvm.phase("sem_to_back_binding_store_addr", {
+        [Sem.SemBindLocalValue] = delegate_binding_store_addr,
+        [Sem.SemBindLocalCell] = delegate_binding_store_addr,
+        [Sem.SemBindArg] = delegate_binding_store_addr,
+        [Sem.SemBindLoopCarry] = delegate_binding_store_addr,
+        [Sem.SemBindLoopIndex] = delegate_binding_store_addr,
+        [Sem.SemBindGlobalFunc] = delegate_binding_store_addr,
+        [Sem.SemBindGlobalConst] = delegate_binding_store_addr,
+        [Sem.SemBindGlobalStatic] = delegate_binding_store_addr,
+        [Sem.SemBindExtern] = delegate_binding_store_addr,
     })
 
     aux.binding_key = pvm.phase("sem_binding_key_for_back", {
@@ -1681,6 +1818,196 @@ function M.Define(T)
     sem_const_stmt_eval = const_eval.sem_const_stmt_eval
     local const_ops = const_eval.const_ops
 
+    local function switch_value_supports_int_cmd(value_ty)
+        return one_type_is_bool(value_ty) or one_type_is_integral_scalar(value_ty) or one_type_is_index(value_ty)
+    end
+
+    local lower_switch_const_case_raw = pvm.phase("sem_to_back_switch_const_case_raw", {
+        [Sem.SemConstBool] = function(self, value_ty)
+            if not one_type_is_bool(value_ty) then
+                return pvm.once(nil)
+            end
+            return pvm.once(self.value and "1" or "0")
+        end,
+        [Sem.SemConstInt] = function(self, value_ty)
+            if one_type_is_bool(value_ty) or not switch_value_supports_int_cmd(value_ty) or self.ty ~= value_ty then
+                return pvm.once(nil)
+            end
+            return pvm.once(self.raw)
+        end,
+        [Sem.SemConstFloat] = function()
+            return pvm.once(nil)
+        end,
+        [Sem.SemConstNil] = function()
+            return pvm.once(nil)
+        end,
+        [Sem.SemConstAgg] = function()
+            return pvm.once(nil)
+        end,
+        [Sem.SemConstArray] = function()
+            return pvm.once(nil)
+        end,
+    })
+
+    local function switch_case_const_raw(key, value_ty)
+        local ok, const_value = pcall(one_const_eval, key, nil, nil, nil)
+        if not ok then
+            return nil
+        end
+        return pvm.one(lower_switch_const_case_raw(const_value, value_ty))
+    end
+
+    aux.switch_int_case_raws = function(value_ty, arms)
+        if not switch_value_supports_int_cmd(value_ty) then
+            return nil
+        end
+        local raws = {}
+        local seen = {}
+        for i = 1, #arms do
+            local raw = switch_case_const_raw(arms[i].key, value_ty)
+            if raw == nil or seen[raw] then
+                return nil
+            end
+            seen[raw] = true
+            raws[i] = raw
+        end
+        return raws
+    end
+
+    local function build_switch_expr_value(self, path, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+        local value_ty = one_sem_expr_type(self.value)
+        if not one_type_is_scalar(value_ty) then
+            error("sem_to_back_expr: switch value must currently be scalar in Sem->Back")
+        end
+        if not one_type_is_scalar(self.ty) then
+            error("sem_to_back_expr: non-scalar switch expr results have no direct value form in Sem->Back; use an address/materialization context")
+        end
+        local result_back_ty = one_scalar(self.ty)
+        local dst = Back.BackValId(path)
+        local value = one_expr(self.value, path .. ".value", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+        local cmds = {}
+        append_expr_cmds(cmds, value)
+        if expr_terminates(value) then
+            return terminated_expr(cmds)
+        end
+        if #self.arms == 0 then
+            local default_plan = one_expr(self.default_expr, path .. ".default", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            append_expr_cmds(cmds, default_plan)
+            if expr_terminates(default_plan) then
+                return terminated_expr(cmds)
+            end
+            return Back.BackExprPlan(cmds, default_plan.value, result_back_ty)
+        end
+
+        local default_plan = one_expr(self.default_expr, path .. ".default", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+        local arm_plans = {}
+        local need_join = expr_has_value(default_plan)
+        for i = 1, #self.arms do
+            local body_cmds, body_flow = lower_stmt_list(self.arms[i].body, path .. ".arm." .. i, layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            local plan_cmds = {}
+            copy_cmds(body_cmds, plan_cmds)
+            local plan = terminated_expr(plan_cmds)
+            if body_flow == Back.BackFallsThrough then
+                local result_plan = one_expr(self.arms[i].result, path .. ".arm." .. i .. ".result", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+                append_expr_cmds(plan_cmds, result_plan)
+                if expr_has_value(result_plan) then
+                    plan = Back.BackExprPlan(plan_cmds, result_plan.value, result_back_ty)
+                else
+                    plan = terminated_expr(plan_cmds)
+                end
+            end
+            arm_plans[i] = plan
+            if expr_has_value(plan) then
+                need_join = true
+            end
+        end
+
+        local join_block = Back.BackBlockId(path .. ".join.block")
+        local default_block = Back.BackBlockId(path .. ".default.block")
+        local arm_blocks = {}
+        local case_raws = aux.switch_int_case_raws(value_ty, self.arms)
+        if case_raws ~= nil then
+            local cases = {}
+            for i = 1, #self.arms do
+                arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
+                cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
+                cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+            end
+            cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
+            if need_join then
+                cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
+                cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(join_block, dst, result_back_ty)
+            end
+            cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
+            for i = 1, #self.arms do
+                cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
+                append_expr_cmds(cmds, arm_plans[i])
+                if expr_has_value(arm_plans[i]) then
+                    cmds[#cmds + 1] = Back.BackCmdJump(join_block, { arm_plans[i].value })
+                end
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(arm_blocks[i])
+            end
+            cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(default_block)
+            append_expr_cmds(cmds, default_plan)
+            if expr_has_value(default_plan) then
+                cmds[#cmds + 1] = Back.BackCmdJump(join_block, { default_plan.value })
+            end
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(default_block)
+            if need_join then
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
+                cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
+                return Back.BackExprPlan(cmds, dst, result_back_ty)
+            end
+            return terminated_expr(cmds)
+        end
+
+        local test_blocks = {}
+        for i = 1, #self.arms do
+            arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
+            cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
+            if i > 1 then
+                test_blocks[i] = Back.BackBlockId(path .. ".test." .. i .. ".block")
+                cmds[#cmds + 1] = Back.BackCmdCreateBlock(test_blocks[i])
+            end
+        end
+        cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
+        if need_join then
+            cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(join_block, dst, result_back_ty)
+        end
+        for i = 1, #self.arms do
+            if i > 1 then
+                cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(test_blocks[i])
+            end
+            local key = one_expr(self.arms[i].key, path .. ".arm." .. i .. ".key", layout_env, break_block, break_args, continue_block, continue_args, residence_plan)
+            append_expr_cmds(cmds, key)
+            local else_block = (i < #self.arms) and test_blocks[i + 1] or default_block
+            if expr_has_value(key) then
+                local match = Back.BackValId(path .. ".arm." .. i .. ".match")
+                cmds[#cmds + 1] = one_eq_cmd(value_ty, match, Back.BackBool, value.value, key.value)
+                cmds[#cmds + 1] = Back.BackCmdBrIf(match, arm_blocks[i], {}, else_block, {})
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(arm_blocks[i])
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(else_block)
+            end
+            cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
+            append_expr_cmds(cmds, arm_plans[i])
+            if expr_has_value(arm_plans[i]) then
+                cmds[#cmds + 1] = Back.BackCmdJump(join_block, { arm_plans[i].value })
+            end
+        end
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(default_block)
+        append_expr_cmds(cmds, default_plan)
+        if expr_has_value(default_plan) then
+            cmds[#cmds + 1] = Back.BackCmdJump(join_block, { default_plan.value })
+        end
+        if need_join then
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
+            cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
+            return Back.BackExprPlan(cmds, dst, result_back_ty)
+        end
+        return terminated_expr(cmds)
+    end
+
     lower_call_value = pvm.phase("sem_to_back_call_value", {
         [Sem.SemCallDirect] = function(self, dst, ret_ty, path, args)
             local func_text = func_id_text(self.module_name, self.func_name)
@@ -1746,17 +2073,17 @@ function M.Define(T)
         cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
         cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(join_block, dst, Back.BackBool)
         cmds[#cmds + 1] = Back.BackCmdBrIf(lhs.value, rhs_block, {}, short_block, {})
-        cmds[#cmds + 1] = Back.BackCmdSealBlock(rhs_block)
-        cmds[#cmds + 1] = Back.BackCmdSealBlock(short_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(short_block)
         local short_id = Back.BackValId(path .. ".short")
         cmds[#cmds + 1] = Back.BackCmdConstBool(short_id, short_value)
         cmds[#cmds + 1] = Back.BackCmdJump(join_block, { short_id })
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(short_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(rhs_block)
         append_expr_cmds(cmds, rhs)
         if expr_has_value(rhs) then
             cmds[#cmds + 1] = Back.BackCmdJump(join_block, { rhs.value })
         end
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(rhs_block)
         cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
         if expr_terminates(rhs) then
@@ -1995,10 +2322,10 @@ function M.Define(T)
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(ok_block)
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(fail_block)
             cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, ok_block, {}, fail_block, {})
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(ok_block)
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(fail_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(fail_block)
             cmds[#cmds + 1] = Back.BackCmdTrap
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(fail_block)
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(ok_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(ok_block)
             return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
         end,
@@ -2397,18 +2724,18 @@ function M.Define(T)
                 cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(join_block, dst, ty)
             end
             cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, then_block, {}, else_block, {})
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(then_block)
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(else_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(then_block)
             append_expr_cmds(cmds, then_expr)
             if expr_has_value(then_expr) then
                 cmds[#cmds + 1] = Back.BackCmdJump(join_block, { then_expr.value })
             end
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(then_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(else_block)
             append_expr_cmds(cmds, else_expr)
             if expr_has_value(else_expr) then
                 cmds[#cmds + 1] = Back.BackCmdJump(join_block, { else_expr.value })
             end
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(else_block)
             if need_join then
                 cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
@@ -2746,7 +3073,6 @@ function M.Define(T)
         cmds[#cmds + 1] = one_lt_cmd(index_ty, cond_value, Back.BackBool, header_index, stop_plan.value)
         cmds[#cmds + 1] = Back.BackCmdBrIf(cond_value, body_block, header_jump_args, exit_block, {})
         cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
-        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
         emit_alias_for_index_binding(cmds, index_binding, body_index, residence_plan)
         emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params, loop.loop_id, residence_plan)
@@ -2775,8 +3101,128 @@ function M.Define(T)
         end
         cmds[#cmds + 1] = Back.BackCmdJump(header_block, jump_args)
         cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
         return Back.BackStmtPlan(cmds, Back.BackFallsThrough)
+    end
+
+    local function build_over_expr_end_only_plan(loop, path, start_plan, stop_plan, layout_env, residence_plan)
+        local index_binding = loop_index_binding(loop)
+        local index_ty = index_binding.ty
+        local result_ty = one_sem_expr_type(loop.result)
+        local result_back_ty = one_scalar(result_ty)
+        local index_back_ty = one_scalar(index_ty)
+        local header_block = Back.BackBlockId(path .. ".header.block")
+        local body_block = Back.BackBlockId(path .. ".body.block")
+        local continue_block = Back.BackBlockId(path .. ".continue.block")
+        local exit_block = Back.BackBlockId(path .. ".exit.block")
+        local header_index = Back.BackValId(path .. ".header.index")
+        local body_index = Back.BackValId(path .. ".body.index")
+        local continue_index = Back.BackValId(path .. ".continue.index")
+        local exit_index = Back.BackValId(path .. ".exit.index")
+        local header_carry_params = {}
+        local body_carry_params = {}
+        local continue_carry_params = {}
+        local exit_carry_params = {}
+        local header_jump_args = { header_index }
+        local exit_jump_args = { header_index }
+        local dst = Back.BackValId(path)
+        local cmds = {
+            Back.BackCmdCreateBlock(header_block),
+            Back.BackCmdCreateBlock(body_block),
+            Back.BackCmdCreateBlock(continue_block),
+            Back.BackCmdCreateBlock(exit_block),
+            Back.BackCmdAppendBlockParam(header_block, header_index, index_back_ty),
+            Back.BackCmdAppendBlockParam(body_block, body_index, index_back_ty),
+            Back.BackCmdAppendBlockParam(continue_block, continue_index, index_back_ty),
+            Back.BackCmdAppendBlockParam(exit_block, exit_index, index_back_ty),
+        }
+        if binding_residence(index_binding, residence_plan) == Sem.SemResidenceStack then
+            table.insert(cmds, 1, Back.BackCmdCreateStackSlot(loop_index_slot_id(index_binding.loop_id, index_binding.name), 8, 8))
+        end
+        local init_args = {}
+        append_expr_cmds(cmds, start_plan)
+        if expr_terminates(start_plan) then
+            return terminated_expr(cmds)
+        end
+        init_args[1] = start_plan.value
+        for i = 1, #loop.carries do
+            local carry = loop.carries[i]
+            local carry_spec = one_stack_slot_spec(carry.ty, layout_env)
+            if binding_residence(loop_carry_binding(loop.loop_id, carry), residence_plan) == Sem.SemResidenceStack then
+                cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(loop_carry_slot_id(loop.loop_id, carry.port_id), carry_spec.size, carry_spec.align)
+            end
+            local header_param = Back.BackValId(path .. ".header.carry." .. i)
+            local body_param = Back.BackValId(path .. ".body.carry." .. i)
+            local continue_param = Back.BackValId(path .. ".continue.carry." .. i)
+            local exit_param = Back.BackValId(path .. ".exit.carry." .. i)
+            header_carry_params[i] = header_param
+            body_carry_params[i] = body_param
+            continue_carry_params[i] = continue_param
+            exit_carry_params[i] = exit_param
+            header_jump_args[#header_jump_args + 1] = header_param
+            exit_jump_args[#exit_jump_args + 1] = header_param
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(header_block, header_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(body_block, body_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(continue_block, continue_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(exit_block, exit_param, one_scalar(carry.ty))
+            local init = one_plain_expr(carry.init, path .. ".carry_init." .. i, layout_env, residence_plan)
+            append_expr_cmds(cmds, init)
+            if expr_terminates(init) then
+                return terminated_expr(cmds)
+            end
+            init_args[#init_args + 1] = init.value
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, init_args)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(header_block)
+        emit_alias_for_index_binding(cmds, index_binding, header_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, header_carry_params, loop.loop_id, residence_plan)
+        append_expr_cmds(cmds, stop_plan)
+        if expr_terminates(stop_plan) then
+            return terminated_expr(cmds)
+        end
+        local cond_value = Back.BackValId(path .. ".cond")
+        cmds[#cmds + 1] = one_lt_cmd(index_ty, cond_value, Back.BackBool, header_index, stop_plan.value)
+        cmds[#cmds + 1] = Back.BackCmdBrIf(cond_value, body_block, header_jump_args, exit_block, exit_jump_args)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
+        emit_alias_for_index_binding(cmds, index_binding, body_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params, loop.loop_id, residence_plan)
+        local body_current_args = over_loop_current_args(body_index, body_carry_params)
+        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, nil, nil, continue_block, body_current_args, residence_plan)
+        copy_cmds(body_cmds, cmds)
+        if body_flow == Back.BackFallsThrough then
+            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
+        end
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
+        emit_alias_for_index_binding(cmds, index_binding, continue_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, continue_carry_params, loop.loop_id, residence_plan)
+        local one_id = Back.BackValId(path .. ".index.step")
+        local next_index = Back.BackValId(path .. ".index.next")
+        local next_cmds, next_values, next_flow = eval_loop_nexts(loop.carries, loop.next, path, layout_env, residence_plan)
+        cmds[#cmds + 1] = Back.BackCmdConstInt(one_id, index_back_ty, "1")
+        cmds[#cmds + 1] = one_add_cmd(index_ty, next_index, index_back_ty, continue_index, one_id)
+        copy_cmds(next_cmds, cmds)
+        if next_flow == Back.BackTerminates then
+            return terminated_expr(cmds)
+        end
+        local jump_args = { next_index }
+        for i = 1, #next_values do
+            jump_args[#jump_args + 1] = next_values[i]
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, jump_args)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
+        emit_alias_for_index_binding(cmds, index_binding, exit_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, exit_carry_params, loop.loop_id, residence_plan)
+        local result = one_plain_expr(loop.result, path .. ".result", layout_env, residence_plan)
+        append_expr_cmds(cmds, result)
+        if expr_terminates(result) then
+            return terminated_expr(cmds)
+        end
+        return Back.BackExprPlan(cmds, result.value, result_back_ty)
     end
 
     local function build_over_expr_plan(loop, path, start_plan, stop_plan, layout_env, residence_plan)
@@ -2879,7 +3325,6 @@ function M.Define(T)
         cmds[#cmds + 1] = one_lt_cmd(index_ty, cond_value, Back.BackBool, header_index, stop_plan.value)
         cmds[#cmds + 1] = Back.BackCmdBrIf(cond_value, body_block, header_jump_args, exit_block, exit_jump_args)
         cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
-        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
         emit_alias_for_index_binding(cmds, index_binding, body_index, residence_plan)
         emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params, loop.loop_id, residence_plan)
@@ -2908,6 +3353,7 @@ function M.Define(T)
         end
         cmds[#cmds + 1] = Back.BackCmdJump(header_block, jump_args)
         cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
         emit_alias_for_index_binding(cmds, index_binding, exit_index, residence_plan)
         emit_aliases_for_loop_bindings(cmds, loop.carries, exit_carry_params, loop.loop_id, residence_plan)
@@ -2927,6 +3373,122 @@ function M.Define(T)
         cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
         return Back.BackExprPlan(cmds, dst, result_back_ty)
+    end
+
+    local function build_over_expr_end_only_into_addr(loop, addr, path, start_plan, stop_plan, layout_env, residence_plan)
+        local index_binding = loop_index_binding(loop)
+        local index_ty = index_binding.ty
+        local index_back_ty = one_scalar(index_ty)
+        local header_block = Back.BackBlockId(path .. ".header.block")
+        local body_block = Back.BackBlockId(path .. ".body.block")
+        local continue_block = Back.BackBlockId(path .. ".continue.block")
+        local exit_block = Back.BackBlockId(path .. ".exit.block")
+        local header_index = Back.BackValId(path .. ".header.index")
+        local body_index = Back.BackValId(path .. ".body.index")
+        local continue_index = Back.BackValId(path .. ".continue.index")
+        local exit_index = Back.BackValId(path .. ".exit.index")
+        local header_carry_params = {}
+        local body_carry_params = {}
+        local continue_carry_params = {}
+        local exit_carry_params = {}
+        local header_jump_args = { header_index }
+        local exit_jump_args = { header_index }
+        local cmds = {
+            Back.BackCmdCreateBlock(header_block),
+            Back.BackCmdCreateBlock(body_block),
+            Back.BackCmdCreateBlock(continue_block),
+            Back.BackCmdCreateBlock(exit_block),
+            Back.BackCmdAppendBlockParam(header_block, header_index, index_back_ty),
+            Back.BackCmdAppendBlockParam(body_block, body_index, index_back_ty),
+            Back.BackCmdAppendBlockParam(continue_block, continue_index, index_back_ty),
+            Back.BackCmdAppendBlockParam(exit_block, exit_index, index_back_ty),
+        }
+        if binding_residence(index_binding, residence_plan) == Sem.SemResidenceStack then
+            table.insert(cmds, 1, Back.BackCmdCreateStackSlot(loop_index_slot_id(index_binding.loop_id, index_binding.name), 8, 8))
+        end
+        local init_args = {}
+        append_expr_cmds(cmds, start_plan)
+        if expr_terminates(start_plan) then
+            return terminated_addr(cmds)
+        end
+        init_args[1] = start_plan.value
+        for i = 1, #loop.carries do
+            local carry = loop.carries[i]
+            local carry_spec = one_stack_slot_spec(carry.ty, layout_env)
+            if binding_residence(loop_carry_binding(loop.loop_id, carry), residence_plan) == Sem.SemResidenceStack then
+                cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(loop_carry_slot_id(loop.loop_id, carry.port_id), carry_spec.size, carry_spec.align)
+            end
+            local header_param = Back.BackValId(path .. ".header.carry." .. i)
+            local body_param = Back.BackValId(path .. ".body.carry." .. i)
+            local continue_param = Back.BackValId(path .. ".continue.carry." .. i)
+            local exit_param = Back.BackValId(path .. ".exit.carry." .. i)
+            header_carry_params[i] = header_param
+            body_carry_params[i] = body_param
+            continue_carry_params[i] = continue_param
+            exit_carry_params[i] = exit_param
+            header_jump_args[#header_jump_args + 1] = header_param
+            exit_jump_args[#exit_jump_args + 1] = header_param
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(header_block, header_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(body_block, body_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(continue_block, continue_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(exit_block, exit_param, one_scalar(carry.ty))
+            local init = one_plain_expr(carry.init, path .. ".carry_init." .. i, layout_env, residence_plan)
+            append_expr_cmds(cmds, init)
+            if expr_terminates(init) then
+                return terminated_addr(cmds)
+            end
+            init_args[#init_args + 1] = init.value
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, init_args)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(header_block)
+        emit_alias_for_index_binding(cmds, index_binding, header_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, header_carry_params, loop.loop_id, residence_plan)
+        append_expr_cmds(cmds, stop_plan)
+        if expr_terminates(stop_plan) then
+            return terminated_addr(cmds)
+        end
+        local cond_value = Back.BackValId(path .. ".cond")
+        cmds[#cmds + 1] = one_lt_cmd(index_ty, cond_value, Back.BackBool, header_index, stop_plan.value)
+        cmds[#cmds + 1] = Back.BackCmdBrIf(cond_value, body_block, header_jump_args, exit_block, exit_jump_args)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
+        emit_alias_for_index_binding(cmds, index_binding, body_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params, loop.loop_id, residence_plan)
+        local body_current_args = over_loop_current_args(body_index, body_carry_params)
+        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, nil, nil, continue_block, body_current_args, residence_plan)
+        copy_cmds(body_cmds, cmds)
+        if body_flow == Back.BackFallsThrough then
+            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
+        end
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
+        emit_alias_for_index_binding(cmds, index_binding, continue_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, continue_carry_params, loop.loop_id, residence_plan)
+        local one_id = Back.BackValId(path .. ".index.step")
+        local next_index = Back.BackValId(path .. ".index.next")
+        local next_cmds, next_values, next_flow = eval_loop_nexts(loop.carries, loop.next, path, layout_env, residence_plan)
+        cmds[#cmds + 1] = Back.BackCmdConstInt(one_id, index_back_ty, "1")
+        cmds[#cmds + 1] = one_add_cmd(index_ty, next_index, index_back_ty, continue_index, one_id)
+        copy_cmds(next_cmds, cmds)
+        if next_flow == Back.BackTerminates then
+            return terminated_addr(cmds)
+        end
+        local jump_args = { next_index }
+        for i = 1, #next_values do
+            jump_args[#jump_args + 1] = next_values[i]
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, jump_args)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
+        emit_alias_for_index_binding(cmds, index_binding, exit_index, residence_plan)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, exit_carry_params, loop.loop_id, residence_plan)
+        local result = one_plain_expr_into_addr(loop.result, addr, path .. ".result", layout_env, residence_plan)
+        append_addr_cmds(cmds, result)
+        if addr_terminates(result) then
+            return terminated_addr(cmds)
+        end
+        return addr_writes(cmds)
     end
 
     local function build_over_expr_into_addr(loop, addr, path, start_plan, stop_plan, layout_env, residence_plan)
@@ -3025,7 +3587,6 @@ function M.Define(T)
         cmds[#cmds + 1] = one_lt_cmd(index_ty, cond_value, Back.BackBool, header_index, stop_plan.value)
         cmds[#cmds + 1] = Back.BackCmdBrIf(cond_value, body_block, header_jump_args, exit_block, exit_jump_args)
         cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
-        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
         emit_alias_for_index_binding(cmds, index_binding, body_index, residence_plan)
         emit_aliases_for_loop_bindings(cmds, loop.carries, body_carry_params, loop.loop_id, residence_plan)
@@ -3054,6 +3615,7 @@ function M.Define(T)
         end
         cmds[#cmds + 1] = Back.BackCmdJump(header_block, jump_args)
         cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
         cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
         emit_alias_for_index_binding(cmds, index_binding, exit_index, residence_plan)
         emit_aliases_for_loop_bindings(cmds, loop.carries, exit_carry_params, loop.loop_id, residence_plan)
@@ -3151,9 +3713,15 @@ function M.Define(T)
             local start = Back.BackExprPlan({
                 Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty), "0"),
             }, Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty))
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(build_over_expr_end_only_plan(loop, path, start, one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
+            end
             return pvm.once(build_over_expr_plan(loop, path, start, one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
         end,
         [Sem.SemDomainRange2] = function(self, loop, path, layout_env, residence_plan)
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(build_over_expr_end_only_plan(loop, path, one_plain_expr(self.start, path .. ".start", layout_env, residence_plan), one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
+            end
             return pvm.once(build_over_expr_plan(loop, path, one_plain_expr(self.start, path .. ".start", layout_env, residence_plan), one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
         end,
         [Sem.SemDomainView] = function(self, loop, path, layout_env, residence_plan)
@@ -3162,6 +3730,9 @@ function M.Define(T)
                 Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty), "0"),
             }, Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty))
             local stop = Back.BackExprPlan({}, view.len, Back.BackIndex)
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(prefix_expr_plan_with_view(view, build_over_expr_end_only_plan(loop, path, start, stop, layout_env, residence_plan)))
+            end
             return pvm.once(prefix_expr_plan_with_view(view, build_over_expr_plan(loop, path, start, stop, layout_env, residence_plan)))
         end,
         [Sem.SemDomainZipEq] = function(self, loop, path, layout_env, residence_plan)
@@ -3173,7 +3744,12 @@ function M.Define(T)
                 Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty), "0"),
             }, Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty))
             local stop = Back.BackExprPlan({}, len, Back.BackIndex)
-            local plan = build_over_expr_plan(loop, path, start, stop, layout_env, residence_plan)
+            local plan
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                plan = build_over_expr_end_only_plan(loop, path, start, stop, layout_env, residence_plan)
+            else
+                plan = build_over_expr_plan(loop, path, start, stop, layout_env, residence_plan)
+            end
             copy_cmds(plan.cmds, cmds)
             return pvm.once(Back.BackExprPlan(cmds, plan.value, plan.ty))
         end,
@@ -3184,9 +3760,15 @@ function M.Define(T)
             local start = Back.BackExprPlan({
                 Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty), "0"),
             }, Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty))
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(build_over_expr_end_only_into_addr(loop, addr, path, start, one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
+            end
             return pvm.once(build_over_expr_into_addr(loop, addr, path, start, one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
         end,
         [Sem.SemDomainRange2] = function(self, loop, addr, path, layout_env, residence_plan)
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(build_over_expr_end_only_into_addr(loop, addr, path, one_plain_expr(self.start, path .. ".start", layout_env, residence_plan), one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
+            end
             return pvm.once(build_over_expr_into_addr(loop, addr, path, one_plain_expr(self.start, path .. ".start", layout_env, residence_plan), one_plain_expr(self.stop, path .. ".stop", layout_env, residence_plan), layout_env, residence_plan))
         end,
         [Sem.SemDomainView] = function(self, loop, addr, path, layout_env, residence_plan)
@@ -3195,6 +3777,9 @@ function M.Define(T)
                 Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty), "0"),
             }, Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty))
             local stop = Back.BackExprPlan({}, view.len, Back.BackIndex)
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(prefix_addr_plan_with_view(view, build_over_expr_end_only_into_addr(loop, addr, path, start, stop, layout_env, residence_plan)))
+            end
             return pvm.once(prefix_addr_plan_with_view(view, build_over_expr_into_addr(loop, addr, path, start, stop, layout_env, residence_plan)))
         end,
         [Sem.SemDomainZipEq] = function(self, loop, addr, path, layout_env, residence_plan)
@@ -3206,7 +3791,12 @@ function M.Define(T)
                 Back.BackCmdConstInt(Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty), "0"),
             }, Back.BackValId(path .. ".start"), one_scalar(loop.index_port.ty))
             local stop = Back.BackExprPlan({}, len, Back.BackIndex)
-            local plan = build_over_expr_into_addr(loop, addr, path, start, stop, layout_env, residence_plan)
+            local plan
+            if loop.exit == Sem.SemLoopExprEndOnly then
+                plan = build_over_expr_end_only_into_addr(loop, addr, path, start, stop, layout_env, residence_plan)
+            else
+                plan = build_over_expr_into_addr(loop, addr, path, start, stop, layout_env, residence_plan)
+            end
             append_addr_cmds(cmds, plan)
             if addr_terminates(plan) then
                 return pvm.once(terminated_addr(cmds))
@@ -3263,7 +3853,6 @@ function M.Define(T)
             end
             cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, body_block, header_params, exit_block, {})
             cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
             emit_aliases_for_loop_bindings(cmds, self.carries, body_params, self.loop_id, residence_plan)
             local body_current_args = loop_binding_value_args(body_params)
@@ -3282,6 +3871,7 @@ function M.Define(T)
             end
             cmds[#cmds + 1] = Back.BackCmdJump(header_block, next_values)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
             return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
         end,
@@ -3296,8 +3886,175 @@ function M.Define(T)
         end,
     })
 
+    local function build_while_expr_end_only_plan(loop, path, layout_env, residence_plan)
+        local result_ty = one_sem_expr_type(loop.result)
+        local result_back_ty = one_scalar(result_ty)
+        local header_block = Back.BackBlockId(path .. ".header.block")
+        local body_block = Back.BackBlockId(path .. ".body.block")
+        local continue_block = Back.BackBlockId(path .. ".continue.block")
+        local exit_block = Back.BackBlockId(path .. ".exit.block")
+        local header_params = {}
+        local body_params = {}
+        local continue_params = {}
+        local exit_params = {}
+        local dst = Back.BackValId(path)
+        local cmds = {
+            Back.BackCmdCreateBlock(header_block),
+            Back.BackCmdCreateBlock(body_block),
+            Back.BackCmdCreateBlock(continue_block),
+            Back.BackCmdCreateBlock(exit_block),
+        }
+        local init_values = {}
+        for i = 1, #loop.carries do
+            local carry = loop.carries[i]
+            local carry_spec = one_stack_slot_spec(carry.ty, layout_env)
+            if binding_residence(loop_carry_binding(loop.loop_id, carry), residence_plan) == Sem.SemResidenceStack then
+                cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(loop_carry_slot_id(loop.loop_id, carry.port_id), carry_spec.size, carry_spec.align)
+            end
+            local header_param = Back.BackValId(path .. ".header.param." .. i)
+            local body_param = Back.BackValId(path .. ".body.param." .. i)
+            local continue_param = Back.BackValId(path .. ".continue.param." .. i)
+            local exit_param = Back.BackValId(path .. ".exit.param." .. i)
+            header_params[i] = header_param
+            body_params[i] = body_param
+            continue_params[i] = continue_param
+            exit_params[i] = exit_param
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(header_block, header_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(body_block, body_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(continue_block, continue_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(exit_block, exit_param, one_scalar(carry.ty))
+            local init = one_plain_expr(carry.init, path .. ".init." .. i, layout_env, residence_plan)
+            append_expr_cmds(cmds, init)
+            if expr_terminates(init) then
+                return terminated_expr(cmds)
+            end
+            init_values[i] = init.value
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, init_values)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(header_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, header_params, loop.loop_id, residence_plan)
+        local cond = one_plain_expr(loop.cond, path .. ".cond", layout_env, residence_plan)
+        append_expr_cmds(cmds, cond)
+        if expr_terminates(cond) then
+            return terminated_expr(cmds)
+        end
+        cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, body_block, header_params, exit_block, header_params)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, body_params, loop.loop_id, residence_plan)
+        local body_current_args = loop_binding_value_args(body_params)
+        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, nil, nil, continue_block, body_current_args, residence_plan)
+        copy_cmds(body_cmds, cmds)
+        if body_flow == Back.BackFallsThrough then
+            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
+        end
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, continue_params, loop.loop_id, residence_plan)
+        local next_cmds, next_values, next_flow = eval_loop_nexts(loop.carries, loop.next, path, layout_env, residence_plan)
+        copy_cmds(next_cmds, cmds)
+        if next_flow == Back.BackTerminates then
+            return terminated_expr(cmds)
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, next_values)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, exit_params, loop.loop_id, residence_plan)
+        local result = one_plain_expr(loop.result, path .. ".result", layout_env, residence_plan)
+        append_expr_cmds(cmds, result)
+        if expr_terminates(result) then
+            return terminated_expr(cmds)
+        end
+        return Back.BackExprPlan(cmds, result.value, result_back_ty)
+    end
+
+    local function build_while_expr_end_only_into_addr(loop, addr, path, layout_env, residence_plan)
+        local result_ty = one_sem_expr_type(loop.result)
+        local header_block = Back.BackBlockId(path .. ".header.block")
+        local body_block = Back.BackBlockId(path .. ".body.block")
+        local continue_block = Back.BackBlockId(path .. ".continue.block")
+        local exit_block = Back.BackBlockId(path .. ".exit.block")
+        local header_params = {}
+        local body_params = {}
+        local continue_params = {}
+        local exit_params = {}
+        local cmds = {
+            Back.BackCmdCreateBlock(header_block),
+            Back.BackCmdCreateBlock(body_block),
+            Back.BackCmdCreateBlock(continue_block),
+            Back.BackCmdCreateBlock(exit_block),
+        }
+        local init_values = {}
+        for i = 1, #loop.carries do
+            local carry = loop.carries[i]
+            local carry_spec = one_stack_slot_spec(carry.ty, layout_env)
+            if binding_residence(loop_carry_binding(loop.loop_id, carry), residence_plan) == Sem.SemResidenceStack then
+                cmds[#cmds + 1] = Back.BackCmdCreateStackSlot(loop_carry_slot_id(loop.loop_id, carry.port_id), carry_spec.size, carry_spec.align)
+            end
+            local header_param = Back.BackValId(path .. ".header.param." .. i)
+            local body_param = Back.BackValId(path .. ".body.param." .. i)
+            local continue_param = Back.BackValId(path .. ".continue.param." .. i)
+            local exit_param = Back.BackValId(path .. ".exit.param." .. i)
+            header_params[i] = header_param
+            body_params[i] = body_param
+            continue_params[i] = continue_param
+            exit_params[i] = exit_param
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(header_block, header_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(body_block, body_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(continue_block, continue_param, one_scalar(carry.ty))
+            cmds[#cmds + 1] = Back.BackCmdAppendBlockParam(exit_block, exit_param, one_scalar(carry.ty))
+            local init = one_plain_expr(carry.init, path .. ".init." .. i, layout_env, residence_plan)
+            append_expr_cmds(cmds, init)
+            if expr_terminates(init) then
+                return terminated_addr(cmds)
+            end
+            init_values[i] = init.value
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, init_values)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(header_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, header_params, loop.loop_id, residence_plan)
+        local cond = one_plain_expr(loop.cond, path .. ".cond", layout_env, residence_plan)
+        append_expr_cmds(cmds, cond)
+        if expr_terminates(cond) then
+            return terminated_addr(cmds)
+        end
+        cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, body_block, header_params, exit_block, header_params)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, body_params, loop.loop_id, residence_plan)
+        local body_current_args = loop_binding_value_args(body_params)
+        local body_cmds, body_flow = lower_stmt_list(loop.body, path .. ".body", layout_env, nil, nil, continue_block, body_current_args, residence_plan)
+        copy_cmds(body_cmds, cmds)
+        if body_flow == Back.BackFallsThrough then
+            cmds[#cmds + 1] = Back.BackCmdJump(continue_block, body_current_args)
+        end
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(continue_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(continue_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, continue_params, loop.loop_id, residence_plan)
+        local next_cmds, next_values, next_flow = eval_loop_nexts(loop.carries, loop.next, path, layout_env, residence_plan)
+        copy_cmds(next_cmds, cmds)
+        if next_flow == Back.BackTerminates then
+            return terminated_addr(cmds)
+        end
+        cmds[#cmds + 1] = Back.BackCmdJump(header_block, next_values)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+        cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
+        cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
+        emit_aliases_for_loop_bindings(cmds, loop.carries, exit_params, loop.loop_id, residence_plan)
+        local result = one_plain_expr_into_addr(loop.result, addr, path .. ".result", layout_env, residence_plan)
+        append_addr_cmds(cmds, result)
+        if addr_terminates(result) then
+            return terminated_addr(cmds)
+        end
+        return addr_writes(cmds)
+    end
+
     lower_loop_expr_plan = pvm.phase("sem_to_back_loop_expr", {
         [Sem.SemLoopWhileExpr] = function(self, path, layout_env, residence_plan)
+            if self.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(build_while_expr_end_only_plan(self, path, layout_env, residence_plan))
+            end
             local result_ty = one_sem_expr_type(self.result)
             local result_back_ty = one_scalar(result_ty)
             local header_block = Back.BackBlockId(path .. ".header.block")
@@ -3372,7 +4129,6 @@ function M.Define(T)
             end
             cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, body_block, header_params, exit_block, header_params)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
             emit_aliases_for_loop_bindings(cmds, self.carries, body_params, self.loop_id, residence_plan)
             local body_current_args = loop_binding_value_args(body_params)
@@ -3391,6 +4147,7 @@ function M.Define(T)
             end
             cmds[#cmds + 1] = Back.BackCmdJump(header_block, next_values)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
             emit_aliases_for_loop_bindings(cmds, self.carries, exit_params, self.loop_id, residence_plan)
             cmds[#cmds + 1] = Back.BackCmdLoad(break_flag_value, Back.BackBool, break_flag_addr)
@@ -3423,6 +4180,9 @@ function M.Define(T)
 
     lower_loop_expr_into_addr = pvm.phase("sem_to_back_loop_expr_into_addr", {
         [Sem.SemLoopWhileExpr] = function(self, addr, path, layout_env, residence_plan)
+            if self.exit == Sem.SemLoopExprEndOnly then
+                return pvm.once(build_while_expr_end_only_into_addr(self, addr, path, layout_env, residence_plan))
+            end
             local result_ty = one_sem_expr_type(self.result)
             local result_spec = one_stack_slot_spec(result_ty, layout_env)
             local header_block = Back.BackBlockId(path .. ".header.block")
@@ -3493,7 +4253,6 @@ function M.Define(T)
             end
             cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, body_block, header_params, exit_block, header_params)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(body_block)
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(body_block)
             emit_aliases_for_loop_bindings(cmds, self.carries, body_params, self.loop_id, residence_plan)
             local body_current_args = loop_binding_value_args(body_params)
@@ -3512,6 +4271,7 @@ function M.Define(T)
             end
             cmds[#cmds + 1] = Back.BackCmdJump(header_block, next_values)
             cmds[#cmds + 1] = Back.BackCmdSealBlock(header_block)
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(exit_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(exit_block)
             emit_aliases_for_loop_bindings(cmds, self.carries, exit_params, self.loop_id, residence_plan)
             cmds[#cmds + 1] = Back.BackCmdLoad(break_flag_value, Back.BackBool, break_flag_addr)
@@ -3684,9 +4444,43 @@ function M.Define(T)
             local join_block = Back.BackBlockId(path .. ".join.block")
             local default_block = Back.BackBlockId(path .. ".default.block")
             local arm_blocks = {}
-            local test_blocks = {}
+            local case_raws = aux.switch_int_case_raws(value_ty, self.arms)
             local cmds = {}
             append_expr_cmds(cmds, value)
+            if case_raws ~= nil then
+                local cases = {}
+                for i = 1, #self.arms do
+                    arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
+                    cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
+                    cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+                end
+                cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
+                if need_join then
+                    cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
+                end
+                cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
+                for i = 1, #self.arms do
+                    cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
+                    copy_cmds(arm_plans[i].cmds, cmds)
+                    if arm_plans[i].flow == Back.BackFallsThrough then
+                        cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
+                    end
+                    cmds[#cmds + 1] = Back.BackCmdSealBlock(arm_blocks[i])
+                end
+                cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(default_block)
+                copy_cmds(default_plan.cmds, cmds)
+                if default_plan.flow == Back.BackFallsThrough then
+                    cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
+                end
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(default_block)
+                if need_join then
+                    cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
+                    cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
+                    return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
+                end
+                return pvm.once(Back.BackStmtPlan(cmds, Back.BackTerminates))
+            end
+            local test_blocks = {}
             for i = 1, #self.arms do
                 arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
@@ -3826,18 +4620,18 @@ function M.Define(T)
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
             end
             cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, then_block, {}, else_block, {})
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(then_block)
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(else_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(then_block)
             copy_cmds(then_cmds, cmds)
             if then_flow == Back.BackFallsThrough then
                 cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
             end
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(then_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(else_block)
             copy_cmds(else_cmds, cmds)
             if else_flow == Back.BackFallsThrough then
                 cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
             end
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(else_block)
             if need_join then
                 cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
@@ -3873,9 +4667,43 @@ function M.Define(T)
             local join_block = Back.BackBlockId(path .. ".join.block")
             local default_block = Back.BackBlockId(path .. ".default.block")
             local arm_blocks = {}
-            local test_blocks = {}
+            local case_raws = aux.switch_int_case_raws(value_ty, self.arms)
             local cmds = {}
             append_expr_cmds(cmds, value)
+            if case_raws ~= nil then
+                local cases = {}
+                for i = 1, #self.arms do
+                    arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
+                    cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
+                    cases[i] = Back.BackSwitchCase(case_raws[i], arm_blocks[i])
+                end
+                cmds[#cmds + 1] = Back.BackCmdCreateBlock(default_block)
+                if need_join then
+                    cmds[#cmds + 1] = Back.BackCmdCreateBlock(join_block)
+                end
+                cmds[#cmds + 1] = Back.BackCmdSwitchInt(value.value, one_scalar(value_ty), cases, default_block)
+                for i = 1, #self.arms do
+                    cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
+                    copy_cmds(arm_cmds[i], cmds)
+                    if arm_flows[i] == Back.BackFallsThrough then
+                        cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
+                    end
+                    cmds[#cmds + 1] = Back.BackCmdSealBlock(arm_blocks[i])
+                end
+                cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(default_block)
+                copy_cmds(default_cmds, cmds)
+                if default_flow == Back.BackFallsThrough then
+                    cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
+                end
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(default_block)
+                if need_join then
+                    cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
+                    cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
+                    return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
+                end
+                return pvm.once(Back.BackStmtPlan(cmds, Back.BackTerminates))
+            end
+            local test_blocks = {}
             for i = 1, #self.arms do
                 arm_blocks[i] = Back.BackBlockId(path .. ".arm." .. i .. ".block")
                 cmds[#cmds + 1] = Back.BackCmdCreateBlock(arm_blocks[i])
@@ -3899,20 +4727,25 @@ function M.Define(T)
                     local match = Back.BackValId(path .. ".arm." .. i .. ".match")
                     cmds[#cmds + 1] = one_eq_cmd(value_ty, match, Back.BackBool, value.value, key.value)
                     cmds[#cmds + 1] = Back.BackCmdBrIf(match, arm_blocks[i], {}, else_block, {})
-                    cmds[#cmds + 1] = Back.BackCmdSealBlock(arm_blocks[i])
-                    cmds[#cmds + 1] = Back.BackCmdSealBlock(else_block)
                 end
+            end
+            for i = 2, #self.arms do
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(test_blocks[i])
+            end
+            for i = 1, #self.arms do
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(arm_blocks[i])
                 copy_cmds(arm_cmds[i], cmds)
                 if arm_flows[i] == Back.BackFallsThrough then
                     cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
                 end
+                cmds[#cmds + 1] = Back.BackCmdSealBlock(arm_blocks[i])
             end
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(default_block)
             copy_cmds(default_cmds, cmds)
             if default_flow == Back.BackFallsThrough then
                 cmds[#cmds + 1] = Back.BackCmdJump(join_block, {})
             end
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(default_block)
             if need_join then
                 cmds[#cmds + 1] = Back.BackCmdSealBlock(join_block)
                 cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(join_block)
@@ -3932,10 +4765,10 @@ function M.Define(T)
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(ok_block)
             cmds[#cmds + 1] = Back.BackCmdCreateBlock(fail_block)
             cmds[#cmds + 1] = Back.BackCmdBrIf(cond.value, ok_block, {}, fail_block, {})
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(ok_block)
-            cmds[#cmds + 1] = Back.BackCmdSealBlock(fail_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(fail_block)
             cmds[#cmds + 1] = Back.BackCmdTrap
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(fail_block)
+            cmds[#cmds + 1] = Back.BackCmdSealBlock(ok_block)
             cmds[#cmds + 1] = Back.BackCmdSwitchToBlock(ok_block)
             return pvm.once(Back.BackStmtPlan(cmds, Back.BackFallsThrough))
         end,

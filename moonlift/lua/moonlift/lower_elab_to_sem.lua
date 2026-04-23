@@ -29,6 +29,7 @@ function M.Define(T)
     local lower_module
     local lower_loop_carry
     local lower_loop_update
+    local lower_loop_expr_exit
     local lower_switch_stmt_arm
     local lower_switch_expr_arm
     local lower_field_type
@@ -118,6 +119,10 @@ function M.Define(T)
 
     local function one_loop_update(node, const_env)
         return pvm.one(lower_loop_update(node, const_env))
+    end
+
+    local function one_loop_expr_exit(node)
+        return pvm.one(lower_loop_expr_exit(node))
     end
 
     local function one_switch_stmt_arm(node, const_env)
@@ -851,6 +856,15 @@ function M.Define(T)
         end,
     })
 
+    lower_loop_expr_exit = pvm.phase("elab_to_sem_loop_expr_exit", {
+        [Elab.ElabLoopExprEndOnly] = function()
+            return pvm.once(Sem.SemLoopExprEndOnly)
+        end,
+        [Elab.ElabLoopExprEndOrBreakValue] = function()
+            return pvm.once(Sem.SemLoopExprEndOrBreakValue)
+        end,
+    })
+
     local function coerce_index_expr(expr)
         if one_sem_type_is_index(one_sem_expr_type(expr)) then
             return expr
@@ -897,14 +911,14 @@ function M.Define(T)
             local next = {}
             for i = 1, #self.carries do carries[i] = one_loop_carry(self.carries[i], const_env) end
             for i = 1, #self.next do next[i] = one_loop_update(self.next[i], const_env) end
-            return pvm.once(Sem.SemLoopWhileExpr(self.loop_id, carries, one_expr(self.cond, const_env), lower_stmt_list(self.body, const_env), next, one_expr(self.result, const_env)))
+            return pvm.once(Sem.SemLoopWhileExpr(self.loop_id, carries, one_expr(self.cond, const_env), lower_stmt_list(self.body, const_env), next, one_loop_expr_exit(self.exit), one_expr(self.result, const_env)))
         end,
         [Elab.ElabLoopOverExpr] = function(self, const_env)
             local carries = {}
             local next = {}
             for i = 1, #self.carries do carries[i] = one_loop_carry(self.carries[i], const_env) end
             for i = 1, #self.next do next[i] = one_loop_update(self.next[i], const_env) end
-            return pvm.once(Sem.SemLoopOverExpr(self.loop_id, Sem.SemLoopIndexPort(self.index_port.name, one_type(self.index_port.ty, const_env)), one_domain(self.domain, const_env), carries, lower_stmt_list(self.body, const_env), next, one_expr(self.result, const_env)))
+            return pvm.once(Sem.SemLoopOverExpr(self.loop_id, Sem.SemLoopIndexPort(self.index_port.name, one_type(self.index_port.ty, const_env)), one_domain(self.domain, const_env), carries, lower_stmt_list(self.body, const_env), next, one_loop_expr_exit(self.exit), one_expr(self.result, const_env)))
         end,
     })
 

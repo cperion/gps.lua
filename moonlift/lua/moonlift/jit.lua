@@ -55,6 +55,7 @@ int moonlift_program_cmd_call_value(moonlift_program_t*, uint32_t kind, const ch
 int moonlift_program_cmd_call_stmt(moonlift_program_t*, uint32_t kind, const char* target, const char* sig, const char* const* args, size_t args_len);
 int moonlift_program_cmd_jump(moonlift_program_t*, const char* dest, const char* const* args, size_t args_len);
 int moonlift_program_cmd_brif(moonlift_program_t*, const char* cond, const char* then_block, const char* const* then_args, size_t then_args_len, const char* else_block, const char* const* else_args, size_t else_args_len);
+int moonlift_program_cmd_switch_int(moonlift_program_t*, const char* value, uint32_t ty, const char* const* case_raws, const char* const* case_dests, size_t cases_len, const char* default_dest);
 int moonlift_program_cmd_return_void(moonlift_program_t*);
 int moonlift_program_cmd_return_value(moonlift_program_t*, const char* value);
 int moonlift_program_cmd_trap(moonlift_program_t*);
@@ -599,6 +600,18 @@ function M.Define(T, opts)
             check_ok(lib, lib.moonlift_program_cmd_brif(program, cstring(id_text(self.cond)), cstring(id_text(self.then_block)), then_arr, #then_args, cstring(id_text(self.else_block)), else_arr, #else_args), "moonlift ffi brif")
             return pvm.once(keep_then ~= nil or keep_else ~= nil)
         end,
+        [Back.BackCmdSwitchInt] = function(self, program)
+            local raws = {}
+            local dests = {}
+            for i = 1, #self.cases do
+                raws[i] = self.cases[i].raw
+                dests[i] = id_text(self.cases[i].dest)
+            end
+            local raw_arr, keep_raw = cstring_array(raws)
+            local dest_arr, keep_dest = cstring_array(dests)
+            check_ok(lib, lib.moonlift_program_cmd_switch_int(program, cstring(id_text(self.value)), one_scalar_code(self.ty), raw_arr, dest_arr, #raws, cstring(id_text(self.default_dest))), "moonlift ffi switch_int")
+            return pvm.once(keep_raw ~= nil or keep_dest ~= nil)
+        end,
         [Back.BackCmdReturnVoid] = function(self, program)
             check_ok(lib, lib.moonlift_program_cmd_return_void(program), "moonlift ffi return_void")
             return pvm.once(true)
@@ -681,7 +694,18 @@ function M.Define(T, opts)
         replay_handlers[mt] = handler_cast(op)
     end
 
-    replay_cmd = pvm.phase("moonlift_ffi_replay_cmd", replay_handlers)
+    local replay_handlers_by_kind = {}
+    for mt, handler in pairs(replay_handlers) do
+        replay_handlers_by_kind[mt.kind] = handler
+    end
+
+    replay_cmd = function(cmd, program)
+        local handler = replay_handlers_by_kind[cmd.kind]
+        if handler == nil then
+            error("moonlift ffi replay: no handler for '" .. tostring(cmd.kind) .. "'")
+        end
+        return pvm.one(handler(cmd, program))
+    end
 
     local Artifact = {}
     Artifact.__index = Artifact
@@ -758,7 +782,7 @@ function M.Define(T, opts)
         local raw_program = check_ptr(lib, lib.moonlift_program_new(), "moonlift ffi program_new")
         local ok, err = pcall(function()
             for i = 1, #program.cmds do
-                pvm.one(replay_cmd(program.cmds[i], raw_program))
+                replay_cmd(program.cmds[i], raw_program)
             end
         end)
         if not ok then

@@ -103,6 +103,104 @@ local fma1 = ffi.cast("float (*)(float, float, float)", fma_ptr)
 assert(tonumber(fma1(2, 3, 4)) == 10)
 intrinsic_artifact:free()
 
+local switch_program = Back.BackProgram({
+    Back.BackCmdCreateSig(Back.BackSigId("sig:switch_i32"), { Back.BackI32 }, { Back.BackI32 }),
+    Back.BackCmdDeclareFuncExport(Back.BackFuncId("switch_i32"), Back.BackSigId("sig:switch_i32")),
+    Back.BackCmdBeginFunc(Back.BackFuncId("switch_i32")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("entry.switch_i32")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("case.switch_i32.0")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("case.switch_i32.5")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("default.switch_i32")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("entry.switch_i32")),
+    Back.BackCmdBindEntryParams(Back.BackBlockId("entry.switch_i32"), { Back.BackValId("x") }),
+    Back.BackCmdSwitchInt(Back.BackValId("x"), Back.BackI32, {
+        Back.BackSwitchCase("0", Back.BackBlockId("case.switch_i32.0")),
+        Back.BackSwitchCase("5", Back.BackBlockId("case.switch_i32.5")),
+    }, Back.BackBlockId("default.switch_i32")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("case.switch_i32.0")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_i32.0"), Back.BackI32, "10"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_i32.0")),
+    Back.BackCmdSealBlock(Back.BackBlockId("case.switch_i32.0")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("case.switch_i32.5")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_i32.5"), Back.BackI32, "50"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_i32.5")),
+    Back.BackCmdSealBlock(Back.BackBlockId("case.switch_i32.5")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("default.switch_i32")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_i32.default"), Back.BackI32, "99"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_i32.default")),
+    Back.BackCmdSealBlock(Back.BackBlockId("default.switch_i32")),
+    Back.BackCmdSealBlock(Back.BackBlockId("entry.switch_i32")),
+    Back.BackCmdFinishFunc(Back.BackFuncId("switch_i32")),
+
+    Back.BackCmdCreateSig(Back.BackSigId("sig:switch_bool"), { Back.BackBool }, { Back.BackI32 }),
+    Back.BackCmdDeclareFuncExport(Back.BackFuncId("switch_bool"), Back.BackSigId("sig:switch_bool")),
+    Back.BackCmdBeginFunc(Back.BackFuncId("switch_bool")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("entry.switch_bool")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("case.switch_bool.true")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("default.switch_bool")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("entry.switch_bool")),
+    Back.BackCmdBindEntryParams(Back.BackBlockId("entry.switch_bool"), { Back.BackValId("flag") }),
+    Back.BackCmdSwitchInt(Back.BackValId("flag"), Back.BackBool, {
+        Back.BackSwitchCase("1", Back.BackBlockId("case.switch_bool.true")),
+    }, Back.BackBlockId("default.switch_bool")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("case.switch_bool.true")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_bool.true"), Back.BackI32, "11"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_bool.true")),
+    Back.BackCmdSealBlock(Back.BackBlockId("case.switch_bool.true")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("default.switch_bool")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_bool.default"), Back.BackI32, "22"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_bool.default")),
+    Back.BackCmdSealBlock(Back.BackBlockId("default.switch_bool")),
+    Back.BackCmdSealBlock(Back.BackBlockId("entry.switch_bool")),
+    Back.BackCmdFinishFunc(Back.BackFuncId("switch_bool")),
+
+    Back.BackCmdCreateSig(Back.BackSigId("sig:switch_index"), { Back.BackIndex }, { Back.BackIndex }),
+    Back.BackCmdDeclareFuncExport(Back.BackFuncId("switch_index"), Back.BackSigId("sig:switch_index")),
+    Back.BackCmdBeginFunc(Back.BackFuncId("switch_index")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("entry.switch_index")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("case.switch_index.0")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("case.switch_index.3")),
+    Back.BackCmdCreateBlock(Back.BackBlockId("default.switch_index")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("entry.switch_index")),
+    Back.BackCmdBindEntryParams(Back.BackBlockId("entry.switch_index"), { Back.BackValId("idx") }),
+    Back.BackCmdSwitchInt(Back.BackValId("idx"), Back.BackIndex, {
+        Back.BackSwitchCase("0", Back.BackBlockId("case.switch_index.0")),
+        Back.BackSwitchCase("3", Back.BackBlockId("case.switch_index.3")),
+    }, Back.BackBlockId("default.switch_index")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("case.switch_index.0")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_index.0"), Back.BackIndex, "10"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_index.0")),
+    Back.BackCmdSealBlock(Back.BackBlockId("case.switch_index.0")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("case.switch_index.3")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_index.3"), Back.BackIndex, "30"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_index.3")),
+    Back.BackCmdSealBlock(Back.BackBlockId("case.switch_index.3")),
+    Back.BackCmdSwitchToBlock(Back.BackBlockId("default.switch_index")),
+    Back.BackCmdConstInt(Back.BackValId("ret.switch_index.default"), Back.BackIndex, "99"),
+    Back.BackCmdReturnValue(Back.BackValId("ret.switch_index.default")),
+    Back.BackCmdSealBlock(Back.BackBlockId("default.switch_index")),
+    Back.BackCmdSealBlock(Back.BackBlockId("entry.switch_index")),
+    Back.BackCmdFinishFunc(Back.BackFuncId("switch_index")),
+    Back.BackCmdFinalizeModule,
+})
+
+local switch_artifact = jit:compile(switch_program)
+local switch_i32_ptr = switch_artifact:getpointer(Back.BackFuncId("switch_i32"))
+local switch_i32 = ffi.cast("int32_t (*)(int32_t)", switch_i32_ptr)
+assert(switch_i32(0) == 10)
+assert(switch_i32(5) == 50)
+assert(switch_i32(9) == 99)
+local switch_bool_ptr = switch_artifact:getpointer(Back.BackFuncId("switch_bool"))
+local switch_bool = ffi.cast("int32_t (*)(bool)", switch_bool_ptr)
+assert(switch_bool(true) == 11)
+assert(switch_bool(false) == 22)
+local switch_index_ptr = switch_artifact:getpointer(Back.BackFuncId("switch_index"))
+local switch_index = ffi.cast("intptr_t (*)(intptr_t)", switch_index_ptr)
+assert(tonumber(switch_index(0)) == 10)
+assert(tonumber(switch_index(3)) == 30)
+assert(tonumber(switch_index(9)) == 99)
+switch_artifact:free()
+
 local fib_module = lower_sem_module(Sem.SemModule("", {
     Sem.SemItemFunc(Sem.SemFuncExport(
         "fib",
@@ -192,6 +290,7 @@ local sum_to_module = lower_sem_module(Sem.SemModule("", {
                                 )
                             ),
                         },
+                        Sem.SemLoopExprEndOnly,
                         Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.loop", "sum.acc", "acc", Sem.SemTI32))
                     ),
                     Sem.SemTI32
@@ -251,6 +350,7 @@ local sum_view_module = lower_sem_module(Sem.SemModule("", {
                                 )
                             ),
                         },
+                        Sem.SemLoopExprEndOnly,
                         Sem.SemExprBinding(Sem.SemBindLoopCarry("sum.view.loop", "sum.view.acc", "acc", Sem.SemTI32))
                     ),
                     Sem.SemTI32
@@ -300,6 +400,162 @@ local package_ptr = package_artifact:getpointer(Back.BackFuncId("Main::main"))
 local package_main = ffi.cast("int32_t (*)(int32_t)", package_ptr)
 assert(package_main(5) == 12)
 package_artifact:free()
+
+local cfg_artifact = source.compile_module([[
+func if_stmt() -> i32
+    if true then
+        1
+    else
+        2
+    end
+    return 7
+end
+
+func loop_if() -> i32
+    return loop (i: i32 = 0, acc: i32 = 0) -> i32 while i < 4
+        if true then
+            1
+        else
+            2
+        end
+    next
+        i = i + 1
+        acc = acc + 1
+    end -> acc
+end
+
+func switch_stmt() -> i32
+    switch 1 do
+    case 0 then
+        0
+    case 1 then
+        1
+    default then
+        2
+    end
+    return 9
+end
+
+func switch_expr(x: i32) -> i32
+    return switch x do
+    case 0 then
+        10
+    case 1 then
+        11
+    case 2 then
+        12
+    default then
+        99
+    end
+end
+
+func dispatch_pair(op0: i32, op1: i32) -> i32
+    return loop (i: i32 = 0, acc: i32 = 0) -> i32 while i < 2
+        let op: i32 = if i == 0 then op0 else op1 end
+        let add: i32 = switch op do
+        case 0 then
+            10
+        case 1 then
+            20
+        default then
+            30
+        end
+    next
+        i = i + 1
+        acc = acc + add
+    end -> acc
+end
+
+func choose_select(flag: bool, x: i32, y: i32) -> i32
+    return select(flag, x, y)
+end
+
+func typed_loop_sum(n: i32) -> i32
+    return loop (i: i32 = 0, acc: i32 = 0) -> i32 while i < n
+    next
+        i = i + 1
+        acc = acc + i
+    end -> acc
+end
+
+func shared_next() -> i32
+    return loop (i: i32 = 0, y: i32 = 0) -> i32 while i < 4
+        let out: i32 = y + 1
+    next
+        i = i + 1
+        y = out
+    end -> y
+end
+
+func env_follow(x: f64) -> f64
+    return loop (i: i32 = 0, y: f64 = 0.0) -> f64 while i < 3
+    next
+        i = i + 1
+        y = if x < 0.5 then if x < 0.25 then 1.0 else 2.0 end else if x < 0.75 then 3.0 else 4.0 end end
+    end -> y
+end
+
+func break_find_i32(n: i32) -> i32
+    return loop (i: i32 = 0) -> i32 while i < n
+        if i == 3 then
+            break i
+        end
+    next
+        i = i + 1
+    end -> n
+end
+
+func break_find_index(n: index) -> index
+    return loop (i: index over range(n)) -> index
+        if i == 3 then
+            break i
+        end
+    next
+    end -> n
+end
+]], nil, nil, nil, jit)
+local if_stmt_ptr = cfg_artifact:getpointer(Back.BackFuncId("if_stmt"))
+local if_stmt = ffi.cast("int32_t (*)()", if_stmt_ptr)
+assert(if_stmt() == 7)
+local loop_if_ptr = cfg_artifact:getpointer(Back.BackFuncId("loop_if"))
+local loop_if = ffi.cast("int32_t (*)()", loop_if_ptr)
+assert(loop_if() == 4)
+local switch_stmt_ptr = cfg_artifact:getpointer(Back.BackFuncId("switch_stmt"))
+local switch_stmt = ffi.cast("int32_t (*)()", switch_stmt_ptr)
+assert(switch_stmt() == 9)
+local switch_expr_ptr = cfg_artifact:getpointer(Back.BackFuncId("switch_expr"))
+local switch_expr = ffi.cast("int32_t (*)(int32_t)", switch_expr_ptr)
+assert(switch_expr(0) == 10)
+assert(switch_expr(2) == 12)
+assert(switch_expr(9) == 99)
+local dispatch_pair_ptr = cfg_artifact:getpointer(Back.BackFuncId("dispatch_pair"))
+local dispatch_pair = ffi.cast("int32_t (*)(int32_t, int32_t)", dispatch_pair_ptr)
+assert(dispatch_pair(0, 1) == 30)
+assert(dispatch_pair(1, 5) == 50)
+local choose_select_ptr = cfg_artifact:getpointer(Back.BackFuncId("choose_select"))
+local choose_select = ffi.cast("int32_t (*)(bool, int32_t, int32_t)", choose_select_ptr)
+assert(choose_select(true, 11, 22) == 11)
+assert(choose_select(false, 11, 22) == 22)
+local typed_loop_sum_ptr = cfg_artifact:getpointer(Back.BackFuncId("typed_loop_sum"))
+local typed_loop_sum = ffi.cast("int32_t (*)(int32_t)", typed_loop_sum_ptr)
+assert(typed_loop_sum(4) == 6)
+local shared_next_ptr = cfg_artifact:getpointer(Back.BackFuncId("shared_next"))
+local shared_next = ffi.cast("int32_t (*)()", shared_next_ptr)
+assert(shared_next() == 4)
+local env_follow_ptr = cfg_artifact:getpointer(Back.BackFuncId("env_follow"))
+local env_follow = ffi.cast("double (*)(double)", env_follow_ptr)
+assert(tonumber(env_follow(0.1)) == 1.0)
+assert(tonumber(env_follow(0.6)) == 3.0)
+assert(tonumber(env_follow(0.9)) == 4.0)
+local break_find_i32_ptr = cfg_artifact:getpointer(Back.BackFuncId("break_find_i32"))
+local break_find_i32 = ffi.cast("int32_t (*)(int32_t)", break_find_i32_ptr)
+assert(break_find_i32(10) == 3)
+assert(break_find_i32(2) == 2)
+local break_find_index_ptr = cfg_artifact:getpointer(Back.BackFuncId("break_find_index"))
+local break_find_index = ffi.cast("intptr_t (*)(intptr_t)", break_find_index_ptr)
+assert(tonumber(break_find_index(10)) == 3)
+assert(tonumber(break_find_index(2)) == 2)
+cfg_artifact:free()
 
 jit:free()
 

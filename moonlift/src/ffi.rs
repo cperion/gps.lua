@@ -1,6 +1,6 @@
 use crate::{
     Artifact, BackBlockId, BackCmd, BackDataId, BackExternId, BackFuncId, BackProgram, BackScalar,
-    BackSigId, BackStackSlotId, BackValId, Jit, MoonliftError,
+    BackSigId, BackStackSlotId, BackSwitchCase, BackValId, Jit, MoonliftError,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -122,6 +122,20 @@ fn val_ids(ptr: *const *const c_char, len: usize, what: &str) -> Result<Vec<Back
         .into_iter()
         .map(BackValId::from)
         .collect())
+}
+
+fn read_switch_cases(
+    raw_ptr: *const *const c_char,
+    dest_ptr: *const *const c_char,
+    len: usize,
+) -> Result<Vec<BackSwitchCase>, MoonliftError> {
+    let raws = read_string_array(raw_ptr, len, "switch case raws")?;
+    let dests = read_string_array(dest_ptr, len, "switch case dests")?;
+    let mut cases = Vec::with_capacity(len);
+    for i in 0..len {
+        cases.push(BackSwitchCase::new(raws[i].clone(), BackBlockId::from(dests[i].clone())));
+    }
+    Ok(cases)
 }
 
 fn push_cmd(program: &mut moonlift_program_t, cmd: BackCmd) {
@@ -862,6 +876,31 @@ pub extern "C" fn moonlift_program_cmd_brif(
             val_ids(then_args, then_args_len, "then args")?,
             BackBlockId::from(read_cstr(else_block, "else block id")?),
             val_ids(else_args, else_args_len, "else args")?,
+        ));
+        Ok(())
+    })();
+    match result { Ok(()) => ok_int(), Err(err) => fail_int(err.0) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn moonlift_program_cmd_switch_int(
+    program: *mut moonlift_program_t,
+    value: *const c_char,
+    ty_code: u32,
+    case_raws: *const *const c_char,
+    case_dests: *const *const c_char,
+    cases_len: usize,
+    default_dest: *const c_char,
+) -> c_int {
+    let result: Result<_, MoonliftError> = (|| {
+        let program = require_ptr(program, "moonlift_program_t")?;
+        let ty = read_scalar(ty_code)?;
+        let cases = read_switch_cases(case_raws, case_dests, cases_len)?;
+        push_cmd(program, BackCmd::SwitchInt(
+            BackValId::from(read_cstr(value, "switch value id")?),
+            ty,
+            cases,
+            BackBlockId::from(read_cstr(default_dest, "switch default block id")?),
         ));
         Ok(())
     })();

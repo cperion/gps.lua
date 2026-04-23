@@ -801,10 +801,10 @@ function M.Define(T)
             return pvm.once(Sem.SemLoopOverStmt(self.loop_id, self.index_port, one_domain(self.domain, layout_env), resolve_loop_carry_list(self.carries, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env)))
         end,
         [Sem.SemLoopWhileExpr] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopWhileExpr(self.loop_id, resolve_loop_carry_list(self.carries, layout_env), one_expr(self.cond, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env), one_expr(self.result, layout_env)))
+            return pvm.once(Sem.SemLoopWhileExpr(self.loop_id, resolve_loop_carry_list(self.carries, layout_env), one_expr(self.cond, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env), self.exit, one_expr(self.result, layout_env)))
         end,
         [Sem.SemLoopOverExpr] = function(self, layout_env)
-            return pvm.once(Sem.SemLoopOverExpr(self.loop_id, self.index_port, one_domain(self.domain, layout_env), resolve_loop_carry_list(self.carries, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env), one_expr(self.result, layout_env)))
+            return pvm.once(Sem.SemLoopOverExpr(self.loop_id, self.index_port, one_domain(self.domain, layout_env), resolve_loop_carry_list(self.carries, layout_env), resolve_stmt_list(self.body, layout_env), resolve_loop_update_list(self.next, layout_env), self.exit, one_expr(self.result, layout_env)))
         end,
     })
 

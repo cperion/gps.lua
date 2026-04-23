@@ -122,19 +122,20 @@ assert(switch_stmt == Surf.SurfSwitch(
     { Surf.SurfReturnVoid }
 ))
 
-local loop_expr = P.parse_expr([[
-loop i: index = 0, acc: i32 = 0 while i < n
+local typed_loop_expr = P.parse_expr([[
+loop (i: index = 0, acc: i32 = 0) -> i32 while i < n
     let xi: i32 = xs[i]
 next
     acc = acc + xi
     i = i + 1
 end -> acc
 ]])
-assert(loop_expr == Surf.SurfLoopExprNode(Surf.SurfLoopWhileExpr(
+assert(typed_loop_expr == Surf.SurfLoopExprNode(Surf.SurfLoopWhileExprTyped(
     {
         Surf.SurfLoopCarryInit("i", Surf.SurfTIndex, Surf.SurfInt("0")),
         Surf.SurfLoopCarryInit("acc", Surf.SurfTI32, Surf.SurfInt("0")),
     },
+    Surf.SurfTI32,
     Surf.SurfExprLt(Surf.SurfNameRef("i"), Surf.SurfNameRef("n")),
     {
         Surf.SurfLet("xi", Surf.SurfTI32, Surf.SurfIndex(Surf.SurfNameRef("xs"), Surf.SurfNameRef("i"))),
@@ -146,14 +147,14 @@ assert(loop_expr == Surf.SurfLoopExprNode(Surf.SurfLoopWhileExpr(
     Surf.SurfNameRef("acc")
 )))
 
-local loop_stmt = P.parse_stmt([[
-loop i over range(n), acc: i32 = 0
+local typed_over_stmt = P.parse_stmt([[
+loop (i: index over range(n), acc: i32 = 0)
     acc = acc + 1
 next
     acc = acc + 1
 end
 ]])
-assert(loop_stmt == Surf.SurfLoopStmtNode(Surf.SurfLoopOverStmt(
+assert(typed_over_stmt == Surf.SurfLoopStmtNode(Surf.SurfLoopOverStmt(
     "i",
     Surf.SurfDomainRange(Surf.SurfNameRef("n")),
     {
@@ -168,7 +169,7 @@ assert(loop_stmt == Surf.SurfLoopStmtNode(Surf.SurfLoopOverStmt(
 )))
 
 local loop_zip = P.parse_stmt([[
-loop i over zip_eq(dst, src), y: i32 = 0
+loop (i: index over zip_eq(dst, src), y: i32 = 0)
     y = y + src[i]
 next
     y = y + 1
@@ -314,5 +315,39 @@ assert(mod == Surf.SurfModule({
         }
     )),
 }))
+
+local bad_typed_loop, bad_typed_loop_diag = P.try_parse_stmt([[
+loop (i: i32 = 0) -> i32 while i < 4
+next
+    i = i + 1
+end
+]])
+assert(bad_typed_loop == nil)
+assert(bad_typed_loop_diag ~= nil)
+assert(bad_typed_loop_diag.kind == "parse")
+assert(bad_typed_loop_diag.message:find("loop statements cannot declare a header result type", 1, true) ~= nil)
+
+local bad_old_loop_expr, bad_old_loop_expr_diag = P.try_parse_expr([[
+loop i: index = 0, acc: i32 = 0 while i < n
+next
+    acc = acc + 1
+    i = i + 1
+end -> acc
+]])
+assert(bad_old_loop_expr == nil)
+assert(bad_old_loop_expr_diag ~= nil)
+assert(bad_old_loop_expr_diag.kind == "parse")
+assert(bad_old_loop_expr_diag.message:find("expected '('", 1, true) ~= nil)
+
+local bad_old_loop_stmt, bad_old_loop_stmt_diag = P.try_parse_stmt([[
+loop i over range(n), acc: i32 = 0
+next
+    acc = acc + 1
+end
+]])
+assert(bad_old_loop_stmt == nil)
+assert(bad_old_loop_stmt_diag ~= nil)
+assert(bad_old_loop_stmt_diag.kind == "parse")
+assert(bad_old_loop_stmt_diag.message:find("expected '('", 1, true) ~= nil)
 
 print("moonlift parse bootstrap smoke ok")

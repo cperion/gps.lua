@@ -20,6 +20,8 @@ Design docs for the current direction:
 - `moonlift/REBOOT_SOURCE_GRAMMAR.md` — parser-oriented grammar for the reboot source language
 - `moonlift/PARSER_BOOTSTRAP_PLAN.md` — immediate direct-to-`Surface` parser plan for the reboot
 - `moonlift/SOURCE_SPAN_STRATEGY.md` — reboot source-span design and current path-keyed span plan
+- `moonlift/CLOSED_LANGUAGE_SEMANTIC_DECISIONS.md` — frozen semantic target for the current closed language
+- `moonlift/TYPED_LOOP_SIGNATURE_PROPOSAL.md` — frozen typed loop-header/signature design note, now implemented as the canonical authored loop syntax
 - `moonlift/CURRENT_IMPLEMENTATION_STATUS.md` — what is and is not coded yet
 - `moonlift/COMPLETE_LANGUAGE_CHECKLIST.md` — living checklist from current state to complete language + hosting + FFI
 - `moonlift/CODEGEN_FINDINGS.md` — current machine-code findings observed from the Cranelift backend
@@ -48,8 +50,9 @@ Current parser/source bootstrap support includes:
 - `if` expr
 - `switch` stmt/expr
 - `do ... end` block expr
-- canonical `loop ... while ...` and `loop ... over ...`
+- typed loop headers/signatures for canonical `loop ... while ...` and `loop ... over ...`
 - explicit loop carries and `next` updates in the reboot source grammar
+- the older unparenthesized loop spelling has been removed from the parser
 - field-based aggregate literals
 - array literals via `[]T { ... }`
 - explicit `select(cond, a, b)` parsing

@@ -85,6 +85,36 @@ That changes the nature of the investigation. The question is no longer “can M
 recursive and loop-heavy benchmark kernels at all?” The question is now “how much stack/
 slot traffic and control-shape baggage is still visible in those emitted kernels?”
 
+### 4. Typed expr loops with valued `break expr` now compile; the old failure was a sealing-order bug
+
+A follow-up probe on typed `while` and typed `over range(...)` expr loops with valued early exit
+now compiles successfully.
+
+The previous crash was not a surface-syntax problem. It was a `Sem -> Back` CFG-order bug:
+Moonlift sealed the loop expr `exit` block before the body had finished emitting all possible
+`break` edges into that block.
+
+Observed current emitted shape for valued-break loops:
+
+- loop header/body/continue/exit blocks still use block params for carried state/indexes
+- expr-loop result selection still uses a break-flag stack slot plus break-value stack slot
+- early `break expr` stores the break value, sets the flag, and jumps to the shared exit block
+- exit tests the flag and joins either the break value or the normal `end -> expr` result
+
+Moonlift now represents that distinction explicitly in ASDL (`ElabLoopExprExit` / `SemLoopExprExit`).
+That matters in codegen: breakless expr loops no longer share this path.
+
+Observed current emitted shape for end-only expr loops after the ASDL split:
+
+- no break-flag stack slot
+- no break-value stack slot
+- plain block-param recurrence header/body/continue/exit
+- exit computes the final `end -> expr` result directly and returns/joins it
+
+So the remaining cost-model issue is now narrower and more honest:
+**break-capable expr loops** still pay explicit break-result machinery, while **breakless expr loops**
+no longer do.
+
 ---
 
 ## Successful shapes and what Cranelift emitted
@@ -212,7 +242,7 @@ There is no `cmov`-style lowering visible here.
 
 ---
 
-## F. Dense switch is still just a compare chain
+## F. Dense switch now preserves real switch structure and becomes `br_table`
 
 Shape:
 
@@ -227,34 +257,34 @@ switch x
 end
 ```
 
-Observed code:
+Observed CLIF:
+
+```text
+br_table v0, block6, [block1, block2, block3, block4, block5]
+```
+
+Observed machine code includes:
 
 ```asm
-test   edi,edi
-je     case0
-cmp    edi,0x1
-je     case1
-cmp    edi,0x2
-je     case2
-cmp    edi,0x3
-je     case3
-cmp    edi,0x4
-je     case4
+mov    r11d,0x5
+cmp    eax,r11d
+cmovb  r11d,eax
+lea    rcx,[rip+...]
+movsxd rax,DWORD PTR [rcx+r11*4]
+add    rcx,rax
+jmp    rcx
 ```
 
 ### Finding
 
-Current Moonlift switch lowering is not preserving a first-class switch deep enough for a
-jump-table-like backend lowering. Cranelift is simply seeing a branch chain.
-
-### Language / ASDL implication
-
-If dense switch performance matters, Moonlift should preserve **real switch structure**
-longer instead of lowering it early to nested comparisons.
+Moonlift now preserves dense integer switch structure through `Sem -> Back` via
+`BackCmdSwitchInt`, and Cranelift can turn that into a real jump-table-style dispatch.
+This is the intended architectural shape: Moonlift no longer destroys dense switch form
+before the backend sees it.
 
 ---
 
-## G. Sparse switch is also a compare chain
+## G. Sparse switch is now preserved long enough for backend strategy choice
 
 Shape:
 
@@ -268,15 +298,34 @@ switch x
 end
 ```
 
-Observed code:
+Observed CLIF:
 
-- linear sequence of `cmp` + `je`
+```text
+v2 = icmp_imm uge v0, 33
+brif v2, block8, block7
+...
+v3 = icmp_imm.i32 eq v0, 100
+...
+v4 = icmp_imm.i32 eq v0, 33
+...
+v5 = icmp_imm.i32 eq v0, 8
+...
+v6 = icmp_imm.i32 eq v0, 1
+```
+
+Observed machine code is still compare-based, but no longer as Moonlift’s own fixed linear
+chain.
 
 ### Finding
 
-No surprise here: sparse switch is also a chain under the current lowering.
-This confirms that switch structure is already lost before the backend could choose
-between sparse and dense strategies.
+Sparse switch does not become a jump table here, but that is now a **backend choice after
+preserved switch lowering**, not an early Moonlift collapse. Cranelift sees first-class
+switch structure and chooses a sparse dispatch tree.
+
+So the remaining switch problem is narrower than before:
+Moonlift still needs a more explicit machine-facing constant-key classification for cases that
+fall back, but dense/sparse strategy selection is no longer lost prematurely for constant-key
+integer/bool/index switches.
 
 ---
 
@@ -765,56 +814,44 @@ It also reinforces the case for explicit `fma` if fused floating update chains m
 
 ---
 
-## T. More realistic branchy loop bodies currently expose a structural lowering bug
+## T. Previously failing realistic branchy loop bodies now compile through the current path
 
-Three more realistic loop-body shapes were probed:
+A follow-up probe pass rechecked three analogous realistic loop-body shapes:
 
-- `onepole_f64_shared` using a body-local `let out = ...` and `next y1 = out`
-- `threshold_copy_f64` using a statement-level `if` inside a counted loop body
-- `env_follow_f64` using nested `if` expressions inside a realistic branchy DSP update
+- a body-local `let out = ...` feeding a later `next y = out`
+- a statement-level `if` inside a counted loop body
+- nested `if` expressions inside a bounded loop update
 
-The currently observed failures were:
+The current authored/FFI path now compiles and runs those shapes successfully.
 
-- `onepole_f64_shared` and `threshold_copy_f64` trigger a Cranelift frontend panic:
-
-```text
-you have to fill your block before switching
-```
-
-- `env_follow_f64` currently hits a higher-level lowering gap:
-
-```text
-pvm.phase 'surface_to_elab_expr': no handler for SurfIfExpr
-```
-
-So realistic branchy/stateful buffer kernels still expose both:
-
-- a remaining frontend lowering inconsistency, and
-- a deeper block-structure bug once some branchy shapes do get through
+The earlier structural crash turned out not to be a loop-only semantic hole.
+The root cause was the LuaJIT FFI replay path memoizing side-effectful `BackCmd` replay via
+`pvm.phase(...)`, which could drop repeated identical CFG commands such as matching join jumps.
+Once replay became plain non-memoized command dispatch, those branchy loop-body shapes started
+compiling normally.
 
 ### Finding
 
-The previous “hard blockers” around recursion and simple loop kernels are fixed, but more
-realistic loop-body control shapes still expose structural lowering problems.
+The previous realistic failures were primarily a backend-host replay bug, not evidence that
+simple body-local shared values or ordinary branchy loop bodies inherently need a new loop-only
+source/schema split.
 
 In other words:
 
-- straight counted loops now compile
-- simple carried-state loops now compile
-- but branchy loop bodies and body-local values that feed later loop structure are not yet
-  lowered honestly enough
+- straight counted loops compile
+- simple carried-state loops compile
+- branchy stmt `if` loop bodies compile
+- nested `if`-expression loop updates compile
+- linear body-local values that later feed `next` also compile through the current path
 
 ### Language implication
 
-This is an important design signal:
+This does **not** prove that no future explicit loop/body result shape will ever be needed.
+If Moonlift later needs branch-produced values to be exported from a loop body into later loop
+steps in a way that is not already explicit in the current authored/Elab/Sem structure, that
+should still be represented honestly rather than rediscovered by helper code.
 
-- realistic DSP / buffer kernels often want a **body-local computed value** that is used for
-  both output and next-state
-- realistic transform kernels often want a **branchy per-sample body**
-- realistic envelope / follower / gate shapes often want nested per-sample choice expressions
-
-So these are not niche cases. They are exactly the kind of shapes Moonlift should treat as
-first-class if it wants to target real kernels, not just toy arithmetic loops.
+But the earlier probed failures themselves were not evidence for that stronger redesign.
 
 ---
 
@@ -926,48 +963,36 @@ There are at least two opportunities here:
 
 ---
 
-## W. Small interpreter loops make the switch problem much more urgent
+## W. Small loop-body dispatch now preserves switch structure inside the loop
 
 Shape probed successfully:
 
-- `opcode_interp_i32(ops, arg, n)`
+- `dispatch_pair(op0, op1)`
 
-This is a small interpreter-like loop carrying an accumulator and dispatching on `ops[i]`
-each iteration.
+This is a small loop carrying an accumulator, choosing an opcode per iteration, and then
+switching on that opcode inside the loop body.
 
-Observed code includes:
+Observed CLIF includes a real loop backedge plus an in-body preserved switch:
 
-```asm
-mov    r8d,DWORD PTR [rdi+rcx*4]
-test   r8d,r8d
-je     op0
-cmp    r8d,0x1
-je     op1
-cmp    r8d,0x2
-je     op2
-cmp    r8d,0x3
-jne    default
-xor    eax,DWORD PTR [rsi+rcx*4]
-...
-sub    eax,DWORD PTR [rsi+rcx*4]
-...
-add    eax,DWORD PTR [rsi+rcx*4]
+```text
+block7(v23: i32):
+    br_table v23, block10, [block8, block9]
 ```
 
 ### Finding
 
-This is an extremely important real-life signal.
+Moonlift no longer needs to collapse loop-body switch dispatch into its own compare CFG before
+Cranelift sees it. In this probe, the loop body still contains first-class switch structure,
+so hot dispatch code is at least eligible for backend strategy choice.
 
-Outside a loop, a compare-chain switch is merely okay.
-Inside a hot interpreter loop, it becomes the dispatch cost paid every iteration.
+That is a major architectural improvement over the previous state where switch shape was lost
+before backend lowering could decide anything interesting.
 
-So the existing “switch lowers to compare chain” issue is not just a theoretical aesthetic
-problem. It directly affects VM / interpreter / opcode-walk / packet-dispatch style code.
+### Remaining limitation
 
-### Language implication
-
-This strongly strengthens the case that Moonlift should preserve **first-class switch**
-structure much longer, especially for hot loop bodies.
+This improvement currently applies to constant-key `bool` / integer / `index` switch forms.
+General non-constant arm-key expressions still fall back to compare CFG because the machine-
+facing switch/key split is not yet fully explicit.
 
 ---
 
@@ -1371,39 +1396,30 @@ layout vocabulary.
 
 ---
 
-## AI. Larger dense interpreter dispatch makes the switch problem even more urgent
+## AI. Historical interpreter-dispatch compare-chain finding is now stale
 
-Shape probed successfully:
+An earlier `opcode_interp_dense8_i32` probe was recorded here as a long linear compare chain.
+That finding should no longer be treated as the current architectural baseline.
 
-- `opcode_interp_dense8_i32`
+Since then, Moonlift gained explicit `BackCmdSwitchInt` lowering and current probes show:
 
-Observed code includes a long linear compare chain:
+- dense constant-key switch can reach CLIF as `br_table`
+- sparse constant-key switch can stay preserved long enough for Cranelift to choose a sparse tree
+- loop-body switch dispatch can remain preserved inside the loop body
 
-```asm
-cmp    r8d,0x1
-je     ...
-cmp    r8d,0x2
-je     ...
-cmp    r8d,0x3
-je     ...
-cmp    r8d,0x4
-je     ...
-cmp    r8d,0x5
-je     ...
-cmp    r8d,0x6
-je     ...
-cmp    r8d,0x7
-```
+### Current implication
 
-### Finding
+The remaining interpreter-dispatch question is no longer “does Moonlift destroy switch shape
+before the backend sees it?”
 
-The earlier interpreter-loop result generalizes: as the dense opcode set grows, the emitted
-compare chain simply grows with it.
+The current question is narrower:
 
-### Language implication
+- how well does Cranelift scale preserved `BackCmdSwitchInt` dispatch for larger opcode sets?
+- when do we still need a more explicit machine-facing constant-key split for switches that fall
+  back to compare CFG?
 
-This strengthens the case that Moonlift should preserve a more semantic switch/dispatch form for
-hot interpreter loops, instead of expecting the backend to recover one from nested branches.
+A refreshed large-interpreter probe should be re-run against the new backend path rather than
+relying on the older compare-chain result.
 
 ---
 

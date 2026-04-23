@@ -5,10 +5,10 @@ use cranelift_codegen::ir::{
     StackSlotKind, TrapCode, Type, UserFuncName, Value, types,
 };
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::c_void;
 use std::fmt;
@@ -51,6 +51,21 @@ id_type!(BackDataId);
 id_type!(BackBlockId);
 id_type!(BackValId);
 id_type!(BackStackSlotId);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackSwitchCase {
+    pub raw: String,
+    pub dest: BackBlockId,
+}
+
+impl BackSwitchCase {
+    pub fn new(raw: impl Into<String>, dest: BackBlockId) -> Self {
+        Self {
+            raw: raw.into(),
+            dest,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BackScalar {
@@ -181,6 +196,7 @@ pub enum BackCmd {
     CallStmtIndirect(BackValId, BackSigId, Vec<BackValId>),
     Jump(BackBlockId, Vec<BackValId>),
     BrIf(BackValId, BackBlockId, Vec<BackValId>, BackBlockId, Vec<BackValId>),
+    SwitchInt(BackValId, BackScalar, Vec<BackSwitchCase>, BackBlockId),
     ReturnVoid,
     ReturnValue(BackValId),
     Trap,
@@ -215,6 +231,58 @@ impl fmt::Display for MoonliftError {
 }
 
 impl Error for MoonliftError {}
+
+fn switch_int_bits(ty: BackScalar, ptr_ty: Type) -> Result<u8, MoonliftError> {
+    match ty {
+        BackScalar::Bool | BackScalar::I8 | BackScalar::U8 => Ok(8),
+        BackScalar::I16 | BackScalar::U16 => Ok(16),
+        BackScalar::I32 | BackScalar::U32 => Ok(32),
+        BackScalar::I64 | BackScalar::U64 => Ok(64),
+        BackScalar::Index => Ok(ptr_ty.bits() as u8),
+        _ => Err(MoonliftError::new(format!(
+            "BackCmdSwitchInt requires bool/integer/index type, got {:?}",
+            ty
+        ))),
+    }
+}
+
+fn mask_to_bits(value: u128, bits: u8) -> u128 {
+    if bits >= 128 {
+        value
+    } else {
+        value & ((1u128 << bits) - 1)
+    }
+}
+
+fn parse_switch_int_case(raw: &str, ty: BackScalar, ptr_ty: Type) -> Result<u128, MoonliftError> {
+    let bits = switch_int_bits(ty, ptr_ty)?;
+    match ty {
+        BackScalar::Bool => match raw {
+            "0" => Ok(0),
+            "1" => Ok(1),
+            _ => Err(MoonliftError::new(format!(
+                "BackCmdSwitchInt bool case must be '0' or '1', got '{}'",
+                raw
+            ))),
+        },
+        BackScalar::I8 | BackScalar::I16 | BackScalar::I32 | BackScalar::I64 => {
+            let value = raw.parse::<i128>().map_err(|e| {
+                MoonliftError::new(format!("could not parse signed switch case '{}': {}", raw, e))
+            })?;
+            Ok(mask_to_bits(value as u128, bits))
+        }
+        BackScalar::U8 | BackScalar::U16 | BackScalar::U32 | BackScalar::U64 | BackScalar::Index => {
+            let value = raw.parse::<u128>().map_err(|e| {
+                MoonliftError::new(format!("could not parse unsigned switch case '{}': {}", raw, e))
+            })?;
+            Ok(mask_to_bits(value, bits))
+        }
+        _ => Err(MoonliftError::new(format!(
+            "BackCmdSwitchInt requires bool/integer/index type, got {:?}",
+            ty
+        ))),
+    }
+}
 
 pub struct Jit {
     symbols: HashMap<String, *const u8>,
@@ -731,6 +799,10 @@ impl Compiler {
                 builder.finalize();
             }
 
+            if std::env::var("MOONLIFT_DUMP_CLIF").ok().as_deref() == Some("1") {
+                eprintln!("MOONLIFT_CLIF {}:\n{}", func_id_text.as_str(), ctx.func.display());
+            }
+
             self.module
                 .define_function(func_id, &mut ctx)
                 .map_err(|e| MoonliftError::new(format!("failed to define function '{}': {e:?}", func_id_text.as_str())))?;
@@ -895,6 +967,36 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             BackCmd::SealBlock(id) => {
                 let block = self.block(id)?;
                 self.builder.seal_block(block);
+                Ok(())
+            }
+            BackCmd::SwitchInt(value_id, ty, cases, default_id) => {
+                let value = self.value(value_id)?;
+                let value_ty = self.builder.func.dfg.value_type(value);
+                let expected_ty = ty.clif_type(self.ptr_ty);
+                if value_ty != expected_ty {
+                    return Err(MoonliftError::new(format!(
+                        "function '{}' used BackCmdSwitchInt value '{}' with CLIF type {:?}, expected {:?}",
+                        self.func_name.as_str(),
+                        value_id.as_str(),
+                        value_ty,
+                        expected_ty
+                    )));
+                }
+                let default_block = self.block(default_id)?;
+                let mut switch = Switch::new();
+                let mut seen = HashSet::new();
+                for case in cases {
+                    let index = parse_switch_int_case(&case.raw, *ty, self.ptr_ty)?;
+                    if !seen.insert(index) {
+                        return Err(MoonliftError::new(format!(
+                            "function '{}' repeated BackCmdSwitchInt case '{}'",
+                            self.func_name.as_str(),
+                            case.raw
+                        )));
+                    }
+                    switch.set_entry(index, self.block(&case.dest)?);
+                }
+                switch.emit(&mut self.builder, value, default_block);
                 Ok(())
             }
             BackCmd::BindEntryParams(id, values) => {

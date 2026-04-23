@@ -11,7 +11,9 @@ Primary source of truth:
 
 Important companion docs:
 
+- `moonlift/CLOSED_LANGUAGE_SEMANTIC_DECISIONS.md` — frozen semantic target for the current closed language
 - `moonlift/REBOOT_SOURCE_GRAMMAR.md` — parser-oriented grammar for the reboot source
+- `moonlift/TYPED_LOOP_SIGNATURE_PROPOSAL.md` — frozen future source-syntax proposal for typed loop headers/signatures
 - `moonlift/CURRENT_IMPLEMENTATION_STATUS.md` — coded vs missing today
 - `moonlift/QUOTING_SYSTEM_DESIGN.md` — future open-code / quote layer (`Meta`)
 
@@ -65,9 +67,10 @@ That is compatible with the architecture, as long as it emits canonical ASDL val
 When deciding what the reboot source language is, use this order:
 
 1. `moonlift/lua/moonlift/asdl.lua`
-2. this spec
-3. `moonlift/REBOOT_SOURCE_GRAMMAR.md`
-4. actual lowering files such as:
+2. `moonlift/CLOSED_LANGUAGE_SEMANTIC_DECISIONS.md`
+3. this spec
+4. `moonlift/REBOOT_SOURCE_GRAMMAR.md`
+5. actual lowering files such as:
    - `moonlift/lua/moonlift/lower_surface_to_elab.lua`
    - `moonlift/lua/moonlift/lower_surface_to_elab_expr.lua`
    - `moonlift/lua/moonlift/lower_surface_to_elab_loop.lua`
@@ -585,6 +588,12 @@ Current parser target:
 
 Loop expressions use the canonical loop families described below.
 
+Important current note:
+
+- the implemented reboot parser/front-end now uses the typed-header loop spelling documented in `moonlift/TYPED_LOOP_SIGNATURE_PROPOSAL.md` as the canonical authored loop syntax
+- the older unparenthesized loop spelling has been removed from the parser
+- the core loop semantics stay the same
+
 ---
 
 ## 8. Current statement language
@@ -703,10 +712,12 @@ Parser target:
 The reboot `Surface` does **not** currently have separate plain `while` / `for` AST nodes.
 Its loop surface is already centered on canonical loop forms.
 
-That means the reboot parser should primarily target:
+That means the reboot parser should primarily target typed canonical `loop` families such as:
 
-- `loop ... while ...`
-- `loop ... over ...`
+- `loop (...) while ...`
+- `loop (i: index over domain, ...)`
+- `loop (...) -> T while ... end -> expr`
+- `loop (i: index over domain, ...) -> T ... end -> expr`
 
 not a separate old-style `while_` / `for_` source AST.
 
@@ -732,7 +743,7 @@ Current update node:
 Current parser targets:
 
 - `SurfLoopWhileStmt`
-- `SurfLoopWhileExpr`
+- `SurfLoopWhileExprTyped`
 
 This is the reboot phi/state loop form.
 
@@ -741,7 +752,7 @@ This is the reboot phi/state loop form.
 Current parser targets:
 
 - `SurfLoopOverStmt`
-- `SurfLoopOverExpr`
+- `SurfLoopOverExprTyped`
 
 This is the reboot domain loop form.
 
@@ -841,7 +852,7 @@ The reboot source spec intentionally does **not** yet freeze text syntax for eve
 
 Not yet frozen here:
 
-- hosted/public policy for when `view(T)` should be preferred over slice/pointer forms
+- whether the remaining untyped expr-loop `Surface` variants should stay as internal/manual compatibility forms or be removed entirely in a later cleanup
 - full authored type-item syntax:
   - `type`
   - `struct`

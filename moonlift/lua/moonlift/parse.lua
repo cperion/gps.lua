@@ -447,20 +447,49 @@ function Parser:parse_domain()
     return self.Surf.SurfDomainValue(self:parse_expr())
 end
 
-function Parser:parse_loop_carry_list(base_path)
+function Parser:parse_loop_carry(base_path, index)
+    local first = self:peek()
+    local name = self:expect("ident", "expected loop carry name").raw
+    self:expect(":")
+    local ty = self:parse_type()
+    self:expect("=")
+    local carry = self.Surf.SurfLoopCarryInit(name, ty, self:parse_expr())
+    self:record_span(base_path and self:scoped(base_path, tostring(index)) or nil, first)
+    return carry
+end
+
+function Parser:parse_loop_carry_list(base_path, start_index)
     local carries = {}
-    local i = 0
+    local i = start_index or 0
     repeat
         i = i + 1
-        local first = self:peek()
-        local name = self:expect("ident", "expected loop carry name").raw
-        self:expect(":")
-        local ty = self:parse_type()
-        self:expect("=")
-        carries[#carries + 1] = self.Surf.SurfLoopCarryInit(name, ty, self:parse_expr())
-        self:record_span(base_path and self:scoped(base_path, tostring(i)) or nil, first)
+        carries[#carries + 1] = self:parse_loop_carry(base_path, i)
     until not self:consume(",")
     return carries
+end
+
+function Parser:parse_typed_loop_header(base_path)
+    local index_name = nil
+    local domain = nil
+    local carries = {}
+    if self:is(")") then
+        return index_name, domain, carries
+    end
+    if self:is("ident") and self:kind(1) == ":" and self:kind(2) == "index" and self:kind(3) == "over" then
+        local first = self:peek()
+        index_name = self:bump().raw
+        self:expect(":")
+        self:expect("index")
+        self:expect("over")
+        domain = self:parse_domain()
+        self:record_span(base_path and self:scoped(base_path, "index") or nil, first)
+        if self:consume(",") then
+            carries = self:parse_loop_carry_list(base_path and self:scoped(base_path, "carries") or nil)
+        end
+        return index_name, domain, carries
+    end
+    carries = self:parse_loop_carry_list(base_path and self:scoped(base_path, "carries") or nil)
+    return index_name, domain, carries
 end
 
 function Parser:parse_loop_next_block(base_path)
@@ -485,15 +514,22 @@ end
 
 function Parser:parse_loop(is_expr, path)
     self:expect("loop")
+    self:expect("(")
 
-    if self:is("ident") and self:kind(1) == "over" then
-        local index_name = self:bump().raw
-        self:expect("over")
-        local domain = self:parse_domain()
-        local carries = {}
-        if self:consume(",") then
-            carries = self:parse_loop_carry_list(path and self:scoped(path, "carries") or nil)
+    local index_name, domain, carries = self:parse_typed_loop_header(path)
+    self:expect(")")
+    local result_ty = nil
+    if self:is("->") then
+        if not is_expr then
+            parse_error(self:peek(), "loop statements cannot declare a header result type")
         end
+        self:bump()
+        result_ty = self:parse_type()
+    elseif is_expr then
+        parse_error(self:peek(), "loop expressions must declare a header result type")
+    end
+
+    if index_name ~= nil then
         self:require_nl()
         local body = self:parse_stmt_block({ next = true }, path and self:scoped(path, "body") or nil)
         self:expect("next")
@@ -504,7 +540,7 @@ function Parser:parse_loop(is_expr, path)
             self:expect("->")
             local result = self:parse_expr()
             return self.Surf.SurfLoopExprNode(
-                self.Surf.SurfLoopOverExpr(index_name, domain, carries, body, nexts, result)
+                self.Surf.SurfLoopOverExprTyped(index_name, domain, carries, result_ty, body, nexts, result)
             )
         end
         return self.Surf.SurfLoopStmtNode(
@@ -512,10 +548,6 @@ function Parser:parse_loop(is_expr, path)
         )
     end
 
-    local carries = {}
-    if not self:is("while") then
-        carries = self:parse_loop_carry_list(path and self:scoped(path, "carries") or nil)
-    end
     self:expect("while")
     local cond = self:parse_expr()
     self:require_nl()
@@ -528,7 +560,7 @@ function Parser:parse_loop(is_expr, path)
         self:expect("->")
         local result = self:parse_expr()
         return self.Surf.SurfLoopExprNode(
-            self.Surf.SurfLoopWhileExpr(carries, cond, body, nexts, result)
+            self.Surf.SurfLoopWhileExprTyped(carries, result_ty, cond, body, nexts, result)
         )
     end
     return self.Surf.SurfLoopStmtNode(

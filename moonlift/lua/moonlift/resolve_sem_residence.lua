@@ -9,6 +9,7 @@ function M.Define(T)
 
     local lower_type_default_residence
     local lower_binding_residence
+    local lower_back_binding
     local lower_view_entries
     local lower_place_entries
     local lower_index_base_entries
@@ -28,6 +29,10 @@ function M.Define(T)
 
     local function one_binding_residence(node)
         return pvm.one(lower_binding_residence(node))
+    end
+
+    local function one_back_binding(node, residence_plan)
+        return pvm.one(lower_back_binding(node, residence_plan))
     end
 
     local function one_view_entries(node)
@@ -134,6 +139,18 @@ function M.Define(T)
             append_entries(out, one_loop_update_entries(nodes[i]))
         end
         return out
+    end
+
+    local function binding_residence(binding, residence_plan)
+        if residence_plan ~= nil then
+            for i = 1, #residence_plan.entries do
+                local entry = residence_plan.entries[i]
+                if entry.binding == binding then
+                    return entry.residence
+                end
+            end
+        end
+        return one_binding_residence(binding)
     end
 
     local function explicit_entry(binding, residence)
@@ -246,6 +263,48 @@ function M.Define(T)
         end,
         [Sem.SemBindExtern] = function()
             return pvm.once(Sem.SemResidenceValue)
+        end,
+    })
+
+    lower_back_binding = pvm.phase("moonlift_sem_back_binding", {
+        [Sem.SemBindLocalValue] = function(self, residence_plan)
+            if binding_residence(self, residence_plan) == Sem.SemResidenceStack then
+                return pvm.once(Sem.SemBackLocalStored(self.id, self.name, self.ty))
+            end
+            return pvm.once(Sem.SemBackLocalValue(self.id, self.name, self.ty))
+        end,
+        [Sem.SemBindLocalCell] = function(self)
+            return pvm.once(Sem.SemBackLocalCell(self.id, self.name, self.ty))
+        end,
+        [Sem.SemBindArg] = function(self, residence_plan)
+            if binding_residence(self, residence_plan) == Sem.SemResidenceStack then
+                return pvm.once(Sem.SemBackArgStored(self.index, self.name, self.ty))
+            end
+            return pvm.once(Sem.SemBackArgValue(self.index, self.name, self.ty))
+        end,
+        [Sem.SemBindLoopCarry] = function(self, residence_plan)
+            if binding_residence(self, residence_plan) == Sem.SemResidenceStack then
+                return pvm.once(Sem.SemBackLoopCarryStored(self.loop_id, self.port_id, self.name, self.ty))
+            end
+            return pvm.once(Sem.SemBackLoopCarryValue(self.loop_id, self.port_id, self.name, self.ty))
+        end,
+        [Sem.SemBindLoopIndex] = function(self, residence_plan)
+            if binding_residence(self, residence_plan) == Sem.SemResidenceStack then
+                return pvm.once(Sem.SemBackLoopIndexStored(self.loop_id, self.name, self.ty))
+            end
+            return pvm.once(Sem.SemBackLoopIndexValue(self.loop_id, self.name, self.ty))
+        end,
+        [Sem.SemBindGlobalFunc] = function(self)
+            return pvm.once(Sem.SemBackGlobalFunc(self.module_name, self.item_name, self.ty))
+        end,
+        [Sem.SemBindGlobalConst] = function(self)
+            return pvm.once(Sem.SemBackGlobalConst(self.module_name, self.item_name, self.ty))
+        end,
+        [Sem.SemBindGlobalStatic] = function(self)
+            return pvm.once(Sem.SemBackGlobalStatic(self.module_name, self.item_name, self.ty))
+        end,
+        [Sem.SemBindExtern] = function(self)
+            return pvm.once(Sem.SemBackExtern(self.symbol, self.ty))
         end,
     })
 
@@ -516,6 +575,7 @@ function M.Define(T)
     return {
         lower_type_default_residence = lower_type_default_residence,
         lower_binding_residence = lower_binding_residence,
+        lower_back_binding = lower_back_binding,
         lower_view_entries = lower_view_entries,
         lower_place_entries = lower_place_entries,
         lower_index_base_entries = lower_index_base_entries,

@@ -68,6 +68,12 @@ local env = Elab.ElabEnv("", {
     }),
 })
 
+local select_env = Elab.ElabEnv("", {
+    Elab.ElabValueEntry("flag", Elab.ElabArg(0, "flag", Elab.ElabTBool)),
+    Elab.ElabValueEntry("x", Elab.ElabArg(1, "x", Elab.ElabTI32)),
+    Elab.ElabValueEntry("y", Elab.ElabArg(2, "y", Elab.ElabTI32)),
+}, env.types, env.layouts)
+
 local lowered_count_ty = S.lower_type("[Demo.N]i32", env)
 assert(lowered_count_ty == Elab.ElabTArray(
     Elab.ElabBindingExpr(Elab.ElabGlobalConst("Demo", "N", Elab.ElabTIndex)),
@@ -101,6 +107,14 @@ assert(lowered_field == Elab.ElabField(
     Elab.ElabTI32
 ))
 
+local lowered_select = S.lower_expr("select(flag, x, y)", select_env)
+assert(lowered_select == Elab.ElabSelectExpr(
+    Elab.ElabBindingExpr(Elab.ElabArg(0, "flag", Elab.ElabTBool)),
+    Elab.ElabBindingExpr(Elab.ElabArg(1, "x", Elab.ElabTI32)),
+    Elab.ElabBindingExpr(Elab.ElabArg(2, "y", Elab.ElabTI32)),
+    Elab.ElabTI32
+))
+
 local shadow_env = Elab.ElabEnv("", {
     Elab.ElabValueEntry("Demo", Elab.ElabLocalValue("env.Demo", "Demo", Elab.ElabTNamed("", "Pair"))),
     Elab.ElabValueEntry("Demo.left", Elab.ElabGlobalConst("Demo", "left", Elab.ElabTI32)),
@@ -115,7 +129,7 @@ assert(lowered_shadow == Elab.ElabField(
 local stages = S.pipeline_module_with_spans([[
 const K: i32 = 7
 func main(x: i32) -> i32
-    loop i: index = 0, acc: i32 = 0 while i < 3
+    loop (i: index = 0, acc: i32 = 0) while i < 3
     next
         acc = acc + x
         i = i + 1
@@ -155,6 +169,39 @@ func main(x: i32) -> i32
 end
 ]])
 assert(sem_mod.items[2].func.name == "main")
+
+local select_sem_mod = S.sem_module([[
+func choose(flag: bool, x: i32, y: i32) -> i32
+    return select(flag, x, y)
+end
+]])
+assert(select_sem_mod.items[1].func.body[1] == Sem.SemStmtReturnValue(
+    Sem.SemExprSelect(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "flag", Sem.SemTBool)),
+        Sem.SemExprBinding(Sem.SemBindArg(1, "x", Sem.SemTI32)),
+        Sem.SemExprBinding(Sem.SemBindArg(2, "y", Sem.SemTI32)),
+        Sem.SemTI32
+    )
+))
+
+local select_back_mod = S.back_module([[
+func choose(flag: bool, x: i32, y: i32) -> i32
+    return select(flag, x, y)
+end
+]])
+local saw_select = false
+for i = 1, #select_back_mod.cmds do
+    if select_back_mod.cmds[i] == Back.BackCmdSelect(
+        Back.BackValId("func:choose.stmt.1.value"),
+        Back.BackI32,
+        Back.BackValId("arg:0:flag"),
+        Back.BackValId("arg:1:x"),
+        Back.BackValId("arg:2:y")
+    ) then
+        saw_select = true
+    end
+end
+assert(saw_select)
 
 local typed_stages = S.pipeline_module_with_spans([[
 type Pair = struct { left: i32, right: i32 }
@@ -281,7 +328,7 @@ assert(lower_diag.line == 1)
 
 local bad_mod, mod_diag = S.try_lower_module([[
 func main(n: index) -> void
-    loop i: index = 0 while i < n
+    loop (i: index = 0) while i < n
     next
         j = i
     end
@@ -294,5 +341,41 @@ assert(mod_diag.kind == "lower")
 assert(mod_diag.path == "func.main.stmt.1.next.1")
 assert(mod_diag.line == 4)
 assert(mod_diag.col == 9)
+
+local typed_loop_back = S.back_module([[
+func sum_typed(n: i32) -> i32
+    return loop (i: i32 = 0, acc: i32 = 0) -> i32 while i < n
+    next
+        i = i + 1
+        acc = acc + i
+    end -> acc
+end
+]])
+assert(typed_loop_back.cmds[#typed_loop_back.cmds] == Back.BackCmdFinalizeModule)
+
+local bad_typed_result, bad_typed_result_diag = S.try_lower_module([[
+func bad(flag: bool) -> i32
+    return loop () -> i32 while flag
+    next
+    end -> true
+end
+]])
+assert(bad_typed_result == nil)
+assert(bad_typed_result_diag ~= nil)
+assert(bad_typed_result_diag.kind == "lower")
+assert(bad_typed_result_diag.message:find("typed while expr result", 1, true) ~= nil)
+
+local bad_typed_break, bad_typed_break_diag = S.try_lower_module([[
+func bad_break(flag: bool) -> i32
+    return loop () -> i32 while flag
+        break true
+    next
+    end -> 0
+end
+]])
+assert(bad_typed_break == nil)
+assert(bad_typed_break_diag ~= nil)
+assert(bad_typed_break_diag.kind == "lower")
+assert(bad_typed_break_diag.message:find("valued break must currently have the loop expression result type", 1, true) ~= nil)
 
 print("moonlift source frontend ok")

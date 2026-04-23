@@ -84,6 +84,7 @@ assert(while_expr == Elab.ElabLoopExprNode(
                 )
             ),
         },
+        Elab.ElabLoopExprEndOnly,
         Elab.ElabBindingExpr(Elab.ElabLoopCarry("loop.sum", "loop.sum.carries.carry.2", "acc", Elab.ElabTI32))
     ),
     Elab.ElabTI32
@@ -190,6 +191,7 @@ assert(break_value_loop == Elab.ElabLoopExprNode(
                 )
             ),
         },
+        Elab.ElabLoopExprEndOrBreakValue,
         Elab.ElabBindingExpr(Elab.ElabLoopCarry("loop.break_value", "loop.break_value.carries.carry.1", "i", Elab.ElabTI32))
     ),
     Elab.ElabTI32

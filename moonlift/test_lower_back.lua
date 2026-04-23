@@ -44,6 +44,15 @@ local function lacks_cmd(plan, cmd)
     return not contains_cmd(plan, cmd)
 end
 
+local function cmd_index(plan, cmd)
+    for i = 1, #plan.cmds do
+        if plan.cmds[i] == cmd then
+            return i
+        end
+    end
+    return nil
+end
+
 local function expect_error(fn, text)
     local ok, err = pcall(fn)
     assert(not ok)
@@ -120,14 +129,14 @@ assert(bool_and == Back.BackExprPlan({
     Back.BackCmdCreateBlock(Back.BackBlockId("expr.and.join.block")),
     Back.BackCmdAppendBlockParam(Back.BackBlockId("expr.and.join.block"), Back.BackValId("expr.and"), Back.BackBool),
     Back.BackCmdBrIf(Back.BackValId("arg:0:b"), Back.BackBlockId("expr.and.rhs.block"), {}, Back.BackBlockId("expr.and.short.block"), {}),
-    Back.BackCmdSealBlock(Back.BackBlockId("expr.and.rhs.block")),
-    Back.BackCmdSealBlock(Back.BackBlockId("expr.and.short.block")),
     Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.and.short.block")),
     Back.BackCmdConstBool(Back.BackValId("expr.and.short"), false),
     Back.BackCmdJump(Back.BackBlockId("expr.and.join.block"), { Back.BackValId("expr.and.short") }),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.and.short.block")),
     Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.and.rhs.block")),
     Back.BackCmdConstBool(Back.BackValId("expr.and.rhs"), true),
     Back.BackCmdJump(Back.BackBlockId("expr.and.join.block"), { Back.BackValId("expr.and.rhs") }),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.and.rhs.block")),
     Back.BackCmdSealBlock(Back.BackBlockId("expr.and.join.block")),
     Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.and.join.block")),
 }, Back.BackValId("expr.and"), Back.BackBool))
@@ -146,17 +155,32 @@ assert(bool_or == Back.BackExprPlan({
     Back.BackCmdCreateBlock(Back.BackBlockId("expr.or.join.block")),
     Back.BackCmdAppendBlockParam(Back.BackBlockId("expr.or.join.block"), Back.BackValId("expr.or"), Back.BackBool),
     Back.BackCmdBrIf(Back.BackValId("arg:0:b"), Back.BackBlockId("expr.or.rhs.block"), {}, Back.BackBlockId("expr.or.short.block"), {}),
-    Back.BackCmdSealBlock(Back.BackBlockId("expr.or.rhs.block")),
-    Back.BackCmdSealBlock(Back.BackBlockId("expr.or.short.block")),
     Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.or.short.block")),
     Back.BackCmdConstBool(Back.BackValId("expr.or.short"), true),
     Back.BackCmdJump(Back.BackBlockId("expr.or.join.block"), { Back.BackValId("expr.or.short") }),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.or.short.block")),
     Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.or.rhs.block")),
     Back.BackCmdConstBool(Back.BackValId("expr.or.rhs"), false),
     Back.BackCmdJump(Back.BackBlockId("expr.or.join.block"), { Back.BackValId("expr.or.rhs") }),
+    Back.BackCmdSealBlock(Back.BackBlockId("expr.or.rhs.block")),
     Back.BackCmdSealBlock(Back.BackBlockId("expr.or.join.block")),
     Back.BackCmdSwitchToBlock(Back.BackBlockId("expr.or.join.block")),
 }, Back.BackValId("expr.or"), Back.BackBool))
+
+local select_expr = one_expr(
+    Sem.SemExprSelect(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "b", Sem.SemTBool)),
+        Sem.SemExprConstInt(Sem.SemTI32, "11"),
+        Sem.SemExprConstInt(Sem.SemTI32, "22"),
+        Sem.SemTI32
+    ),
+    "expr.select"
+)
+assert(select_expr == Back.BackExprPlan({
+    Back.BackCmdConstInt(Back.BackValId("expr.select.then"), Back.BackI32, "11"),
+    Back.BackCmdConstInt(Back.BackValId("expr.select.else"), Back.BackI32, "22"),
+    Back.BackCmdSelect(Back.BackValId("expr.select"), Back.BackI32, Back.BackValId("arg:0:b"), Back.BackValId("expr.select.then"), Back.BackValId("expr.select.else")),
+}, Back.BackValId("expr.select"), Back.BackI32))
 
 local popcount_expr = one_expr(
     Sem.SemExprIntrinsicCall(
@@ -246,6 +270,86 @@ assert(set_field == Back.BackStmtPlan({
     Back.BackCmdStore(Back.BackI32, Back.BackValId("stmt.set_field.addr"), Back.BackValId("stmt.set_field.value")),
 }, Back.BackFallsThrough))
 
+local switch_expr_dense = one_expr(
+    Sem.SemExprSwitch(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "x", Sem.SemTI32)),
+        {
+            Sem.SemSwitchExprArm(Sem.SemExprConstInt(Sem.SemTI32, "0"), {}, Sem.SemExprConstInt(Sem.SemTI32, "10")),
+            Sem.SemSwitchExprArm(Sem.SemExprConstInt(Sem.SemTI32, "1"), {}, Sem.SemExprConstInt(Sem.SemTI32, "11")),
+            Sem.SemSwitchExprArm(Sem.SemExprConstInt(Sem.SemTI32, "2"), {}, Sem.SemExprConstInt(Sem.SemTI32, "12")),
+        },
+        Sem.SemExprConstInt(Sem.SemTI32, "99"),
+        Sem.SemTI32
+    ),
+    "expr.switch_dense"
+)
+assert(contains_cmd(switch_expr_dense, Back.BackCmdSwitchInt(
+    Back.BackValId("arg:0:x"),
+    Back.BackI32,
+    {
+        Back.BackSwitchCase("0", Back.BackBlockId("expr.switch_dense.arm.1.block")),
+        Back.BackSwitchCase("1", Back.BackBlockId("expr.switch_dense.arm.2.block")),
+        Back.BackSwitchCase("2", Back.BackBlockId("expr.switch_dense.arm.3.block")),
+    },
+    Back.BackBlockId("expr.switch_dense.default.block")
+)))
+assert(lacks_cmd(switch_expr_dense, Back.BackCmdCreateBlock(Back.BackBlockId("expr.switch_dense.test.2.block"))))
+
+local switch_expr_dynamic = one_expr(
+    Sem.SemExprSwitch(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "x", Sem.SemTI32)),
+        {
+            Sem.SemSwitchExprArm(Sem.SemExprBinding(Sem.SemBindArg(1, "k1", Sem.SemTI32)), {}, Sem.SemExprConstInt(Sem.SemTI32, "10")),
+            Sem.SemSwitchExprArm(Sem.SemExprBinding(Sem.SemBindArg(2, "k2", Sem.SemTI32)), {}, Sem.SemExprConstInt(Sem.SemTI32, "11")),
+        },
+        Sem.SemExprConstInt(Sem.SemTI32, "99"),
+        Sem.SemTI32
+    ),
+    "expr.switch_dynamic"
+)
+assert(contains_cmd(switch_expr_dynamic, Back.BackCmdCreateBlock(Back.BackBlockId("expr.switch_dynamic.test.2.block"))))
+
+local switch_stmt_bool = one_stmt(
+    Sem.SemStmtSwitch(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "flag", Sem.SemTBool)),
+        {
+            Sem.SemSwitchStmtArm(Sem.SemExprConstBool(true), {
+                Sem.SemStmtExpr(Sem.SemExprConstInt(Sem.SemTI32, "1")),
+            }),
+        },
+        {}
+    ),
+    "stmt.switch_bool"
+)
+assert(contains_cmd(switch_stmt_bool, Back.BackCmdSwitchInt(
+    Back.BackValId("arg:0:flag"),
+    Back.BackBool,
+    {
+        Back.BackSwitchCase("1", Back.BackBlockId("stmt.switch_bool.arm.1.block")),
+    },
+    Back.BackBlockId("stmt.switch_bool.default.block")
+)))
+
+local switch_expr_index = one_expr(
+    Sem.SemExprSwitch(
+        Sem.SemExprBinding(Sem.SemBindArg(0, "i", Sem.SemTIndex)),
+        {
+            Sem.SemSwitchExprArm(Sem.SemExprConstInt(Sem.SemTIndex, "0"), {}, Sem.SemExprConstInt(Sem.SemTIndex, "10")),
+        },
+        Sem.SemExprConstInt(Sem.SemTIndex, "99"),
+        Sem.SemTIndex
+    ),
+    "expr.switch_index"
+)
+assert(contains_cmd(switch_expr_index, Back.BackCmdSwitchInt(
+    Back.BackValId("arg:0:i"),
+    Back.BackIndex,
+    {
+        Back.BackSwitchCase("0", Back.BackBlockId("expr.switch_index.arm.1.block")),
+    },
+    Back.BackBlockId("expr.switch_index.default.block")
+)))
+
 local while_break_value = one_expr(
     Sem.SemExprLoop(
         Sem.SemLoopWhileExpr(
@@ -267,6 +371,7 @@ local while_break_value = one_expr(
                     )
                 ),
             },
+            Sem.SemLoopExprEndOrBreakValue,
             Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.break", "carry.i", "i", Sem.SemTI32))
         ),
         Sem.SemTI32
@@ -281,6 +386,7 @@ assert(contains_cmd(while_break_value, Back.BackCmdCreateStackSlot(Back.BackStac
 assert(contains_cmd(while_break_value, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:breakvalue:value:expr.loopbreak.exit.block"), 4, 4)))
 assert(contains_cmd(while_break_value, Back.BackCmdJump(Back.BackBlockId("expr.loopbreak.exit.block"), { Back.BackValId("expr.loopbreak.body.param.1") })))
 assert(contains_cmd(while_break_value, Back.BackCmdLoad(Back.BackValId("expr.loopbreak.break.value.loaded"), Back.BackI32, Back.BackValId("expr.loopbreak.break.value.addr"))))
+assert(cmd_index(while_break_value, Back.BackCmdJump(Back.BackBlockId("expr.loopbreak.exit.block"), { Back.BackValId("expr.loopbreak.body.param.1") })) < cmd_index(while_break_value, Back.BackCmdSealBlock(Back.BackBlockId("expr.loopbreak.exit.block"))))
 
 local over_range_expr = one_expr(
     Sem.SemExprLoop(
@@ -302,19 +408,21 @@ local over_range_expr = one_expr(
                     )
                 ),
             },
+            Sem.SemLoopExprEndOnly,
             Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.range", "carry.acc", "acc", Sem.SemTIndex))
         ),
         Sem.SemTIndex
     ),
     "expr.over"
 )
-assert(over_range_expr.value == Back.BackValId("expr.over"))
 assert(over_range_expr.ty == Back.BackIndex)
 assert(lacks_cmd(over_range_expr, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:loopindex:loop.range:i"), 8, 8)))
 assert(lacks_cmd(over_range_expr, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:loopcarry:loop.range:carry.acc"), 8, 8)))
 assert(contains_cmd(over_range_expr, Back.BackCmdConstInt(Back.BackValId("expr.over.stop"), Back.BackIndex, "3")))
 assert(contains_cmd(over_range_expr, Back.BackCmdAlias(Back.BackValId("local:loopindex:loop.range:i"), Back.BackValId("expr.over.header.index"))))
 assert(contains_cmd(over_range_expr, Back.BackCmdAlias(Back.BackValId("local:loopcarry:loop.range:carry.acc"), Back.BackValId("expr.over.header.carry.1"))))
+assert(lacks_cmd(over_range_expr, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:breakvalue:flag:expr.over.exit.block"), 1, 1)))
+assert(lacks_cmd(over_range_expr, Back.BackCmdCreateStackSlot(Back.BackStackSlotId("slot:breakvalue:value:expr.over.exit.block"), 8, 8)))
 
 local bounded_over_expr = one_expr(
     Sem.SemExprLoop(
@@ -341,6 +449,7 @@ local bounded_over_expr = one_expr(
                     )
                 ),
             },
+            Sem.SemLoopExprEndOnly,
             Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.view", "carry.acc", "acc", Sem.SemTIndex))
         ),
         Sem.SemTIndex
@@ -411,6 +520,7 @@ local zip_over_expr = one_expr(
                     )
                 ),
             },
+            Sem.SemLoopExprEndOnly,
             Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.zip", "carry.acc", "acc", Sem.SemTI32))
         ),
         Sem.SemTI32
@@ -444,6 +554,7 @@ local slice_zip_over_expr = one_expr(
                     )
                 ),
             },
+            Sem.SemLoopExprEndOnly,
             Sem.SemExprBinding(Sem.SemBindLoopCarry("loop.slice.zip", "carry.acc", "acc", Sem.SemTI32))
         ),
         Sem.SemTI32

@@ -519,7 +519,7 @@ local gain_step = region (i: index, out: &f32, g: f32)
 end
 
 local callback = func audio_callback(out: &f32, st: &State, g: f32, nframes: index) -> void
-    loop i over range(nframes)
+    loop (i: index over range(nframes))
         osc_step(i, out, st)
         gain_step(i, out, g)
     end

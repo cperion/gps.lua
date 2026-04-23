@@ -21,7 +21,7 @@ local zero = S.SemExprConstInt(i32_ty, '0')
 local init = S.SemLoopCarryPort('carry.i', 'i', i32_ty, zero)
 local cond = S.SemExprLt(S.SemTBool, bind, S.SemExprConstInt(i32_ty, '4'))
 local nextv = S.SemLoopUpdate('carry.i', S.SemExprAdd(i32_ty, bind, S.SemExprConstInt(i32_ty, '1')))
-local loop = S.SemLoopWhileExpr('loop', { init }, cond, {}, { nextv }, bind)
+local loop = S.SemLoopWhileExpr('loop', { init }, cond, {}, { nextv }, S.SemLoopExprEndOnly, bind)
 assert(loop ~= nil)
 
 local B = T.MoonliftBack
